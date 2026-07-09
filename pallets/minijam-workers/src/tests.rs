@@ -1,6 +1,7 @@
 use crate as pallet_minijam_workers;
 use frame_support::{
-    assert_noop, assert_ok, derive_impl, parameter_types, traits::tokens::fungible::InspectHold,
+    assert_noop, assert_ok, derive_impl, parameter_types,
+    traits::tokens::fungible::{Inspect, InspectHold},
 };
 use minijam_protocol::{Verdict, WorkerVoteV1, PROTOCOL_VERSION_V1};
 use sp_core::{sr25519, Pair};
@@ -45,6 +46,10 @@ parameter_types! {
     pub const ExistentialDeposit: u128 = 1;
     pub const MinimumStake: u128 = 1_000;
     pub const ChainId: [u8; 32] = [42; 32];
+    pub const RewardPool: u64 = 100;
+    pub const TimelyVoteReward: u128 = 10;
+    pub const MinimumAbsenceSlash: u128 = 10;
+    pub const AbsenceSlash: sp_runtime::Perbill = sp_runtime::Perbill::from_percent(1);
 }
 
 #[derive_impl(pallet_balances::config_preludes::TestDefaultConfig)]
@@ -73,6 +78,10 @@ impl pallet_minijam_workers::Config for Test {
     type MaxOpenVotes = frame_support::traits::ConstU32<4>;
     type ChainId = ChainId;
     type ProtocolVersion = frame_support::traits::ConstU16<PROTOCOL_VERSION_V1>;
+    type RewardPool = RewardPool;
+    type TimelyVoteReward = TimelyVoteReward;
+    type AbsenceSlash = AbsenceSlash;
+    type MinimumAbsenceSlash = MinimumAbsenceSlash;
 }
 
 fn new_test_ext() -> sp_io::TestExternalities {
@@ -80,7 +89,13 @@ fn new_test_ext() -> sp_io::TestExternalities {
         .build_storage()
         .unwrap();
     pallet_balances::GenesisConfig::<Test> {
-        balances: vec![(1, 10_001), (2, 10_001), (3, 10_001), (4, 10_001)],
+        balances: vec![
+            (1, 10_001),
+            (2, 10_001),
+            (3, 10_001),
+            (4, 10_001),
+            (100, 1_000_001),
+        ],
         dev_accounts: None,
     }
     .assimilate_storage(&mut storage)
@@ -294,6 +309,13 @@ fn threshold_locks_but_round_waits_for_all_workers() {
             Some(pallet_minijam_workers::RoundDecision::Accepted)
         );
         assert!(result.absentees.is_empty());
+        for worker_id in assignment {
+            assert_eq!(
+                Balances::total_balance(&(worker_id + 1)),
+                10_011,
+                "Support and Oppose must receive the same response reward"
+            );
+        }
     });
 }
 
@@ -313,5 +335,21 @@ fn deadline_finalizes_and_records_only_missing_workers() {
         assert_eq!(result.decision, None);
         assert_eq!(result.absentees.len(), 2);
         assert!(!result.absentees.contains(&assignment[0]));
+
+        assert_eq!(Balances::free_balance(100), 1_000_011);
+        assert_eq!(
+            pallet_minijam_workers::Workers::<Test>::get(assignment[0])
+                .unwrap()
+                .active_stake,
+            1_000 + assignment[0] as u128
+        );
+        for absent in result.absentees {
+            assert_eq!(
+                pallet_minijam_workers::Workers::<Test>::get(absent)
+                    .unwrap()
+                    .active_stake,
+                990 + absent as u128
+            );
+        }
     });
 }

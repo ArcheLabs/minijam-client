@@ -24,6 +24,8 @@
 - sr25519 session-key vote verification, explicit Support/Oppose thresholds,
   locked decisions with continued duty responses, and deadline finalization
   with bounded absentee recording.
+- Equal timely-response rewards for Support/Oppose, absence slashing with a
+  proportional/minimum rule, and slash resolution into the funded reward pool.
 - jambda logging split into std tracing and no_std no-op facades.
 - jambda `minijam-executive` canonical report metadata projection.
 - Native and Wasm `no_std` compilation of the MiniJam execution boundary.
@@ -39,7 +41,7 @@
 
 - Polkadot SDK solo-chain node/runtime scaffold.
 - FRAME storage binding for the validated protocol state adapter.
-- Worker rewards, slashes, equivocation proofs, and suspension.
+- Worker equivocation proofs and suspension.
 - `pallet-minijam` and runtime execution hook.
 - sr25519 vote verification in the runtime.
 - Balances hold integration for stake, bonds, rewards, slashes, and bridge.

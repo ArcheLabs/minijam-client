@@ -7,13 +7,17 @@ pub use pallet::*;
 pub mod pallet {
     use frame_support::{
         pallet_prelude::*,
-        traits::tokens::fungible::{Inspect, MutateHold},
+        storage::{with_transaction, TransactionOutcome},
+        traits::tokens::{
+            fungible::{Balanced, BalancedHold, Inspect, Mutate, MutateHold},
+            Preservation,
+        },
     };
     use frame_system::pallet_prelude::*;
     use minijam_protocol::{Verdict, WorkerVoteV1};
     use parity_scale_codec::Encode;
     use sp_core::sr25519;
-    use sp_runtime::traits::SaturatedConversion;
+    use sp_runtime::{traits::SaturatedConversion, Perbill};
 
     pub type WorkerId = u64;
     pub type EpochIndex = u32;
@@ -88,7 +92,9 @@ pub mod pallet {
         #[allow(deprecated)]
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
-        type Currency: MutateHold<Self::AccountId, Reason = Self::RuntimeHoldReason>;
+        type Currency: Mutate<Self::AccountId>
+            + MutateHold<Self::AccountId, Reason = Self::RuntimeHoldReason>
+            + BalancedHold<Self::AccountId, Reason = Self::RuntimeHoldReason>;
 
         type RuntimeHoldReason: From<HoldReason>;
 
@@ -130,6 +136,18 @@ pub mod pallet {
 
         #[pallet::constant]
         type ProtocolVersion: Get<u16>;
+
+        #[pallet::constant]
+        type RewardPool: Get<Self::AccountId>;
+
+        #[pallet::constant]
+        type TimelyVoteReward: Get<BalanceOf<Self>>;
+
+        #[pallet::constant]
+        type AbsenceSlash: Get<Perbill>;
+
+        #[pallet::constant]
+        type MinimumAbsenceSlash: Get<BalanceOf<Self>>;
     }
 
     #[pallet::pallet]
@@ -236,6 +254,14 @@ pub mod pallet {
             work_id: u64,
             round: u8,
             decision: Option<RoundDecision>,
+        },
+        VoteRewardPaid {
+            worker_id: WorkerId,
+            amount: BalanceOf<T>,
+        },
+        WorkerSlashed {
+            worker_id: WorkerId,
+            amount: BalanceOf<T>,
         },
     }
 
@@ -644,10 +670,52 @@ pub mod pallet {
         }
 
         fn finalize_voting(work_id: u64, round: u8) -> DispatchResult {
+            with_transaction(|| match Self::finalize_voting_inner(work_id, round) {
+                Ok(()) => TransactionOutcome::Commit(Ok(())),
+                Err(error) => TransactionOutcome::Rollback(Err(error)),
+            })
+        }
+
+        fn finalize_voting_inner(work_id: u64, round: u8) -> DispatchResult {
             let voting =
                 VotingRounds::<T>::take((work_id, round)).ok_or(Error::<T>::VotingNotOpen)?;
             let assignment =
                 Assignments::<T>::get(work_id, round).ok_or(Error::<T>::NotAssigned)?;
+            for worker_id in &assignment {
+                let worker = Workers::<T>::get(*worker_id).ok_or(Error::<T>::NotRegistered)?;
+                if Votes::<T>::contains_key((work_id, round, *worker_id)) {
+                    T::Currency::transfer(
+                        &T::RewardPool::get(),
+                        &worker.owner,
+                        T::TimelyVoteReward::get(),
+                        Preservation::Preserve,
+                    )?;
+                    Self::deposit_event(Event::VoteRewardPaid {
+                        worker_id: *worker_id,
+                        amount: T::TimelyVoteReward::get(),
+                    });
+                } else {
+                    let proportional = T::AbsenceSlash::get().mul_floor(worker.active_stake);
+                    let requested = proportional
+                        .max(T::MinimumAbsenceSlash::get())
+                        .min(worker.active_stake);
+                    let reason = T::RuntimeHoldReason::from(HoldReason::WorkerStake);
+                    let (credit, remainder) = T::Currency::slash(&reason, &worker.owner, requested);
+                    let actual = requested - remainder;
+                    if T::Currency::resolve(&T::RewardPool::get(), credit).is_err() {
+                        return Err(DispatchError::Other("reward pool cannot receive slash"));
+                    }
+                    Workers::<T>::mutate(*worker_id, |maybe_worker| {
+                        if let Some(record) = maybe_worker {
+                            record.active_stake -= actual;
+                        }
+                    });
+                    Self::deposit_event(Event::WorkerSlashed {
+                        worker_id: *worker_id,
+                        amount: actual,
+                    });
+                }
+            }
             let absentees: BoundedVec<WorkerId, T::WorkersPerWork> = assignment
                 .into_iter()
                 .filter(|worker_id| !Votes::<T>::contains_key((work_id, round, *worker_id)))
