@@ -119,3 +119,60 @@ fn registration_enforces_minimum_and_uniqueness() {
         );
     });
 }
+
+#[test]
+fn stake_and_key_updates_activate_on_next_epoch() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(Workers::register(RuntimeOrigin::signed(1), [1; 32], 2_000));
+        System::set_block_number(10);
+        <Workers as frame_support::traits::Hooks<u64>>::on_initialize(10);
+
+        assert_ok!(Workers::schedule_update(
+            RuntimeOrigin::signed(1),
+            Some([9; 32]),
+            Some(4_000)
+        ));
+        let reason: RuntimeHoldReason = pallet_minijam_workers::HoldReason::WorkerStake.into();
+        assert_eq!(Balances::balance_on_hold(&reason, &1), 4_000);
+        assert_eq!(
+            pallet_minijam_workers::Workers::<Test>::get(0)
+                .unwrap()
+                .active_stake,
+            2_000
+        );
+
+        System::set_block_number(20);
+        <Workers as frame_support::traits::Hooks<u64>>::on_initialize(20);
+        let worker = pallet_minijam_workers::Workers::<Test>::get(0).unwrap();
+        assert_eq!(worker.active_stake, 4_000);
+        assert_eq!(worker.session_key, [9; 32]);
+    });
+}
+
+#[test]
+fn reduced_stake_is_released_after_two_epochs() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(Workers::register(RuntimeOrigin::signed(1), [1; 32], 4_000));
+        System::set_block_number(10);
+        <Workers as frame_support::traits::Hooks<u64>>::on_initialize(10);
+        assert_ok!(Workers::schedule_update(
+            RuntimeOrigin::signed(1),
+            None,
+            Some(2_000)
+        ));
+
+        let reason: RuntimeHoldReason = pallet_minijam_workers::HoldReason::WorkerStake.into();
+        System::set_block_number(20);
+        <Workers as frame_support::traits::Hooks<u64>>::on_initialize(20);
+        assert_eq!(Balances::balance_on_hold(&reason, &1), 4_000);
+
+        System::set_block_number(30);
+        <Workers as frame_support::traits::Hooks<u64>>::on_initialize(30);
+        assert_eq!(Balances::balance_on_hold(&reason, &1), 4_000);
+
+        System::set_block_number(40);
+        <Workers as frame_support::traits::Hooks<u64>>::on_initialize(40);
+        assert_eq!(Balances::balance_on_hold(&reason, &1), 2_000);
+        assert!(!pallet_minijam_workers::Unbonding::<Test>::contains_key(0));
+    });
+}

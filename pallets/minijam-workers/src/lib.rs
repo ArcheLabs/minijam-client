@@ -26,6 +26,19 @@ pub mod pallet {
         pub effective_epoch: EpochIndex,
     }
 
+    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    pub struct PendingWorkerUpdate<Balance> {
+        pub session_key: Option<[u8; 32]>,
+        pub stake: Option<Balance>,
+        pub effective_epoch: EpochIndex,
+    }
+
+    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    pub struct UnbondingChunk<Balance> {
+        pub amount: Balance,
+        pub unlock_epoch: EpochIndex,
+    }
+
     #[pallet::composite_enum]
     pub enum HoldReason {
         WorkerStake,
@@ -71,6 +84,14 @@ pub mod pallet {
         StorageMap<_, Blake2_128Concat, WorkerId, WorkerRecord<T>, OptionQuery>;
 
     #[pallet::storage]
+    pub type PendingUpdates<T: Config> =
+        StorageMap<_, Blake2_128Concat, WorkerId, PendingWorkerUpdate<BalanceOf<T>>, OptionQuery>;
+
+    #[pallet::storage]
+    pub type Unbonding<T: Config> =
+        StorageMap<_, Blake2_128Concat, WorkerId, UnbondingChunk<BalanceOf<T>>, OptionQuery>;
+
+    #[pallet::storage]
     #[pallet::getter(fn current_epoch)]
     pub type CurrentEpoch<T> = StorageValue<_, EpochIndex, ValueQuery>;
 
@@ -92,6 +113,18 @@ pub mod pallet {
             epoch: EpochIndex,
             workers: BoundedVec<WorkerId, T::TopWorkers>,
         },
+        WorkerUpdateScheduled {
+            worker_id: WorkerId,
+            effective_epoch: EpochIndex,
+        },
+        WorkerUpdateApplied {
+            worker_id: WorkerId,
+            epoch: EpochIndex,
+        },
+        StakeReleased {
+            worker_id: WorkerId,
+            amount: BalanceOf<T>,
+        },
     }
 
     #[pallet::error]
@@ -101,6 +134,10 @@ pub mod pallet {
         StakeBelowMinimum,
         WorkerIdOverflow,
         InvalidEpochLength,
+        NotRegistered,
+        EmptyUpdate,
+        PendingUpdateExists,
+        UnbondingInProgress,
     }
 
     #[pallet::hooks]
@@ -116,6 +153,8 @@ pub mod pallet {
             }
 
             let epoch = CurrentEpoch::<T>::get().saturating_add(1);
+            Self::apply_pending_updates(epoch);
+            Self::release_mature_unbonding(epoch);
             let mut eligible: BoundedVec<(WorkerId, BalanceOf<T>), T::MaxCandidates> =
                 BoundedVec::default();
             for (worker_id, worker) in Workers::<T>::iter() {
@@ -137,7 +176,11 @@ pub mod pallet {
             ActiveWorkers::<T>::put(&workers);
             Self::deposit_event(Event::EpochSnapshot { epoch, workers });
 
-            T::DbWeight::get().reads_writes(u64::from(WorkerCount::<T>::get()).saturating_add(2), 2)
+            let worker_count = u64::from(WorkerCount::<T>::get());
+            T::DbWeight::get().reads_writes(
+                worker_count.saturating_mul(3).saturating_add(2),
+                worker_count.saturating_mul(2).saturating_add(2),
+            )
         }
     }
 
@@ -192,6 +235,115 @@ pub mod pallet {
                 stake,
             });
             Ok(())
+        }
+
+        #[pallet::call_index(1)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(5, 2))]
+        pub fn schedule_update(
+            origin: OriginFor<T>,
+            session_key: Option<[u8; 32]>,
+            stake: Option<BalanceOf<T>>,
+        ) -> DispatchResult {
+            let owner = ensure_signed(origin)?;
+            ensure!(
+                session_key.is_some() || stake.is_some(),
+                Error::<T>::EmptyUpdate
+            );
+            let worker_id = WorkerByAccount::<T>::get(&owner).ok_or(Error::<T>::NotRegistered)?;
+            ensure!(
+                !PendingUpdates::<T>::contains_key(worker_id),
+                Error::<T>::PendingUpdateExists
+            );
+            ensure!(
+                !Unbonding::<T>::contains_key(worker_id),
+                Error::<T>::UnbondingInProgress
+            );
+            let worker = Workers::<T>::get(worker_id).ok_or(Error::<T>::NotRegistered)?;
+
+            if let Some(new_stake) = stake {
+                ensure!(
+                    new_stake >= T::MinimumStake::get(),
+                    Error::<T>::StakeBelowMinimum
+                );
+                if new_stake > worker.active_stake {
+                    let reason = T::RuntimeHoldReason::from(HoldReason::WorkerStake);
+                    T::Currency::hold(&reason, &owner, new_stake - worker.active_stake)?;
+                }
+            }
+
+            let effective_epoch = CurrentEpoch::<T>::get().saturating_add(1);
+            PendingUpdates::<T>::insert(
+                worker_id,
+                PendingWorkerUpdate {
+                    session_key,
+                    stake,
+                    effective_epoch,
+                },
+            );
+            Self::deposit_event(Event::WorkerUpdateScheduled {
+                worker_id,
+                effective_epoch,
+            });
+            Ok(())
+        }
+    }
+
+    impl<T: Config> Pallet<T> {
+        fn apply_pending_updates(epoch: EpochIndex) {
+            for (worker_id, update) in PendingUpdates::<T>::iter() {
+                if update.effective_epoch > epoch {
+                    continue;
+                }
+                Workers::<T>::mutate(worker_id, |maybe_worker| {
+                    let Some(worker) = maybe_worker else {
+                        return;
+                    };
+                    if let Some(session_key) = update.session_key {
+                        worker.session_key = session_key;
+                    }
+                    if let Some(stake) = update.stake {
+                        if stake < worker.active_stake {
+                            Unbonding::<T>::insert(
+                                worker_id,
+                                UnbondingChunk {
+                                    amount: worker.active_stake - stake,
+                                    unlock_epoch: epoch.saturating_add(2),
+                                },
+                            );
+                        }
+                        worker.active_stake = stake;
+                    }
+                    worker.effective_epoch = epoch;
+                });
+                PendingUpdates::<T>::remove(worker_id);
+                Self::deposit_event(Event::WorkerUpdateApplied { worker_id, epoch });
+            }
+        }
+
+        fn release_mature_unbonding(epoch: EpochIndex) {
+            for (worker_id, chunk) in Unbonding::<T>::iter() {
+                if chunk.unlock_epoch > epoch {
+                    continue;
+                }
+                let Some(worker) = Workers::<T>::get(worker_id) else {
+                    continue;
+                };
+                let reason = T::RuntimeHoldReason::from(HoldReason::WorkerStake);
+                if T::Currency::release(
+                    &reason,
+                    &worker.owner,
+                    chunk.amount,
+                    frame_support::traits::tokens::Precision::Exact,
+                )
+                .is_ok()
+                {
+                    Unbonding::<T>::remove(worker_id);
+                    Self::deposit_event(Event::StakeReleased {
+                        worker_id,
+                        amount: chunk.amount,
+                    });
+                }
+            }
         }
     }
 }
