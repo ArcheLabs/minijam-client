@@ -1,0 +1,18 @@
+[package]
+name = "minijam-bulletin-simulator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+blake2b_simd = { workspace = true, features = ["std"] }
+bounded-collections = { workspace = true, features = ["std"] }
+cid.workspace = true
+minijam-bulletin-api = { path = "../minijam-bulletin-api" }
+minijam-protocol = { path = "../minijam-protocol" }
+multihash.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "minijam-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+blake2b_simd.workspace = true
+bounded-collections.workspace = true
+parity-scale-codec.workspace = true
+scale-info.workspace = true
+
+[features]
+default = ["std"]
+std = [
+  "blake2b_simd/std",
+  "bounded-collections/std",
+  "parity-scale-codec/std",
+  "scale-info/std",
+]

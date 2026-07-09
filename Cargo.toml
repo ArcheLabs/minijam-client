@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/minijam-protocol",
+  "crates/minijam-jamcore-api",
+  "crates/minijam-jamcore-mock",
+  "crates/minijam-worker-engine",
+  "crates/minijam-bridge-engine",
+  "crates/minijam-bulletin-api",
+  "crates/minijam-bulletin-simulator",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.88"
+
+[workspace.dependencies]
+async-trait = "0.1.89"
+blake2b_simd = { version = "1.0.4", default-features = false }
+bounded-collections = { version = "0.2.4", default-features = false }
+cid = "0.11.1"
+futures = "0.3.31"
+multihash = "0.19.3"
+parity-scale-codec = { version = "3.7.5", default-features = false, features = ["derive", "max-encoded-len"] }
+scale-info = { version = "2.11.6", default-features = false, features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+tempfile = "3.23.0"
+
+[profile.release]
+panic = "abort"
+lto = "thin"
+codegen-units = 1

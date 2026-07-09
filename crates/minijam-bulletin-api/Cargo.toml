@@ -1,0 +1,10 @@
+[package]
+name = "minijam-bulletin-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+minijam-protocol = { path = "../minijam-protocol" }
+thiserror.workspace = true
