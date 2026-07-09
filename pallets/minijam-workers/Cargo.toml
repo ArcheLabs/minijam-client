@@ -1,0 +1,26 @@
+[package]
+name = "pallet-minijam-workers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+frame-support.workspace = true
+frame-system.workspace = true
+parity-scale-codec.workspace = true
+scale-info.workspace = true
+sp-runtime.workspace = true
+
+[dev-dependencies]
+pallet-balances = { workspace = true, default-features = true }
+sp-io = { workspace = true, default-features = true }
+
+[features]
+default = ["std"]
+std = [
+  "frame-support/std",
+  "frame-system/std",
+  "parity-scale-codec/std",
+  "scale-info/std",
+  "sp-runtime/std",
+]
