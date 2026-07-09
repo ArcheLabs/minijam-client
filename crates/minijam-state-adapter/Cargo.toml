@@ -1,0 +1,18 @@
+[package]
+name = "minijam-state-adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+minijam-jamcore-api = { path = "../minijam-jamcore-api", default-features = false }
+minijam-protocol = { path = "../minijam-protocol", default-features = false }
+parity-scale-codec.workspace = true
+
+[features]
+default = ["std"]
+std = [
+  "minijam-jamcore-api/std",
+  "minijam-protocol/std",
+  "parity-scale-codec/std",
+]

@@ -454,6 +454,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "minijam-state-adapter"
+version = "0.1.0"
+dependencies = [
+ "minijam-jamcore-api",
+ "minijam-protocol",
+ "parity-scale-codec",
+]
+
+[[package]]
 name = "minijam-worker-engine"
 version = "0.1.0"
 dependencies = [

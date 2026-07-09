@@ -30,6 +30,14 @@ pub const TIMELY_VOTE_REWARD: u128 = UNIT;
 pub const ACCEPTED_SUBMITTER_REWARD: u128 = UNIT;
 pub const MINIMUM_ABSENCE_SLASH: u128 = UNIT;
 pub const REWARD_POOL_ENDOWMENT: u128 = 1_000_000 * UNIT;
+pub const MAX_DELTA_BYTES: u32 = 4 * 1_048_576;
+
+pub const NS_SYSTEM: u8 = 0x00;
+pub const NS_SERVICE_INFO: u8 = 0x10;
+pub const NS_SERVICE_STORAGE: u8 = 0x11;
+pub const NS_SERVICE_LOOKUP: u8 = 0x12;
+pub const NS_PREIMAGE: u8 = 0x13;
+pub const NS_ADMIN_BRIDGE: u8 = 0x20;
 
 pub type Hash = [u8; 32];
 pub type ChainId = Hash;
@@ -196,6 +204,30 @@ pub enum StateOperation {
     Upsert,
     Update,
     Remove,
+}
+
+#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+pub enum ProtocolNamespace {
+    System,
+    ServiceInfo,
+    ServiceStorage,
+    ServiceLookup,
+    Preimage,
+    AdminBridge,
+}
+
+impl ProtocolNamespace {
+    pub fn from_key(key: &[u8; 31]) -> Option<Self> {
+        match key[0] {
+            NS_SYSTEM => Some(Self::System),
+            NS_SERVICE_INFO => Some(Self::ServiceInfo),
+            NS_SERVICE_STORAGE => Some(Self::ServiceStorage),
+            NS_SERVICE_LOOKUP => Some(Self::ServiceLookup),
+            NS_PREIMAGE => Some(Self::Preimage),
+            NS_ADMIN_BRIDGE => Some(Self::AdminBridge),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]

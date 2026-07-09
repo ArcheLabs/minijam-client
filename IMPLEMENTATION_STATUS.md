@@ -11,6 +11,9 @@
 - Fault injection for missing, corrupt, and timeout responses.
 - Native-asset bridge nonce and escrow core.
 - Mock JAMCore executor and deterministic receipt generation.
+- Runtime-independent protocol state adapter with namespace, ordering, operation,
+  gas, receipt, and total-delta validation.
+- Transaction-style in-memory protocol state application with rollback tests.
 - jambda logging split into std tracing and no_std no-op facades.
 - jambda `minijam-executive` canonical report metadata projection.
 - Native and Wasm `no_std` compilation of the MiniJam execution boundary.
@@ -25,7 +28,7 @@
 ## Remaining before the foundation MVP is complete
 
 - Polkadot SDK solo-chain node/runtime scaffold.
-- FRAME storage adapter.
+- FRAME storage binding for the validated protocol state adapter.
 - `pallet-minijam-workers`, `pallet-minijam`, and runtime execution hook.
 - sr25519 vote verification in the runtime.
 - Balances hold integration for stake, bonds, rewards, slashes, and bridge.
