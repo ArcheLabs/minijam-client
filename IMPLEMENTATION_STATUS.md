@@ -31,6 +31,9 @@
 - `pallet-minijam` work deposits, candidate bonds, bounded pending queue,
   assignment/voting lifecycle, candidate rejection slashing, three-round
   retry/failure, accepted submitter reward, and execution queue handoff.
+- Polkadot SDK stable2603 runtime with System, Timestamp, Aura, GRANDPA,
+  Balances, TransactionPayment, Sudo, MiniJam workers, and MiniJam lifecycle;
+  native and `wasm32v1-none` release builds are wired.
 - jambda logging split into std tracing and no_std no-op facades.
 - jambda `minijam-executive` canonical report metadata projection.
 - Native and Wasm `no_std` compilation of the MiniJam execution boundary.
@@ -44,7 +47,7 @@
 
 ## Remaining before the foundation MVP is complete
 
-- Polkadot SDK solo-chain node/runtime scaffold.
+- Polkadot SDK solo-chain node/service and dev/local chain specs.
 - FRAME storage binding for the validated protocol state adapter.
 - Runtime execution hook and JAM state storage.
 - Balances hold integration for bridge escrow.

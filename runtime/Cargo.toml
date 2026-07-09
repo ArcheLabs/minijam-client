@@ -1,0 +1,71 @@
+[package]
+name = "minijam-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+frame-executive.workspace = true
+frame-support.workspace = true
+frame-system.workspace = true
+frame-system-rpc-runtime-api.workspace = true
+pallet-aura.workspace = true
+pallet-balances.workspace = true
+pallet-grandpa.workspace = true
+pallet-minijam = { path = "../pallets/minijam", default-features = false }
+pallet-minijam-workers = { path = "../pallets/minijam-workers", default-features = false }
+pallet-sudo.workspace = true
+pallet-timestamp.workspace = true
+pallet-transaction-payment.workspace = true
+pallet-transaction-payment-rpc-runtime-api.workspace = true
+parity-scale-codec.workspace = true
+scale-info.workspace = true
+sp-api.workspace = true
+sp-block-builder.workspace = true
+sp-consensus-aura.workspace = true
+sp-consensus-grandpa.workspace = true
+sp-core.workspace = true
+sp-genesis-builder.workspace = true
+sp-inherents.workspace = true
+sp-offchain.workspace = true
+sp-runtime.workspace = true
+sp-session.workspace = true
+sp-transaction-pool.workspace = true
+sp-version.workspace = true
+
+[build-dependencies]
+substrate-wasm-builder = { workspace = true, optional = true }
+
+[features]
+default = ["std"]
+std = [
+  "frame-executive/std",
+  "frame-support/std",
+  "frame-system-rpc-runtime-api/std",
+  "frame-system/std",
+  "pallet-aura/std",
+  "pallet-balances/std",
+  "pallet-grandpa/std",
+  "pallet-minijam-workers/std",
+  "pallet-minijam/std",
+  "pallet-sudo/std",
+  "pallet-timestamp/std",
+  "pallet-transaction-payment-rpc-runtime-api/std",
+  "pallet-transaction-payment/std",
+  "parity-scale-codec/std",
+  "scale-info/std",
+  "sp-api/std",
+  "sp-block-builder/std",
+  "sp-consensus-aura/std",
+  "sp-consensus-grandpa/std",
+  "sp-core/std",
+  "sp-genesis-builder/std",
+  "sp-inherents/std",
+  "sp-offchain/std",
+  "sp-runtime/std",
+  "sp-session/std",
+  "sp-transaction-pool/std",
+  "sp-version/std",
+  "substrate-wasm-builder",
+]
