@@ -50,6 +50,7 @@ parameter_types! {
     pub const TimelyVoteReward: u128 = 10;
     pub const MinimumAbsenceSlash: u128 = 10;
     pub const AbsenceSlash: sp_runtime::Perbill = sp_runtime::Perbill::from_percent(1);
+    pub const EquivocationSlash: sp_runtime::Perbill = sp_runtime::Perbill::from_percent(20);
 }
 
 #[derive_impl(pallet_balances::config_preludes::TestDefaultConfig)]
@@ -82,6 +83,8 @@ impl pallet_minijam_workers::Config for Test {
     type TimelyVoteReward = TimelyVoteReward;
     type AbsenceSlash = AbsenceSlash;
     type MinimumAbsenceSlash = MinimumAbsenceSlash;
+    type EquivocationSlash = EquivocationSlash;
+    type EquivocationSuspension = frame_support::traits::ConstU32<2>;
 }
 
 fn new_test_ext() -> sp_io::TestExternalities {
@@ -351,5 +354,55 @@ fn deadline_finalizes_and_records_only_missing_workers() {
                 990 + absent as u128
             );
         }
+    });
+}
+
+#[test]
+fn equivocation_slashes_and_suspends_using_assignment_key() {
+    new_test_ext().execute_with(|| {
+        let (pairs, assignment) = setup_signed_voting();
+        let worker_id = assignment[0];
+        let support = WorkerVoteV1 {
+            work_id: 77,
+            round: 0,
+            assignment_epoch: 1,
+            candidate_report_hash: [7; 32],
+            verdict: Verdict::Support,
+            deadline: 15,
+            chain_id: [42; 32],
+            protocol_version: PROTOCOL_VERSION_V1,
+        };
+        let mut oppose = support.clone();
+        oppose.verdict = Verdict::Oppose(minijam_protocol::OpposeReason::ContextMismatch);
+        let support_signature = pairs[worker_id as usize].sign(&support.signing_hash()).0;
+        let oppose_signature = pairs[worker_id as usize].sign(&oppose.signing_hash()).0;
+        let pool_before = Balances::total_balance(&100);
+
+        assert_ok!(Workers::submit_equivocation(
+            RuntimeOrigin::signed(55),
+            worker_id,
+            support.clone(),
+            support_signature,
+            oppose.clone(),
+            oppose_signature,
+        ));
+        let worker = pallet_minijam_workers::Workers::<Test>::get(worker_id).unwrap();
+        let original_stake = 1_000 + worker_id as u128;
+        let slash = sp_runtime::Perbill::from_percent(20).mul_floor(original_stake);
+        assert_eq!(worker.active_stake, original_stake - slash);
+        assert_eq!(worker.suspended_until, 3);
+        assert_eq!(Balances::total_balance(&100), pool_before + slash);
+
+        assert_noop!(
+            Workers::submit_equivocation(
+                RuntimeOrigin::signed(55),
+                worker_id,
+                support,
+                support_signature,
+                oppose,
+                oppose_signature,
+            ),
+            pallet_minijam_workers::Error::<Test>::EquivocationAlreadyReported
+        );
     });
 }

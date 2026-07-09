@@ -31,6 +31,7 @@ pub mod pallet {
         pub session_key: [u8; 32],
         pub active_stake: BalanceOf<T>,
         pub effective_epoch: EpochIndex,
+        pub suspended_until: EpochIndex,
     }
 
     #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
@@ -148,6 +149,12 @@ pub mod pallet {
 
         #[pallet::constant]
         type MinimumAbsenceSlash: Get<BalanceOf<Self>>;
+
+        #[pallet::constant]
+        type EquivocationSlash: Get<Perbill>;
+
+        #[pallet::constant]
+        type EquivocationSuspension: Get<u32>;
     }
 
     #[pallet::pallet]
@@ -205,6 +212,10 @@ pub mod pallet {
         StorageMap<_, Blake2_128Concat, (EpochIndex, u8, WorkerId), u32, ValueQuery>;
 
     #[pallet::storage]
+    pub type AssignmentKeys<T> =
+        StorageMap<_, Blake2_128Concat, (u64, u8, WorkerId), [u8; 32], OptionQuery>;
+
+    #[pallet::storage]
     pub type VotingRounds<T: Config> =
         StorageMap<_, Blake2_128Concat, (u64, u8), VotingRound<T>, OptionQuery>;
 
@@ -219,6 +230,10 @@ pub mod pallet {
     #[pallet::getter(fn round_result)]
     pub type RoundResults<T: Config> =
         StorageMap<_, Blake2_128Concat, (u64, u8), RoundResult<T>, OptionQuery>;
+
+    #[pallet::storage]
+    pub type Equivocations<T> =
+        StorageMap<_, Blake2_128Concat, (u64, u8, WorkerId), (), OptionQuery>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -263,6 +278,13 @@ pub mod pallet {
             worker_id: WorkerId,
             amount: BalanceOf<T>,
         },
+        EquivocationProven {
+            work_id: u64,
+            round: u8,
+            worker_id: WorkerId,
+            amount: BalanceOf<T>,
+            suspended_until: EpochIndex,
+        },
     }
 
     #[pallet::error]
@@ -286,6 +308,8 @@ pub mod pallet {
         VoteMismatch,
         AlreadyVoted,
         InvalidSignature,
+        InvalidEquivocationProof,
+        EquivocationAlreadyReported,
     }
 
     #[pallet::hooks]
@@ -307,7 +331,7 @@ pub mod pallet {
             let mut eligible: BoundedVec<(WorkerId, BalanceOf<T>), T::MaxCandidates> =
                 BoundedVec::default();
             for (worker_id, worker) in Workers::<T>::iter() {
-                if worker.effective_epoch <= epoch {
+                if worker.effective_epoch <= epoch && worker.suspended_until <= epoch {
                     let _ = eligible.try_push((worker_id, worker.active_stake));
                 }
             }
@@ -372,6 +396,7 @@ pub mod pallet {
                     session_key,
                     active_stake: stake,
                     effective_epoch,
+                    suspended_until: 0,
                 },
             );
             WorkerByAccount::<T>::insert(&owner, worker_id);
@@ -466,11 +491,12 @@ pub mod pallet {
                     && vote.protocol_version == T::ProtocolVersion::get(),
                 Error::<T>::VoteMismatch
             );
-            let worker = Workers::<T>::get(worker_id).ok_or(Error::<T>::NotRegistered)?;
+            let session_key = AssignmentKeys::<T>::get((vote.work_id, vote.round, worker_id))
+                .ok_or(Error::<T>::NotAssigned)?;
             let valid = sp_io::crypto::sr25519_verify(
                 &sr25519::Signature::from_raw(signature),
                 &vote.signing_hash(),
-                &sr25519::Public::from_raw(worker.session_key),
+                &sr25519::Public::from_raw(session_key),
             );
             ensure!(valid, Error::<T>::InvalidSignature);
 
@@ -496,6 +522,72 @@ pub mod pallet {
             if voting.responses >= assignment.len() as u32 {
                 Self::finalize_voting(vote.work_id, vote.round)?;
             }
+            Ok(())
+        }
+
+        #[pallet::call_index(3)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(6, 4))]
+        pub fn submit_equivocation(
+            origin: OriginFor<T>,
+            worker_id: WorkerId,
+            first: WorkerVoteV1,
+            first_signature: [u8; 64],
+            second: WorkerVoteV1,
+            second_signature: [u8; 64],
+        ) -> DispatchResult {
+            let _reporter = ensure_signed(origin)?;
+            ensure!(
+                first.work_id == second.work_id
+                    && first.round == second.round
+                    && first.assignment_epoch == second.assignment_epoch
+                    && first.deadline == second.deadline
+                    && first.chain_id == T::ChainId::get()
+                    && second.chain_id == T::ChainId::get()
+                    && first.protocol_version == T::ProtocolVersion::get()
+                    && second.protocol_version == T::ProtocolVersion::get()
+                    && first.signing_hash() != second.signing_hash(),
+                Error::<T>::InvalidEquivocationProof
+            );
+            let proof_key = (first.work_id, first.round, worker_id);
+            ensure!(
+                !Equivocations::<T>::contains_key(proof_key),
+                Error::<T>::EquivocationAlreadyReported
+            );
+            let session_key = AssignmentKeys::<T>::get(proof_key).ok_or(Error::<T>::NotAssigned)?;
+            let public = sr25519::Public::from_raw(session_key);
+            ensure!(
+                sp_io::crypto::sr25519_verify(
+                    &sr25519::Signature::from_raw(first_signature),
+                    &first.signing_hash(),
+                    &public
+                ) && sp_io::crypto::sr25519_verify(
+                    &sr25519::Signature::from_raw(second_signature),
+                    &second.signing_hash(),
+                    &public
+                ),
+                Error::<T>::InvalidSignature
+            );
+
+            let mut worker = Workers::<T>::get(worker_id).ok_or(Error::<T>::NotRegistered)?;
+            let requested = T::EquivocationSlash::get().mul_floor(worker.active_stake);
+            let reason = T::RuntimeHoldReason::from(HoldReason::WorkerStake);
+            let (credit, remainder) = T::Currency::slash(&reason, &worker.owner, requested);
+            let actual = requested - remainder;
+            if T::Currency::resolve(&T::RewardPool::get(), credit).is_err() {
+                return Err(DispatchError::Other("reward pool cannot receive slash"));
+            }
+            worker.active_stake -= actual;
+            worker.suspended_until =
+                CurrentEpoch::<T>::get().saturating_add(T::EquivocationSuspension::get());
+            Workers::<T>::insert(worker_id, &worker);
+            Equivocations::<T>::insert(proof_key, ());
+            Self::deposit_event(Event::EquivocationProven {
+                work_id: first.work_id,
+                round: first.round,
+                worker_id,
+                amount: actual,
+                suspended_until: worker.suspended_until,
+            });
             Ok(())
         }
     }
@@ -593,6 +685,9 @@ pub mod pallet {
                 DutyCounts::<T>::mutate((epoch, round, *worker_id), |count| {
                     *count = count.saturating_add(1);
                 });
+                let worker = Workers::<T>::get(*worker_id)
+                    .expect("active workers always reference registered workers");
+                AssignmentKeys::<T>::insert((work_id, round, *worker_id), worker.session_key);
             }
             AssignedWorkCount::<T>::mutate((epoch, round), |count| {
                 *count = count.saturating_add(1);

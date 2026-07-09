@@ -26,6 +26,8 @@
   with bounded absentee recording.
 - Equal timely-response rewards for Support/Oppose, absence slashing with a
   proportional/minimum rule, and slash resolution into the funded reward pool.
+- Assignment-key-frozen equivocation proofs with one-shot 20% slashing and
+  two-epoch worker suspension.
 - jambda logging split into std tracing and no_std no-op facades.
 - jambda `minijam-executive` canonical report metadata projection.
 - Native and Wasm `no_std` compilation of the MiniJam execution boundary.
@@ -41,7 +43,6 @@
 
 - Polkadot SDK solo-chain node/runtime scaffold.
 - FRAME storage binding for the validated protocol state adapter.
-- Worker equivocation proofs and suspension.
 - `pallet-minijam` and runtime execution hook.
 - sr25519 vote verification in the runtime.
 - Balances hold integration for stake, bonds, rewards, slashes, and bridge.
