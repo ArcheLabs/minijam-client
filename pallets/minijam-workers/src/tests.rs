@@ -61,6 +61,10 @@ impl pallet_minijam_workers::Config for Test {
     type EpochLength = frame_support::traits::ConstU32<10>;
     type MaxCandidates = frame_support::traits::ConstU32<8>;
     type TopWorkers = frame_support::traits::ConstU32<3>;
+    type AssignmentSeedDelay = frame_support::traits::ConstU32<10>;
+    type WorkersPerWork = frame_support::traits::ConstU32<3>;
+    type MaxWorksPerRound = frame_support::traits::ConstU32<4>;
+    type MaxDutiesPerWorkerPerRound = frame_support::traits::ConstU32<2>;
 }
 
 fn new_test_ext() -> sp_io::TestExternalities {
@@ -174,5 +178,45 @@ fn reduced_stake_is_released_after_two_epochs() {
         <Workers as frame_support::traits::Hooks<u64>>::on_initialize(40);
         assert_eq!(Balances::balance_on_hold(&reason, &1), 2_000);
         assert!(!pallet_minijam_workers::Unbonding::<Test>::contains_key(0));
+    });
+}
+
+#[test]
+fn assignment_is_distinct_idempotent_and_bounded() {
+    new_test_ext().execute_with(|| {
+        for account in 1..=4 {
+            assert_ok!(Workers::register(
+                RuntimeOrigin::signed(account),
+                [account as u8; 32],
+                1_000 + u128::from(account)
+            ));
+        }
+        System::set_block_number(10);
+        <Workers as frame_support::traits::Hooks<u64>>::on_initialize(10);
+
+        let first = Workers::assign_work(7, 0).unwrap();
+        assert_eq!(first.len(), 3);
+        assert_ne!(first[0], first[1]);
+        assert_ne!(first[1], first[2]);
+        assert_eq!(Workers::assign_work(7, 0).unwrap(), first);
+    });
+}
+
+#[test]
+fn assignment_refuses_to_lower_k() {
+    new_test_ext().execute_with(|| {
+        for account in 1..=2 {
+            assert_ok!(Workers::register(
+                RuntimeOrigin::signed(account),
+                [account as u8; 32],
+                1_000
+            ));
+        }
+        System::set_block_number(10);
+        <Workers as frame_support::traits::Hooks<u64>>::on_initialize(10);
+        assert_eq!(
+            Workers::assign_work(8, 0),
+            Err(pallet_minijam_workers::Error::<Test>::InsufficientWorkers.into())
+        );
     });
 }

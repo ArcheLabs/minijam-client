@@ -10,6 +10,7 @@ frame-system.workspace = true
 parity-scale-codec.workspace = true
 scale-info.workspace = true
 sp-runtime.workspace = true
+sp-io.workspace = true
 
 [dev-dependencies]
 pallet-balances = { workspace = true, default-features = true }
@@ -23,4 +24,5 @@ std = [
   "parity-scale-codec/std",
   "scale-info/std",
   "sp-runtime/std",
+  "sp-io/std",
 ]

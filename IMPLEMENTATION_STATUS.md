@@ -19,6 +19,8 @@
   snapshots.
 - Next-epoch worker key/stake updates, immediate holds for stake increases, and
   two-epoch delayed release for stake decreases.
+- Delayed-block-hash, domain-separated worker assignment with strict K, M, and
+  per-worker duty bounds; insufficient pools never lower K.
 - jambda logging split into std tracing and no_std no-op facades.
 - jambda `minijam-executive` canonical report metadata projection.
 - Native and Wasm `no_std` compilation of the MiniJam execution boundary.
@@ -34,7 +36,7 @@
 
 - Polkadot SDK solo-chain node/runtime scaffold.
 - FRAME storage binding for the validated protocol state adapter.
-- Worker assignments, voting, rewards, slashes, and suspension.
+- Worker voting, rewards, slashes, and suspension.
 - `pallet-minijam` and runtime execution hook.
 - sr25519 vote verification in the runtime.
 - Balances hold integration for stake, bonds, rewards, slashes, and bridge.

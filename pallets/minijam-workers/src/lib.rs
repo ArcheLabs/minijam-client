@@ -10,6 +10,7 @@ pub mod pallet {
         traits::tokens::fungible::{Inspect, MutateHold},
     };
     use frame_system::pallet_prelude::*;
+    use parity_scale_codec::Encode;
     use sp_runtime::traits::SaturatedConversion;
 
     pub type WorkerId = u64;
@@ -64,6 +65,18 @@ pub mod pallet {
 
         #[pallet::constant]
         type TopWorkers: Get<u32>;
+
+        #[pallet::constant]
+        type AssignmentSeedDelay: Get<u32>;
+
+        #[pallet::constant]
+        type WorkersPerWork: Get<u32>;
+
+        #[pallet::constant]
+        type MaxWorksPerRound: Get<u32>;
+
+        #[pallet::constant]
+        type MaxDutiesPerWorkerPerRound: Get<u32>;
     }
 
     #[pallet::pallet]
@@ -99,6 +112,26 @@ pub mod pallet {
     #[pallet::getter(fn active_workers)]
     pub type ActiveWorkers<T: Config> =
         StorageValue<_, BoundedVec<WorkerId, T::TopWorkers>, ValueQuery>;
+
+    #[pallet::storage]
+    #[pallet::getter(fn assignment)]
+    pub type Assignments<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        u64,
+        Blake2_128Concat,
+        u8,
+        BoundedVec<WorkerId, T::WorkersPerWork>,
+        OptionQuery,
+    >;
+
+    #[pallet::storage]
+    pub type AssignedWorkCount<T> =
+        StorageMap<_, Blake2_128Concat, (EpochIndex, u8), u32, ValueQuery>;
+
+    #[pallet::storage]
+    pub type DutyCounts<T> =
+        StorageMap<_, Blake2_128Concat, (EpochIndex, u8, WorkerId), u32, ValueQuery>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -138,6 +171,8 @@ pub mod pallet {
         EmptyUpdate,
         PendingUpdateExists,
         UnbondingInProgress,
+        TooManyWorks,
+        InsufficientWorkers,
     }
 
     #[pallet::hooks]
@@ -289,6 +324,67 @@ pub mod pallet {
     }
 
     impl<T: Config> Pallet<T> {
+        pub fn assign_work(
+            work_id: u64,
+            round: u8,
+        ) -> Result<BoundedVec<WorkerId, T::WorkersPerWork>, DispatchError> {
+            if let Some(existing) = Assignments::<T>::get(work_id, round) {
+                return Ok(existing);
+            }
+            let epoch = CurrentEpoch::<T>::get();
+            ensure!(
+                AssignedWorkCount::<T>::get((epoch, round)) < T::MaxWorksPerRound::get(),
+                Error::<T>::TooManyWorks
+            );
+
+            let epoch_start = u64::from(epoch).saturating_mul(u64::from(T::EpochLength::get()));
+            let seed_height = epoch_start.saturating_sub(u64::from(T::AssignmentSeedDelay::get()));
+            let seed_block: BlockNumberFor<T> = seed_height.saturated_into();
+            let seed = frame_system::Pallet::<T>::block_hash(seed_block);
+
+            let mut candidates = ActiveWorkers::<T>::get().into_inner();
+            candidates.retain(|worker_id| {
+                DutyCounts::<T>::get((epoch, round, *worker_id))
+                    < T::MaxDutiesPerWorkerPerRound::get()
+            });
+            candidates.sort_by_key(|worker_id| {
+                let duty = DutyCounts::<T>::get((epoch, round, *worker_id));
+                let score = sp_io::hashing::blake2_256(
+                    &(
+                        b"minijam/assignment-v1".as_slice(),
+                        seed,
+                        epoch,
+                        round,
+                        work_id,
+                        worker_id,
+                    )
+                        .encode(),
+                );
+                (duty, score, *worker_id)
+            });
+
+            ensure!(
+                candidates.len() >= T::WorkersPerWork::get() as usize,
+                Error::<T>::InsufficientWorkers
+            );
+            let assigned: BoundedVec<WorkerId, T::WorkersPerWork> = candidates
+                .into_iter()
+                .take(T::WorkersPerWork::get() as usize)
+                .collect::<alloc::vec::Vec<_>>()
+                .try_into()
+                .expect("take is bounded by WorkersPerWork");
+            for worker_id in &assigned {
+                DutyCounts::<T>::mutate((epoch, round, *worker_id), |count| {
+                    *count = count.saturating_add(1);
+                });
+            }
+            AssignedWorkCount::<T>::mutate((epoch, round), |count| {
+                *count = count.saturating_add(1);
+            });
+            Assignments::<T>::insert(work_id, round, &assigned);
+            Ok(assigned)
+        }
+
         fn apply_pending_updates(epoch: EpochIndex) {
             for (worker_id, update) in PendingUpdates::<T>::iter() {
                 if update.effective_epoch > epoch {
