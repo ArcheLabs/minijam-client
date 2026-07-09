@@ -2289,6 +2289,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "pallet-minijam"
+version = "0.1.0"
+dependencies = [
+ "frame-support",
+ "frame-system",
+ "minijam-protocol",
+ "pallet-balances",
+ "pallet-minijam-workers",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
 name = "pallet-minijam-workers"
 version = "0.1.0"
 dependencies = [

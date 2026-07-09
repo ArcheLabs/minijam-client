@@ -165,6 +165,8 @@ impl ReportEnvelopeV1 {
     }
 }
 
+impl DecodeWithMemTracking for ReportEnvelopeV1 {}
+
 #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub enum OpposeReason {
     InvalidRefine,

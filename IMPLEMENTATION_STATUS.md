@@ -28,6 +28,9 @@
   proportional/minimum rule, and slash resolution into the funded reward pool.
 - Assignment-key-frozen equivocation proofs with one-shot 20% slashing and
   two-epoch worker suspension.
+- `pallet-minijam` work deposits, candidate bonds, bounded pending queue,
+  assignment/voting lifecycle, candidate rejection slashing, three-round
+  retry/failure, accepted submitter reward, and execution queue handoff.
 - jambda logging split into std tracing and no_std no-op facades.
 - jambda `minijam-executive` canonical report metadata projection.
 - Native and Wasm `no_std` compilation of the MiniJam execution boundary.
@@ -43,9 +46,8 @@
 
 - Polkadot SDK solo-chain node/runtime scaffold.
 - FRAME storage binding for the validated protocol state adapter.
-- `pallet-minijam` and runtime execution hook.
-- sr25519 vote verification in the runtime.
-- Balances hold integration for stake, bonds, rewards, slashes, and bridge.
+- Runtime execution hook and JAM state storage.
+- Balances hold integration for bridge escrow.
 - Full DAG-PB chunked Bulletin uploads and persistent simulator metadata.
 - MiniJam accumulate-core execution and protocol delta export.
 - Runtime benchmarks, weights, pause/quarantine recovery, and node restart
