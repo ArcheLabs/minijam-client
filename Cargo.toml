@@ -35,6 +35,7 @@ frame-support = { git = "https://github.com/paritytech/polkadot-sdk.git", rev = 
 frame-system = { git = "https://github.com/paritytech/polkadot-sdk.git", rev = "2e4dd0bc22366a5af820492528869a493b5a5208", default-features = false }
 pallet-balances = { git = "https://github.com/paritytech/polkadot-sdk.git", rev = "2e4dd0bc22366a5af820492528869a493b5a5208", default-features = false }
 sp-io = { git = "https://github.com/paritytech/polkadot-sdk.git", rev = "2e4dd0bc22366a5af820492528869a493b5a5208", default-features = false }
+sp-core = { git = "https://github.com/paritytech/polkadot-sdk.git", rev = "2e4dd0bc22366a5af820492528869a493b5a5208", default-features = false }
 sp-runtime = { git = "https://github.com/paritytech/polkadot-sdk.git", rev = "2e4dd0bc22366a5af820492528869a493b5a5208", default-features = false }
 
 [profile.release]

@@ -2294,9 +2294,11 @@ version = "0.1.0"
 dependencies = [
  "frame-support",
  "frame-system",
+ "minijam-protocol",
  "pallet-balances",
  "parity-scale-codec",
  "scale-info",
+ "sp-core",
  "sp-io",
  "sp-runtime",
 ]

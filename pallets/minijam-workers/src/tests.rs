@@ -2,6 +2,8 @@ use crate as pallet_minijam_workers;
 use frame_support::{
     assert_noop, assert_ok, derive_impl, parameter_types, traits::tokens::fungible::InspectHold,
 };
+use minijam_protocol::{Verdict, WorkerVoteV1, PROTOCOL_VERSION_V1};
+use sp_core::{sr25519, Pair};
 use sp_runtime::BuildStorage;
 
 type Block = frame_system::mocking::MockBlock<Test>;
@@ -42,6 +44,7 @@ impl frame_system::Config for Test {
 parameter_types! {
     pub const ExistentialDeposit: u128 = 1;
     pub const MinimumStake: u128 = 1_000;
+    pub const ChainId: [u8; 32] = [42; 32];
 }
 
 #[derive_impl(pallet_balances::config_preludes::TestDefaultConfig)]
@@ -65,6 +68,11 @@ impl pallet_minijam_workers::Config for Test {
     type WorkersPerWork = frame_support::traits::ConstU32<3>;
     type MaxWorksPerRound = frame_support::traits::ConstU32<4>;
     type MaxDutiesPerWorkerPerRound = frame_support::traits::ConstU32<2>;
+    type SupportThreshold = frame_support::traits::ConstU32<2>;
+    type OpposeThreshold = frame_support::traits::ConstU32<2>;
+    type MaxOpenVotes = frame_support::traits::ConstU32<4>;
+    type ChainId = ChainId;
+    type ProtocolVersion = frame_support::traits::ConstU16<PROTOCOL_VERSION_V1>;
 }
 
 fn new_test_ext() -> sp_io::TestExternalities {
@@ -218,5 +226,92 @@ fn assignment_refuses_to_lower_k() {
             Workers::assign_work(8, 0),
             Err(pallet_minijam_workers::Error::<Test>::InsufficientWorkers.into())
         );
+    });
+}
+
+fn setup_signed_voting() -> (Vec<sr25519::Pair>, Vec<u64>) {
+    let pairs: Vec<_> = (1u8..=3)
+        .map(|seed| sr25519::Pair::from_seed(&[seed; 32]))
+        .collect();
+    for (index, pair) in pairs.iter().enumerate() {
+        assert_ok!(Workers::register(
+            RuntimeOrigin::signed((index + 1) as u64),
+            pair.public().0,
+            1_000 + index as u128
+        ));
+    }
+    System::set_block_number(10);
+    <Workers as frame_support::traits::Hooks<u64>>::on_initialize(10);
+    let assignment = Workers::assign_work(77, 0).unwrap().into_inner();
+    assert_ok!(Workers::open_voting(77, 0, [7; 32], 15));
+    (pairs, assignment)
+}
+
+fn signed_vote(pair: &sr25519::Pair, worker_id: u64, verdict: Verdict) {
+    let vote = WorkerVoteV1 {
+        work_id: 77,
+        round: 0,
+        assignment_epoch: 1,
+        candidate_report_hash: [7; 32],
+        verdict,
+        deadline: 15,
+        chain_id: [42; 32],
+        protocol_version: PROTOCOL_VERSION_V1,
+    };
+    let signature = pair.sign(&vote.signing_hash()).0;
+    assert_ok!(Workers::submit_vote(
+        RuntimeOrigin::signed(99),
+        worker_id,
+        vote,
+        signature
+    ));
+}
+
+#[test]
+fn threshold_locks_but_round_waits_for_all_workers() {
+    new_test_ext().execute_with(|| {
+        let (pairs, assignment) = setup_signed_voting();
+        signed_vote(
+            &pairs[assignment[0] as usize],
+            assignment[0],
+            Verdict::Support,
+        );
+        signed_vote(
+            &pairs[assignment[1] as usize],
+            assignment[1],
+            Verdict::Support,
+        );
+        assert!(Workers::round_result((77, 0)).is_none());
+
+        signed_vote(
+            &pairs[assignment[2] as usize],
+            assignment[2],
+            Verdict::Oppose(minijam_protocol::OpposeReason::MissingData),
+        );
+        let result = Workers::round_result((77, 0)).unwrap();
+        assert_eq!(
+            result.decision,
+            Some(pallet_minijam_workers::RoundDecision::Accepted)
+        );
+        assert!(result.absentees.is_empty());
+    });
+}
+
+#[test]
+fn deadline_finalizes_and_records_only_missing_workers() {
+    new_test_ext().execute_with(|| {
+        let (pairs, assignment) = setup_signed_voting();
+        signed_vote(
+            &pairs[assignment[0] as usize],
+            assignment[0],
+            Verdict::Support,
+        );
+        System::set_block_number(16);
+        <Workers as frame_support::traits::Hooks<u64>>::on_initialize(16);
+
+        let result = Workers::round_result((77, 0)).unwrap();
+        assert_eq!(result.decision, None);
+        assert_eq!(result.absentees.len(), 2);
+        assert!(!result.absentees.contains(&assignment[0]));
     });
 }

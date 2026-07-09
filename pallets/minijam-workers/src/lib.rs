@@ -10,7 +10,9 @@ pub mod pallet {
         traits::tokens::fungible::{Inspect, MutateHold},
     };
     use frame_system::pallet_prelude::*;
+    use minijam_protocol::{Verdict, WorkerVoteV1};
     use parity_scale_codec::Encode;
+    use sp_core::sr25519;
     use sp_runtime::traits::SaturatedConversion;
 
     pub type WorkerId = u64;
@@ -38,6 +40,42 @@ pub mod pallet {
     pub struct UnbondingChunk<Balance> {
         pub amount: Balance,
         pub unlock_epoch: EpochIndex,
+    }
+
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        Decode,
+        DecodeWithMemTracking,
+        Encode,
+        Eq,
+        MaxEncodedLen,
+        PartialEq,
+        TypeInfo,
+    )]
+    pub enum RoundDecision {
+        Accepted,
+        Rejected,
+    }
+
+    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    #[scale_info(skip_type_params(T))]
+    pub struct VotingRound<T: Config> {
+        pub assignment_epoch: EpochIndex,
+        pub candidate_hash: [u8; 32],
+        pub deadline: BlockNumberFor<T>,
+        pub support: u32,
+        pub oppose: u32,
+        pub responses: u32,
+        pub locked: Option<RoundDecision>,
+    }
+
+    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    #[scale_info(skip_type_params(T))]
+    pub struct RoundResult<T: Config> {
+        pub decision: Option<RoundDecision>,
+        pub absentees: BoundedVec<WorkerId, T::WorkersPerWork>,
     }
 
     #[pallet::composite_enum]
@@ -77,6 +115,21 @@ pub mod pallet {
 
         #[pallet::constant]
         type MaxDutiesPerWorkerPerRound: Get<u32>;
+
+        #[pallet::constant]
+        type SupportThreshold: Get<u32>;
+
+        #[pallet::constant]
+        type OpposeThreshold: Get<u32>;
+
+        #[pallet::constant]
+        type MaxOpenVotes: Get<u32>;
+
+        #[pallet::constant]
+        type ChainId: Get<[u8; 32]>;
+
+        #[pallet::constant]
+        type ProtocolVersion: Get<u16>;
     }
 
     #[pallet::pallet]
@@ -133,6 +186,22 @@ pub mod pallet {
     pub type DutyCounts<T> =
         StorageMap<_, Blake2_128Concat, (EpochIndex, u8, WorkerId), u32, ValueQuery>;
 
+    #[pallet::storage]
+    pub type VotingRounds<T: Config> =
+        StorageMap<_, Blake2_128Concat, (u64, u8), VotingRound<T>, OptionQuery>;
+
+    #[pallet::storage]
+    pub type OpenVoteRounds<T: Config> =
+        StorageValue<_, BoundedVec<(u64, u8), T::MaxOpenVotes>, ValueQuery>;
+
+    #[pallet::storage]
+    pub type Votes<T> = StorageMap<_, Blake2_128Concat, (u64, u8, WorkerId), Verdict, OptionQuery>;
+
+    #[pallet::storage]
+    #[pallet::getter(fn round_result)]
+    pub type RoundResults<T: Config> =
+        StorageMap<_, Blake2_128Concat, (u64, u8), RoundResult<T>, OptionQuery>;
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -158,6 +227,16 @@ pub mod pallet {
             worker_id: WorkerId,
             amount: BalanceOf<T>,
         },
+        VoteSubmitted {
+            work_id: u64,
+            round: u8,
+            worker_id: WorkerId,
+        },
+        VotingFinalized {
+            work_id: u64,
+            round: u8,
+            decision: Option<RoundDecision>,
+        },
     }
 
     #[pallet::error]
@@ -173,11 +252,20 @@ pub mod pallet {
         UnbondingInProgress,
         TooManyWorks,
         InsufficientWorkers,
+        VotingAlreadyOpen,
+        TooManyOpenVotes,
+        VotingNotOpen,
+        NotAssigned,
+        VoteExpired,
+        VoteMismatch,
+        AlreadyVoted,
+        InvalidSignature,
     }
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
         fn on_initialize(block: BlockNumberFor<T>) -> Weight {
+            Self::finalize_due_votes(block);
             let epoch_length = T::EpochLength::get();
             if epoch_length == 0 {
                 return T::DbWeight::get().reads(1);
@@ -321,9 +409,111 @@ pub mod pallet {
             });
             Ok(())
         }
+
+        #[pallet::call_index(2)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(6, 5))]
+        pub fn submit_vote(
+            origin: OriginFor<T>,
+            worker_id: WorkerId,
+            vote: WorkerVoteV1,
+            signature: [u8; 64],
+        ) -> DispatchResult {
+            let _relayer = ensure_signed(origin)?;
+            let key = (vote.work_id, vote.round);
+            let mut voting = VotingRounds::<T>::get(key).ok_or(Error::<T>::VotingNotOpen)?;
+            let assignment =
+                Assignments::<T>::get(vote.work_id, vote.round).ok_or(Error::<T>::NotAssigned)?;
+            ensure!(assignment.contains(&worker_id), Error::<T>::NotAssigned);
+            ensure!(
+                !Votes::<T>::contains_key((vote.work_id, vote.round, worker_id)),
+                Error::<T>::AlreadyVoted
+            );
+            ensure!(
+                frame_system::Pallet::<T>::block_number() <= voting.deadline,
+                Error::<T>::VoteExpired
+            );
+            ensure!(
+                vote.assignment_epoch == voting.assignment_epoch
+                    && vote.candidate_report_hash == voting.candidate_hash
+                    && vote.deadline == voting.deadline.saturated_into::<u32>()
+                    && vote.chain_id == T::ChainId::get()
+                    && vote.protocol_version == T::ProtocolVersion::get(),
+                Error::<T>::VoteMismatch
+            );
+            let worker = Workers::<T>::get(worker_id).ok_or(Error::<T>::NotRegistered)?;
+            let valid = sp_io::crypto::sr25519_verify(
+                &sr25519::Signature::from_raw(signature),
+                &vote.signing_hash(),
+                &sr25519::Public::from_raw(worker.session_key),
+            );
+            ensure!(valid, Error::<T>::InvalidSignature);
+
+            match &vote.verdict {
+                Verdict::Support => voting.support = voting.support.saturating_add(1),
+                Verdict::Oppose(_) => voting.oppose = voting.oppose.saturating_add(1),
+            }
+            voting.responses = voting.responses.saturating_add(1);
+            if voting.locked.is_none() {
+                if voting.support >= T::SupportThreshold::get() {
+                    voting.locked = Some(RoundDecision::Accepted);
+                } else if voting.oppose >= T::OpposeThreshold::get() {
+                    voting.locked = Some(RoundDecision::Rejected);
+                }
+            }
+            Votes::<T>::insert((vote.work_id, vote.round, worker_id), vote.verdict);
+            VotingRounds::<T>::insert(key, &voting);
+            Self::deposit_event(Event::VoteSubmitted {
+                work_id: vote.work_id,
+                round: vote.round,
+                worker_id,
+            });
+            if voting.responses >= assignment.len() as u32 {
+                Self::finalize_voting(vote.work_id, vote.round)?;
+            }
+            Ok(())
+        }
     }
 
     impl<T: Config> Pallet<T> {
+        pub fn open_voting(
+            work_id: u64,
+            round: u8,
+            candidate_hash: [u8; 32],
+            deadline: BlockNumberFor<T>,
+        ) -> DispatchResult {
+            ensure!(
+                Assignments::<T>::contains_key(work_id, round),
+                Error::<T>::NotAssigned
+            );
+            ensure!(
+                !VotingRounds::<T>::contains_key((work_id, round))
+                    && !RoundResults::<T>::contains_key((work_id, round)),
+                Error::<T>::VotingAlreadyOpen
+            );
+            ensure!(
+                deadline > frame_system::Pallet::<T>::block_number(),
+                Error::<T>::VoteExpired
+            );
+            OpenVoteRounds::<T>::try_mutate(|rounds| {
+                rounds
+                    .try_push((work_id, round))
+                    .map_err(|_| Error::<T>::TooManyOpenVotes)
+            })?;
+            VotingRounds::<T>::insert(
+                (work_id, round),
+                VotingRound::<T> {
+                    assignment_epoch: CurrentEpoch::<T>::get(),
+                    candidate_hash,
+                    deadline,
+                    support: 0,
+                    oppose: 0,
+                    responses: 0,
+                    locked: None,
+                },
+            );
+            Ok(())
+        }
+
         pub fn assign_work(
             work_id: u64,
             round: u8,
@@ -440,6 +630,48 @@ pub mod pallet {
                     });
                 }
             }
+        }
+
+        fn finalize_due_votes(block: BlockNumberFor<T>) {
+            let rounds = OpenVoteRounds::<T>::get();
+            for (work_id, round) in rounds {
+                if let Some(voting) = VotingRounds::<T>::get((work_id, round)) {
+                    if block > voting.deadline {
+                        let _ = Self::finalize_voting(work_id, round);
+                    }
+                }
+            }
+        }
+
+        fn finalize_voting(work_id: u64, round: u8) -> DispatchResult {
+            let voting =
+                VotingRounds::<T>::take((work_id, round)).ok_or(Error::<T>::VotingNotOpen)?;
+            let assignment =
+                Assignments::<T>::get(work_id, round).ok_or(Error::<T>::NotAssigned)?;
+            let absentees: BoundedVec<WorkerId, T::WorkersPerWork> = assignment
+                .into_iter()
+                .filter(|worker_id| !Votes::<T>::contains_key((work_id, round, *worker_id)))
+                .collect::<alloc::vec::Vec<_>>()
+                .try_into()
+                .expect("absentees are bounded by assignment");
+            RoundResults::<T>::insert(
+                (work_id, round),
+                RoundResult::<T> {
+                    decision: voting.locked,
+                    absentees,
+                },
+            );
+            OpenVoteRounds::<T>::mutate(|rounds| {
+                if let Some(index) = rounds.iter().position(|key| *key == (work_id, round)) {
+                    rounds.swap_remove(index);
+                }
+            });
+            Self::deposit_event(Event::VotingFinalized {
+                work_id,
+                round,
+                decision: voting.locked,
+            });
+            Ok(())
         }
     }
 }

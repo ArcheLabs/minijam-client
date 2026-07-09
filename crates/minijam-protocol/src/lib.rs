@@ -4,6 +4,7 @@
 extern crate alloc;
 
 use bounded_collections::{BoundedVec, ConstU32};
+use parity_scale_codec::DecodeWithMemTracking;
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 
@@ -173,11 +174,15 @@ pub enum OpposeReason {
     Other(Hash),
 }
 
+impl DecodeWithMemTracking for OpposeReason {}
+
 #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub enum Verdict {
     Support,
     Oppose(OpposeReason),
 }
+
+impl DecodeWithMemTracking for Verdict {}
 
 #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub struct WorkerVoteV1 {
@@ -190,6 +195,8 @@ pub struct WorkerVoteV1 {
     pub chain_id: ChainId,
     pub protocol_version: u16,
 }
+
+impl DecodeWithMemTracking for WorkerVoteV1 {}
 
 impl WorkerVoteV1 {
     pub fn signing_hash(&self) -> Hash {
