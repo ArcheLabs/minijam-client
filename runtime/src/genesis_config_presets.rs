@@ -23,7 +23,10 @@ fn testnet_genesis(
     root: AccountId,
 ) -> Value {
     let reward_pool = AccountId::new([9; 32]);
-    if !endowed_accounts.iter().any(|account| account == &reward_pool) {
+    if !endowed_accounts
+        .iter()
+        .any(|account| account == &reward_pool)
+    {
         endowed_accounts.push(reward_pool.clone());
     }
 
@@ -43,7 +46,10 @@ fn testnet_genesis(
                 .collect::<Vec<_>>(),
         },
         aura: AuraConfig {
-            authorities: initial_authorities.iter().map(|authority| authority.0.clone()).collect::<Vec<_>>(),
+            authorities: initial_authorities
+                .iter()
+                .map(|authority| authority.0.clone())
+                .collect::<Vec<_>>(),
         },
         grandpa: GrandpaConfig {
             authorities: initial_authorities
