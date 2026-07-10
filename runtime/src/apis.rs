@@ -1,5 +1,8 @@
 use alloc::vec::Vec;
-use frame_support::{genesis_builder_helper::build_state, weights::Weight};
+use frame_support::{
+    genesis_builder_helper::{build_state, get_preset},
+    weights::Weight,
+};
 use pallet_grandpa::AuthorityId as GrandpaId;
 use sp_api::impl_runtime_apis;
 use sp_consensus_aura::sr25519::AuthorityId as AuraId;
@@ -178,10 +181,10 @@ impl_runtime_apis! {
             build_state::<RuntimeGenesisConfig>(config)
         }
         fn get_preset(_id: &Option<sp_genesis_builder::PresetId>) -> Option<Vec<u8>> {
-            None
+            get_preset::<RuntimeGenesisConfig>(_id, crate::genesis_config_presets::get_preset)
         }
         fn preset_names() -> Vec<sp_genesis_builder::PresetId> {
-            Vec::new()
+            crate::genesis_config_presets::preset_names()
         }
     }
 }

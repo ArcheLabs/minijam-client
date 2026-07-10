@@ -21,18 +21,20 @@ pallet-transaction-payment.workspace = true
 pallet-transaction-payment-rpc-runtime-api.workspace = true
 parity-scale-codec.workspace = true
 scale-info.workspace = true
+serde_json = { workspace = true, default-features = false, features = ["alloc"] }
 sp-api.workspace = true
 sp-block-builder.workspace = true
-sp-consensus-aura.workspace = true
-sp-consensus-grandpa.workspace = true
-sp-core.workspace = true
+sp-consensus-aura = { workspace = true, features = ["serde"] }
+sp-consensus-grandpa = { workspace = true, features = ["serde"] }
+sp-core = { workspace = true, features = ["serde"] }
 sp-genesis-builder.workspace = true
 sp-inherents.workspace = true
+sp-keyring.workspace = true
 sp-offchain.workspace = true
-sp-runtime.workspace = true
+sp-runtime = { workspace = true, features = ["serde"] }
 sp-session.workspace = true
 sp-transaction-pool.workspace = true
-sp-version.workspace = true
+sp-version = { workspace = true, features = ["serde"] }
 
 [build-dependencies]
 substrate-wasm-builder = { workspace = true, optional = true }
@@ -55,6 +57,7 @@ std = [
   "pallet-transaction-payment/std",
   "parity-scale-codec/std",
   "scale-info/std",
+  "serde_json/std",
   "sp-api/std",
   "sp-block-builder/std",
   "sp-consensus-aura/std",
@@ -62,6 +65,7 @@ std = [
   "sp-core/std",
   "sp-genesis-builder/std",
   "sp-inherents/std",
+  "sp-keyring/std",
   "sp-offchain/std",
   "sp-runtime/std",
   "sp-session/std",
@@ -69,3 +73,5 @@ std = [
   "sp-version/std",
   "substrate-wasm-builder",
 ]
+runtime-benchmarks = []
+try-runtime = []

@@ -8,7 +8,8 @@ use alloc::vec::Vec;
 #[cfg(feature = "std")]
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 
-mod apis;
+pub mod apis;
+mod genesis_config_presets;
 
 use frame_support::{
     derive_impl, parameter_types,
