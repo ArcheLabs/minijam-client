@@ -6,7 +6,8 @@ license.workspace = true
 
 [dependencies]
 minijam-protocol = { path = "../minijam-protocol", default-features = false }
+parity-scale-codec.workspace = true
 
 [features]
 default = ["std"]
-std = ["minijam-protocol/std"]
+std = ["minijam-protocol/std", "parity-scale-codec/std"]

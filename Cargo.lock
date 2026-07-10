@@ -4723,6 +4723,7 @@ name = "minijam-bridge-engine"
 version = "0.1.0"
 dependencies = [
  "minijam-protocol",
+ "parity-scale-codec",
 ]
 
 [[package]]
@@ -5474,6 +5475,7 @@ version = "0.1.0"
 dependencies = [
  "frame-support",
  "frame-system",
+ "minijam-bridge-engine",
  "minijam-protocol",
  "pallet-balances",
  "parity-scale-codec",

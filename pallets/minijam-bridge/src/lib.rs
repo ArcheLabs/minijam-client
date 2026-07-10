@@ -14,8 +14,9 @@ pub mod pallet {
         transactional,
     };
     use frame_system::pallet_prelude::*;
-    use minijam_protocol::AssetId;
-    use sp_runtime::traits::Zero;
+    use minijam_bridge_engine::{admin_bridge_key, admin_bridge_value};
+    use minijam_protocol::{AssetId, BridgeEffect, StateValue};
+    use sp_runtime::traits::{Convert, SaturatedConversion, Zero};
 
     pub type BalanceOf<T> =
         <<T as Config>::Currency as Inspect<<T as frame_system::Config>::AccountId>>::Balance;
@@ -56,6 +57,8 @@ pub mod pallet {
 
         type RuntimeHoldReason: From<HoldReason>;
 
+        type AccountIdConverter: Convert<Self::AccountId, [u8; 32]>;
+
         #[pallet::constant]
         type EscrowAccount: Get<Self::AccountId>;
     }
@@ -76,6 +79,10 @@ pub mod pallet {
     #[pallet::storage]
     pub type OutboundRecords<T: Config> =
         StorageMap<_, Blake2_128Concat, u64, OutboundRecord<T>, OptionQuery>;
+
+    #[pallet::storage]
+    pub type AdminBridgeRecords<T> =
+        StorageMap<_, Blake2_128Concat, [u8; 31], StateValue, OptionQuery>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -99,6 +106,7 @@ pub mod pallet {
         ZeroAmount,
         NonceOverflow,
         OutboundAlreadyProcessed,
+        BridgeRecordTooLarge,
     }
 
     #[pallet::call]
@@ -134,6 +142,16 @@ pub mod pallet {
                     amount,
                 },
             );
+            let effect = BridgeEffect::Inbound {
+                nonce,
+                target_service,
+                asset: AssetId::Native,
+                amount: amount.saturated_into(),
+                account: T::AccountIdConverter::convert(account.clone()),
+            };
+            let value =
+                admin_bridge_value(&effect).map_err(|_| Error::<T>::BridgeRecordTooLarge)?;
+            AdminBridgeRecords::<T>::insert(admin_bridge_key(&effect), value);
             NextInboundNonce::<T>::put(next);
             Self::deposit_event(Event::InboundEscrowed {
                 nonce,
@@ -181,6 +199,16 @@ pub mod pallet {
                     amount,
                 },
             );
+            let effect = BridgeEffect::Outbound {
+                nonce,
+                source_service,
+                asset: AssetId::Native,
+                amount: amount.saturated_into(),
+                account: T::AccountIdConverter::convert(account.clone()),
+            };
+            let value =
+                admin_bridge_value(&effect).map_err(|_| Error::<T>::BridgeRecordTooLarge)?;
+            AdminBridgeRecords::<T>::insert(admin_bridge_key(&effect), value);
             Self::deposit_event(Event::OutboundReleased {
                 nonce,
                 account,

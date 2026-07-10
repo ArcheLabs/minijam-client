@@ -260,7 +260,16 @@ impl pallet_minijam_bridge::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
     type RuntimeHoldReason = RuntimeHoldReason;
+    type AccountIdConverter = BridgeAccountIdConverter;
     type EscrowAccount = BridgeEscrowAccount;
+}
+
+pub struct BridgeAccountIdConverter;
+
+impl sp_runtime::traits::Convert<AccountId, [u8; 32]> for BridgeAccountIdConverter {
+    fn convert(account: AccountId) -> [u8; 32] {
+        account.into()
+    }
 }
 
 #[frame_support::runtime]

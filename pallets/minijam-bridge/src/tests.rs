@@ -3,6 +3,9 @@ use frame_support::{
     assert_noop, assert_ok, derive_impl, parameter_types,
     traits::tokens::fungible::{Inspect, InspectHold},
 };
+use minijam_bridge_engine::admin_bridge_key;
+use minijam_protocol::{AssetId, BridgeEffect};
+use sp_runtime::traits::Convert;
 use sp_runtime::BuildStorage;
 
 type Block = frame_system::mocking::MockBlock<Test>;
@@ -58,7 +61,18 @@ impl pallet_minijam_bridge::Config for Test {
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
     type RuntimeHoldReason = RuntimeHoldReason;
+    type AccountIdConverter = TestAccountIdConverter;
     type EscrowAccount = EscrowAccount;
+}
+
+pub struct TestAccountIdConverter;
+
+impl Convert<u64, [u8; 32]> for TestAccountIdConverter {
+    fn convert(account: u64) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        bytes[24..32].copy_from_slice(&account.to_be_bytes());
+        bytes
+    }
 }
 
 fn new_test_ext() -> sp_io::TestExternalities {
@@ -85,6 +99,17 @@ fn inbound_moves_funds_to_held_escrow() {
         assert_eq!(Balances::balance_on_hold(&reason, &99), 100);
         assert_eq!(pallet_minijam_bridge::NextInboundNonce::<Test>::get(), 1);
         assert!(pallet_minijam_bridge::InboundRecords::<Test>::get(0).is_some());
+        let effect = BridgeEffect::Inbound {
+            nonce: 0,
+            target_service: 7,
+            asset: AssetId::Native,
+            amount: 100,
+            account: TestAccountIdConverter::convert(1),
+        };
+        assert!(
+            pallet_minijam_bridge::AdminBridgeRecords::<Test>::get(admin_bridge_key(&effect))
+                .is_some()
+        );
     });
 }
 
@@ -104,6 +129,17 @@ fn outbound_releases_once_from_escrow() {
         assert_eq!(Balances::total_balance(&2), 41);
         assert_eq!(Balances::balance_on_hold(&reason, &99), 60);
         assert!(pallet_minijam_bridge::ProcessedOutboundNonces::<Test>::contains_key(42));
+        let effect = BridgeEffect::Outbound {
+            nonce: 42,
+            source_service: 7,
+            asset: AssetId::Native,
+            amount: 40,
+            account: TestAccountIdConverter::convert(2),
+        };
+        assert!(
+            pallet_minijam_bridge::AdminBridgeRecords::<Test>::get(admin_bridge_key(&effect))
+                .is_some()
+        );
         assert_noop!(
             Bridge::release_outbound(RuntimeOrigin::root(), 42, 2, 7, 1),
             pallet_minijam_bridge::Error::<Test>::OutboundAlreadyProcessed
