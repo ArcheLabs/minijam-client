@@ -3734,6 +3734,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "jambda-accumulate"
+version = "0.0.1"
+dependencies = [
+ "jambda-state-backend",
+ "jambda-wbmt",
+ "jp-core-primitives",
+ "jp-vm-engine",
+ "jp-vm-primitives",
+ "log",
+]
+
+[[package]]
 name = "jambda-logging"
 version = "0.0.1"
 dependencies = [
@@ -3745,11 +3757,14 @@ name = "jambda-minijam-executive"
 version = "0.0.1"
 dependencies = [
  "jam-codec",
+ "jambda-accumulate",
  "jambda-state-backend",
  "jp-core-primitives",
+ "jp-vm-interp",
  "jp-vm-primitives",
  "minijam-jamcore-api",
  "minijam-protocol",
+ "spin 0.10.0",
 ]
 
 [[package]]
@@ -3766,6 +3781,14 @@ dependencies = [
  "jp-vm-primitives",
  "log",
  "paste",
+]
+
+[[package]]
+name = "jambda-wbmt"
+version = "0.0.1"
+dependencies = [
+ "jp-core-primitives",
+ "tiny-keccak",
 ]
 
 [[package]]
@@ -3803,6 +3826,28 @@ dependencies = [
  "jp-core-primitives",
  "log",
  "spin 0.10.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "jp-vm-engine"
+version = "0.0.1"
+dependencies = [
+ "jambda-logging",
+ "jp-vm-interp",
+ "jp-vm-predecode",
+ "jp-vm-primitives",
+ "log",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "jp-vm-interp"
+version = "0.0.1"
+dependencies = [
+ "jp-vm-primitives",
+ "log",
+ "paste",
  "thiserror 2.0.18",
 ]
 
