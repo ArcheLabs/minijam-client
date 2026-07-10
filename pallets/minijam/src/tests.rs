@@ -331,6 +331,98 @@ fn accepted_candidate_executes_next_block_and_commits_delta() {
 }
 
 #[test]
+fn root_pause_skips_execution_until_resumed() {
+    new_test_ext().execute_with(|| {
+        let pairs = activate_workers();
+        assert_ok!(MiniJam::submit_work(RuntimeOrigin::signed(5)));
+        assert_ok!(MiniJam::submit_candidate(
+            RuntimeOrigin::signed(6),
+            Box::new(envelope(0, 0))
+        ));
+        let assignment = Workers::assignment(0, 0).unwrap();
+        vote(
+            &pairs[assignment[0] as usize],
+            assignment[0],
+            Verdict::Support,
+        );
+        vote(
+            &pairs[assignment[1] as usize],
+            assignment[1],
+            Verdict::Support,
+        );
+        vote(
+            &pairs[assignment[2] as usize],
+            assignment[2],
+            Verdict::Oppose(minijam_protocol::OpposeReason::MissingData),
+        );
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_initialize(100);
+
+        assert_ok!(MiniJam::pause_execution(RuntimeOrigin::root(), true));
+        System::set_block_number(101);
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(101);
+        assert_eq!(
+            MiniJam::work(0).unwrap().status,
+            pallet_minijam::WorkStatus::Accepted
+        );
+        assert_eq!(pallet_minijam::ExecutionQueue::<Test>::get().len(), 1);
+
+        assert_ok!(MiniJam::pause_execution(RuntimeOrigin::root(), false));
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(101);
+        assert_eq!(
+            MiniJam::work(0).unwrap().status,
+            pallet_minijam::WorkStatus::Executed
+        );
+        assert!(pallet_minijam::ExecutionQueue::<Test>::get().is_empty());
+    });
+}
+
+#[test]
+fn root_quarantine_moves_execution_queue_without_executing() {
+    new_test_ext().execute_with(|| {
+        let pairs = activate_workers();
+        assert_ok!(MiniJam::submit_work(RuntimeOrigin::signed(5)));
+        assert_ok!(MiniJam::submit_candidate(
+            RuntimeOrigin::signed(6),
+            Box::new(envelope(0, 0))
+        ));
+        let assignment = Workers::assignment(0, 0).unwrap();
+        vote(
+            &pairs[assignment[0] as usize],
+            assignment[0],
+            Verdict::Support,
+        );
+        vote(
+            &pairs[assignment[1] as usize],
+            assignment[1],
+            Verdict::Support,
+        );
+        vote(
+            &pairs[assignment[2] as usize],
+            assignment[2],
+            Verdict::Oppose(minijam_protocol::OpposeReason::MissingData),
+        );
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_initialize(100);
+
+        assert_ok!(MiniJam::quarantine_pending(RuntimeOrigin::root()));
+        assert!(pallet_minijam::ExecutionQueue::<Test>::get().is_empty());
+        assert_eq!(
+            pallet_minijam::QuarantinedExecutionQueue::<Test>::get()
+                .iter()
+                .map(|item| item.work_id)
+                .collect::<Vec<_>>(),
+            vec![0]
+        );
+
+        System::set_block_number(101);
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(101);
+        assert_eq!(
+            MiniJam::work(0).unwrap().status,
+            pallet_minijam::WorkStatus::Accepted
+        );
+    });
+}
+
+#[test]
 fn rejected_candidate_is_slashed_and_advances_round() {
     new_test_ext().execute_with(|| {
         let pairs = activate_workers();
