@@ -14,6 +14,7 @@ minijam-jamcore-api = { path = "../crates/minijam-jamcore-api", default-features
 pallet-aura.workspace = true
 pallet-balances.workspace = true
 pallet-grandpa.workspace = true
+pallet-minijam-bridge = { path = "../pallets/minijam-bridge", default-features = false }
 pallet-minijam = { path = "../pallets/minijam", default-features = false }
 pallet-minijam-workers = { path = "../pallets/minijam-workers", default-features = false }
 pallet-sudo.workspace = true
@@ -51,6 +52,7 @@ std = [
   "pallet-aura/std",
   "pallet-balances/std",
   "pallet-grandpa/std",
+  "pallet-minijam-bridge/std",
   "pallet-minijam-workers/std",
   "pallet-minijam/std",
   "pallet-sudo/std",

@@ -126,6 +126,7 @@ parameter_types! {
     pub FeeMultiplier: Multiplier = Multiplier::one();
     pub const MiniJamChainId: [u8; 32] = [77; 32];
     pub RewardPoolAccount: AccountId = AccountId::new([9; 32]);
+    pub BridgeEscrowAccount: AccountId = AccountId::new([8; 32]);
     pub const MinimumWorkerStake: Balance = 1_000 * UNIT;
     pub const TimelyVoteReward: Balance = UNIT;
     pub const MinimumAbsenceSlash: Balance = UNIT;
@@ -255,6 +256,13 @@ impl pallet_minijam::Config for Runtime {
     type JamCoreExecutor = minijam_jamcore_api::NoopMiniJamExecutor;
 }
 
+impl pallet_minijam_bridge::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type RuntimeHoldReason = RuntimeHoldReason;
+    type EscrowAccount = BridgeEscrowAccount;
+}
+
 #[frame_support::runtime]
 mod runtime {
     #[runtime::runtime]
@@ -290,4 +298,6 @@ mod runtime {
     pub type MiniJamWorkers = pallet_minijam_workers;
     #[runtime::pallet_index(8)]
     pub type MiniJam = pallet_minijam;
+    #[runtime::pallet_index(9)]
+    pub type MiniJamBridge = pallet_minijam_bridge;
 }

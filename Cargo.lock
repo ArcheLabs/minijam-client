@@ -4827,6 +4827,7 @@ dependencies = [
  "pallet-balances",
  "pallet-grandpa",
  "pallet-minijam",
+ "pallet-minijam-bridge",
  "pallet-minijam-workers",
  "pallet-sudo",
  "pallet-timestamp",
@@ -5463,6 +5464,20 @@ dependencies = [
  "parity-scale-codec",
  "scale-info",
  "sp-core",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
+name = "pallet-minijam-bridge"
+version = "0.1.0"
+dependencies = [
+ "frame-support",
+ "frame-system",
+ "minijam-protocol",
+ "pallet-balances",
+ "parity-scale-codec",
+ "scale-info",
  "sp-io",
  "sp-runtime",
 ]

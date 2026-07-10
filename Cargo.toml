@@ -11,6 +11,7 @@ members = [
   "crates/minijam-state-adapter",
   "pallets/minijam-workers",
   "pallets/minijam",
+  "pallets/minijam-bridge",
   "runtime",
   "node",
 ]
