@@ -1,5 +1,7 @@
 # MiniJam Client
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 MiniJam is a solo-chain-hosted JAM execution environment. The current
 implementation milestone contains the public protocol/ABI, a deterministic
 worker assignment and voting engine, a Bulletin-compatible local simulator,
