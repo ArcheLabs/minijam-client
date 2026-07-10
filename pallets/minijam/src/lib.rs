@@ -18,9 +18,10 @@ pub mod pallet {
         transactional,
     };
     use frame_system::pallet_prelude::*;
+    use minijam_bridge_engine::BridgeAdminRecordSource;
     use minijam_jamcore_api::{
-        ExecutionOutcome, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutor,
-        ProtocolStateReader, StateError,
+        ExecutionOutcome, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionOutputV1,
+        MiniJamExecutor, ProtocolStateReader, StateError,
     };
     use minijam_protocol::{
         CanonicalReportBytes, Hash, ProtocolStateChange, ReportEnvelopeV1, StateOperation,
@@ -133,6 +134,11 @@ pub mod pallet {
         type MaxExecutionGas: Get<u64>;
 
         type JamCoreExecutor: MiniJamExecutor + Default;
+
+        type BridgeAdminRecords: BridgeAdminRecordSource;
+
+        #[pallet::constant]
+        type MaxBridgeAdminRecords: Get<u32>;
     }
 
     #[pallet::pallet]
@@ -673,6 +679,7 @@ pub mod pallet {
                 Err(MiniJamError::Input(_)) => return Err(ExecutionFailure::Fatal),
             };
 
+            let output = Self::with_bridge_admin_records(output)?;
             let delta = validate_execution_output(&input, &output, &state)
                 .map_err(Self::map_validation_error)?;
             Self::apply_delta(delta)?;
@@ -689,6 +696,31 @@ pub mod pallet {
             }
             LastExecutionReceipt::<T>::put(output.receipt_hash);
             Ok(())
+        }
+
+        fn with_bridge_admin_records(
+            mut output: MiniJamExecutionOutputV1,
+        ) -> Result<MiniJamExecutionOutputV1, ExecutionFailure> {
+            let records =
+                T::BridgeAdminRecords::drain_admin_records(T::MaxBridgeAdminRecords::get())
+                    .map_err(|_| ExecutionFailure::Fatal)?;
+            if records.is_empty() {
+                return Ok(output);
+            }
+
+            let mut changes: Vec<ProtocolStateChange> = output.ordered_changes.into_inner();
+            for (key, value) in records {
+                changes.push(ProtocolStateChange {
+                    key,
+                    operation: StateOperation::Upsert,
+                    value: Some(value),
+                });
+            }
+            minijam_jamcore_api::normalize_changes(&mut changes)
+                .map_err(|_| ExecutionFailure::Fatal)?;
+            output.ordered_changes = changes.try_into().map_err(|_| ExecutionFailure::Fatal)?;
+            output.receipt_hash = output.compute_receipt_hash();
+            Ok(output)
         }
 
         fn map_validation_error(error: ValidationError) -> ExecutionFailure {

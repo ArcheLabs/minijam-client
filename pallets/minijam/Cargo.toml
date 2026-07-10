@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 frame-support.workspace = true
 frame-system.workspace = true
+minijam-bridge-engine = { path = "../../crates/minijam-bridge-engine", default-features = false }
 minijam-protocol = { path = "../../crates/minijam-protocol", default-features = false }
 minijam-jamcore-api = { path = "../../crates/minijam-jamcore-api", default-features = false }
 minijam-state-adapter = { path = "../../crates/minijam-state-adapter", default-features = false }
@@ -25,6 +26,7 @@ default = ["std"]
 std = [
   "frame-support/std",
   "frame-system/std",
+  "minijam-bridge-engine/std",
   "minijam-jamcore-api/std",
   "minijam-state-adapter/std",
   "minijam-protocol/std",

@@ -3,6 +3,7 @@ use frame_support::{
     assert_ok, derive_impl, parameter_types,
     traits::tokens::fungible::{Inspect, InspectHold},
 };
+use minijam_bridge_engine::BridgeAdminRecordSource;
 use minijam_jamcore_api::{
     MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionOutputV1, MiniJamExecutor,
     ProtocolStateReader,
@@ -10,10 +11,11 @@ use minijam_jamcore_api::{
 use minijam_protocol::{
     blake2_256, BulletinEvidence, CanonicalReportBytes, ProtocolStateChange, ReportEnvelopeV1,
     ReportMetadataV1, ReportSignatures, StateOperation, StateValue, Verdict, WorkerVoteV1,
-    NS_SERVICE_STORAGE, PROTOCOL_VERSION_V1,
+    NS_ADMIN_BRIDGE, NS_SERVICE_STORAGE, PROTOCOL_VERSION_V1,
 };
 use sp_core::{sr25519, Pair};
 use sp_runtime::BuildStorage;
+use std::{cell::RefCell, vec::Vec as StdVec};
 
 type Block = frame_system::mocking::MockBlock<Test>;
 
@@ -119,6 +121,8 @@ impl pallet_minijam::Config for Test {
     type MaxExecutionReports = frame_support::traits::ConstU32<4>;
     type MaxExecutionGas = frame_support::traits::ConstU64<1_000_000>;
     type JamCoreExecutor = TestExecutor;
+    type BridgeAdminRecords = TestBridgeAdminRecords;
+    type MaxBridgeAdminRecords = frame_support::traits::ConstU32<8>;
 }
 
 #[derive(Default)]
@@ -148,7 +152,41 @@ impl MiniJamExecutor for TestExecutor {
     }
 }
 
+pub struct TestBridgeAdminRecords;
+
+thread_local! {
+    static BRIDGE_RECORDS: RefCell<StdVec<([u8; 31], StateValue)>> = const { RefCell::new(StdVec::new()) };
+}
+
+impl TestBridgeAdminRecords {
+    fn push(key: [u8; 31], value: StateValue) {
+        BRIDGE_RECORDS.with(|records| records.borrow_mut().push((key, value)));
+    }
+
+    fn clear() {
+        BRIDGE_RECORDS.with(|records| records.borrow_mut().clear());
+    }
+
+    fn len() -> usize {
+        BRIDGE_RECORDS.with(|records| records.borrow().len())
+    }
+}
+
+impl BridgeAdminRecordSource for TestBridgeAdminRecords {
+    fn drain_admin_records(
+        limit: u32,
+    ) -> Result<StdVec<([u8; 31], StateValue)>, minijam_bridge_engine::BridgeError> {
+        BRIDGE_RECORDS.with(|records| {
+            let mut records = records.borrow_mut();
+            records.sort_by_key(|(key, _)| *key);
+            let count = (limit as usize).min(records.len());
+            Ok(records.drain(..count).collect())
+        })
+    }
+}
+
 fn new_test_ext() -> sp_io::TestExternalities {
+    TestBridgeAdminRecords::clear();
     let mut storage = frame_system::GenesisConfig::<Test>::default()
         .build_storage()
         .unwrap();
@@ -327,6 +365,55 @@ fn accepted_candidate_executes_next_block_and_commits_delta() {
         assert!(pallet_minijam::ExecutionQueue::<Test>::get().is_empty());
         assert!(pallet_minijam::ExecutionReceipts::<Test>::get(0).is_some());
         assert!(pallet_minijam::LastExecutionReceipt::<Test>::get().is_some());
+    });
+}
+
+#[test]
+fn bridge_admin_records_are_committed_in_execution_transaction() {
+    new_test_ext().execute_with(|| {
+        let mut bridge_key = [0u8; 31];
+        bridge_key[0] = NS_ADMIN_BRIDGE;
+        bridge_key[30] = 9;
+        TestBridgeAdminRecords::push(bridge_key, StateValue::try_from(vec![9, 9]).unwrap());
+
+        let pairs = activate_workers();
+        assert_ok!(MiniJam::submit_work(RuntimeOrigin::signed(5)));
+        assert_ok!(MiniJam::submit_candidate(
+            RuntimeOrigin::signed(6),
+            Box::new(envelope(0, 0))
+        ));
+        let assignment = Workers::assignment(0, 0).unwrap();
+        vote(
+            &pairs[assignment[0] as usize],
+            assignment[0],
+            Verdict::Support,
+        );
+        vote(
+            &pairs[assignment[1] as usize],
+            assignment[1],
+            Verdict::Support,
+        );
+        vote(
+            &pairs[assignment[2] as usize],
+            assignment[2],
+            Verdict::Oppose(minijam_protocol::OpposeReason::MissingData),
+        );
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_initialize(100);
+
+        System::set_block_number(101);
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(101);
+
+        assert_eq!(
+            pallet_minijam::ProtocolState::<Test>::get(bridge_key)
+                .unwrap()
+                .into_inner(),
+            vec![9, 9]
+        );
+        assert_eq!(TestBridgeAdminRecords::len(), 0);
+        assert_eq!(
+            MiniJam::work(0).unwrap().status,
+            pallet_minijam::WorkStatus::Executed
+        );
     });
 }
 

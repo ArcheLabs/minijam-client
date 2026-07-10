@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #![cfg_attr(not(feature = "std"), no_std)]
 
+extern crate alloc;
+
 pub use pallet::*;
 
 #[frame_support::pallet]
@@ -14,7 +16,7 @@ pub mod pallet {
         transactional,
     };
     use frame_system::pallet_prelude::*;
-    use minijam_bridge_engine::{admin_bridge_key, admin_bridge_value};
+    use minijam_bridge_engine::{admin_bridge_key, admin_bridge_value, BridgeAdminRecordSource};
     use minijam_protocol::{AssetId, BridgeEffect, StateValue};
     use sp_runtime::traits::{Convert, SaturatedConversion, Zero};
 
@@ -216,6 +218,21 @@ pub mod pallet {
                 amount,
             });
             Ok(())
+        }
+    }
+
+    impl<T: Config> BridgeAdminRecordSource for Pallet<T> {
+        fn drain_admin_records(
+            limit: u32,
+        ) -> Result<alloc::vec::Vec<([u8; 31], StateValue)>, minijam_bridge_engine::BridgeError>
+        {
+            let mut records: alloc::vec::Vec<_> = AdminBridgeRecords::<T>::iter().collect();
+            records.sort_by_key(|(key, _)| *key);
+            records.truncate(limit as usize);
+            for (key, _) in &records {
+                AdminBridgeRecords::<T>::remove(key);
+            }
+            Ok(records)
         }
     }
 }

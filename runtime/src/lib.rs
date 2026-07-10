@@ -254,6 +254,8 @@ impl pallet_minijam::Config for Runtime {
     type MaxExecutionReports = ConstU32<4>;
     type MaxExecutionGas = ConstU64<10_000_000>;
     type JamCoreExecutor = minijam_jamcore_api::NoopMiniJamExecutor;
+    type BridgeAdminRecords = MiniJamBridge;
+    type MaxBridgeAdminRecords = ConstU32<1_024>;
 }
 
 impl pallet_minijam_bridge::Config for Runtime {

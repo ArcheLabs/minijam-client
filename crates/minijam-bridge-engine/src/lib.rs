@@ -3,7 +3,10 @@
 
 extern crate alloc;
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
 use minijam_protocol::{AssetId, BridgeEffect, StateValue, NS_ADMIN_BRIDGE};
 use parity_scale_codec::Encode;
 
@@ -44,6 +47,16 @@ pub fn admin_bridge_key(effect: &BridgeEffect) -> [u8; 31] {
 pub fn admin_bridge_value(effect: &BridgeEffect) -> Result<StateValue, BridgeError> {
     StateValue::try_from((BRIDGE_SCHEMA_VERSION, effect).encode())
         .map_err(|_| BridgeError::ValueTooLarge)
+}
+
+pub trait BridgeAdminRecordSource {
+    fn drain_admin_records(limit: u32) -> Result<Vec<([u8; 31], StateValue)>, BridgeError>;
+}
+
+impl BridgeAdminRecordSource for () {
+    fn drain_admin_records(_: u32) -> Result<Vec<([u8; 31], StateValue)>, BridgeError> {
+        Ok(Vec::new())
+    }
 }
 
 impl BridgeLedger {
