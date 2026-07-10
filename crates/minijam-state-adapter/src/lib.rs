@@ -126,8 +126,8 @@ impl MemoryProtocolState {
 }
 
 impl ProtocolStateReader for MemoryProtocolState {
-    fn get(&self, key: &[u8; 31]) -> Result<Option<&[u8]>, StateError> {
-        Ok(self.value(key))
+    fn get(&self, key: &[u8; 31]) -> Result<Option<Vec<u8>>, StateError> {
+        Ok(self.value(key).map(ToOwned::to_owned))
     }
 }
 

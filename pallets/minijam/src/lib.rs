@@ -7,7 +7,7 @@ pub use pallet::*;
 
 #[frame_support::pallet]
 pub mod pallet {
-    use alloc::boxed::Box;
+    use alloc::{boxed::Box, vec::Vec};
     use frame_support::{
         pallet_prelude::*,
         storage::{with_transaction, TransactionOutcome},
@@ -18,9 +18,17 @@ pub mod pallet {
         transactional,
     };
     use frame_system::pallet_prelude::*;
-    use minijam_protocol::{ReportEnvelopeV1, PROTOCOL_VERSION_V1};
+    use minijam_jamcore_api::{
+        ExecutionOutcome, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutor,
+        ProtocolStateReader, StateError,
+    };
+    use minijam_protocol::{
+        CanonicalReportBytes, Hash, ProtocolStateChange, ReportEnvelopeV1, StateOperation,
+        StateValue, PROTOCOL_VERSION_V1,
+    };
+    use minijam_state_adapter::{validate_execution_output, ValidatedDelta, ValidationError};
     use pallet_minijam_workers::RoundDecision;
-    use sp_runtime::traits::{SaturatedConversion, Saturating, Zero};
+    use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
     pub type WorkId = u64;
     pub type BalanceOf<T> =
@@ -43,7 +51,15 @@ pub mod pallet {
         AwaitingCandidate,
         Voting,
         Accepted,
+        Executed,
         Failed,
+    }
+
+    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    #[scale_info(skip_type_params(T))]
+    pub struct ExecutionItem<T: Config> {
+        pub work_id: WorkId,
+        pub execute_at: BlockNumberFor<T>,
     }
 
     #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
@@ -109,6 +125,14 @@ pub mod pallet {
 
         #[pallet::constant]
         type MaxPendingWorks: Get<u32>;
+
+        #[pallet::constant]
+        type MaxExecutionReports: Get<u32>;
+
+        #[pallet::constant]
+        type MaxExecutionGas: Get<u64>;
+
+        type JamCoreExecutor: MiniJamExecutor + Default;
     }
 
     #[pallet::pallet]
@@ -139,7 +163,25 @@ pub mod pallet {
 
     #[pallet::storage]
     pub type ExecutionQueue<T: Config> =
-        StorageValue<_, BoundedVec<WorkId, T::MaxPendingWorks>, ValueQuery>;
+        StorageValue<_, BoundedVec<ExecutionItem<T>, T::MaxPendingWorks>, ValueQuery>;
+
+    #[pallet::storage]
+    pub type QuarantinedExecutionQueue<T: Config> =
+        StorageValue<_, BoundedVec<ExecutionItem<T>, T::MaxPendingWorks>, ValueQuery>;
+
+    #[pallet::storage]
+    pub type ProtocolState<T: Config> =
+        StorageMap<_, Blake2_128Concat, [u8; 31], StateValue, OptionQuery>;
+
+    #[pallet::storage]
+    pub type ExecutionReceipts<T: Config> =
+        StorageMap<_, Blake2_128Concat, WorkId, Hash, OptionQuery>;
+
+    #[pallet::storage]
+    pub type LastExecutionReceipt<T: Config> = StorageValue<_, Hash, OptionQuery>;
+
+    #[pallet::storage]
+    pub type ExecutionPaused<T: Config> = StorageValue<_, bool, ValueQuery>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -171,6 +213,20 @@ pub mod pallet {
         WorkFailed {
             work_id: WorkId,
         },
+        WorkExecuted {
+            work_id: WorkId,
+            receipt_hash: Hash,
+        },
+        ExecutionYielded {
+            work_id: WorkId,
+            outcome: ExecutionOutcome,
+        },
+        ExecutionPaused {
+            paused: bool,
+        },
+        ExecutionQueueQuarantined {
+            count: u32,
+        },
     }
 
     #[pallet::error]
@@ -185,6 +241,8 @@ pub mod pallet {
         InvalidReportHash,
         VotingSetupFailed,
         InconsistentState,
+        ExecutionQueueFull,
+        ExecutionPaused,
     }
 
     #[pallet::hooks]
@@ -221,6 +279,13 @@ pub mod pallet {
                 u64::from(T::MaxPendingWorks::get()).saturating_mul(4),
                 u64::from(T::MaxPendingWorks::get()).saturating_mul(4),
             )
+        }
+
+        fn on_finalize(block: BlockNumberFor<T>) {
+            if ExecutionPaused::<T>::get() {
+                return;
+            }
+            Self::execute_due_reports(block);
         }
     }
 
@@ -327,6 +392,26 @@ pub mod pallet {
                 submitter,
                 report_hash,
             });
+            Ok(())
+        }
+
+        #[pallet::call_index(2)]
+        #[pallet::weight(T::DbWeight::get().writes(1))]
+        pub fn pause_execution(origin: OriginFor<T>, paused: bool) -> DispatchResult {
+            ensure_root(origin)?;
+            ExecutionPaused::<T>::put(paused);
+            Self::deposit_event(Event::ExecutionPaused { paused });
+            Ok(())
+        }
+
+        #[pallet::call_index(3)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(2, 2))]
+        pub fn quarantine_pending(origin: OriginFor<T>) -> DispatchResult {
+            ensure_root(origin)?;
+            let queue = ExecutionQueue::<T>::take();
+            let count = queue.len() as u32;
+            QuarantinedExecutionQueue::<T>::put(queue);
+            Self::deposit_event(Event::ExecutionQueueQuarantined { count });
             Ok(())
         }
     }
@@ -441,10 +526,14 @@ pub mod pallet {
             )?;
             work.status = WorkStatus::Accepted;
             Works::<T>::insert(work_id, &work);
+            let execute_at = frame_system::Pallet::<T>::block_number().saturating_add(One::one());
             ExecutionQueue::<T>::try_mutate(|queue| {
                 queue
-                    .try_push(work_id)
-                    .map_err(|_| Error::<T>::TooManyPendingWorks)
+                    .try_push(ExecutionItem::<T> {
+                        work_id,
+                        execute_at,
+                    })
+                    .map_err(|_| Error::<T>::ExecutionQueueFull)
             })?;
             Self::remove_pending(work_id);
             Self::deposit_event(Event::CandidateAccepted {
@@ -476,6 +565,185 @@ pub mod pallet {
                     pending.swap_remove(index);
                 }
             });
+        }
+
+        fn execute_due_reports(block: BlockNumberFor<T>) {
+            let mut queue = ExecutionQueue::<T>::get();
+            let max_reports = T::MaxExecutionReports::get() as usize;
+            let mut due: Vec<ExecutionItem<T>> = Vec::new();
+            let mut retained: Vec<ExecutionItem<T>> = Vec::new();
+
+            for item in queue.drain(..) {
+                if item.execute_at <= block && due.len() < max_reports {
+                    due.push(item);
+                } else {
+                    retained.push(item);
+                }
+            }
+
+            if due.is_empty() {
+                if let Ok(retained) =
+                    BoundedVec::<ExecutionItem<T>, T::MaxPendingWorks>::try_from(retained)
+                {
+                    ExecutionQueue::<T>::put(retained);
+                }
+                return;
+            }
+
+            due.sort_by_key(|item| {
+                let report_hash = Self::candidate_for_work(item.work_id)
+                    .map(|(_, candidate)| candidate.envelope.canonical_report_hash)
+                    .unwrap_or([0xff; 32]);
+                (item.work_id, report_hash)
+            });
+
+            let result = with_transaction(|| match Self::execute_due_reports_inner(block, &due) {
+                Ok(()) => {
+                    let bounded = BoundedVec::<ExecutionItem<T>, T::MaxPendingWorks>::try_from(
+                        retained.clone(),
+                    )
+                    .unwrap_or_else(|_| {
+                        panic!("retained execution queue exceeded its original bound")
+                    });
+                    ExecutionQueue::<T>::put(bounded);
+                    TransactionOutcome::Commit(Ok(()))
+                }
+                Err(error) => TransactionOutcome::Rollback(Err(error)),
+            });
+
+            match result {
+                Ok(()) => {}
+                Err(ExecutionFailure::Yielded(work_id, outcome)) => {
+                    ExecutionQueue::<T>::mutate(|queue| {
+                        if let Some(index) = queue.iter().position(|item| item.work_id == work_id) {
+                            queue.swap_remove(index);
+                        }
+                    });
+                    if let Some(mut work) = Works::<T>::get(work_id) {
+                        work.status = WorkStatus::Failed;
+                        Works::<T>::insert(work_id, work);
+                    }
+                    Self::deposit_event(Event::ExecutionYielded { work_id, outcome });
+                }
+                Err(ExecutionFailure::Fatal) => {
+                    panic!("fatal MiniJam execution error");
+                }
+            }
+        }
+
+        fn execute_due_reports_inner(
+            block: BlockNumberFor<T>,
+            due: &[ExecutionItem<T>],
+        ) -> Result<(), ExecutionFailure> {
+            let mut reports = Vec::<CanonicalReportBytes>::new();
+            let mut work_ids = Vec::<WorkId>::new();
+            for item in due {
+                let Some((round, candidate)) = Self::candidate_for_work(item.work_id) else {
+                    return Err(ExecutionFailure::Fatal);
+                };
+                let Some(work) = Works::<T>::get(item.work_id) else {
+                    return Err(ExecutionFailure::Fatal);
+                };
+                if work.round != round || work.status != WorkStatus::Accepted {
+                    return Err(ExecutionFailure::Fatal);
+                }
+                reports.push(candidate.envelope.canonical_report.clone());
+                work_ids.push(item.work_id);
+            }
+
+            let reports = reports.try_into().map_err(|_| ExecutionFailure::Fatal)?;
+            let input = MiniJamExecutionInputV1 {
+                slot: block.saturated_into(),
+                epoch: pallet_minijam_workers::Pallet::<T>::current_epoch(),
+                reports,
+                max_gas: T::MaxExecutionGas::get(),
+                protocol_version: PROTOCOL_VERSION_V1,
+            };
+            let state = FrameProtocolState::<T>(Default::default());
+            let executor = T::JamCoreExecutor::default();
+            let output = match executor.execute(input.clone(), &state) {
+                Ok(output) => output,
+                Err(MiniJamError::Execution(outcome)) => {
+                    let work_id = work_ids.first().copied().ok_or(ExecutionFailure::Fatal)?;
+                    return Err(ExecutionFailure::Yielded(work_id, outcome));
+                }
+                Err(MiniJamError::State(_)) | Err(MiniJamError::Invariant(_)) => {
+                    return Err(ExecutionFailure::Fatal);
+                }
+                Err(MiniJamError::Input(_)) => return Err(ExecutionFailure::Fatal),
+            };
+
+            let delta = validate_execution_output(&input, &output, &state)
+                .map_err(Self::map_validation_error)?;
+            Self::apply_delta(delta)?;
+
+            for work_id in work_ids {
+                let mut work = Works::<T>::get(work_id).ok_or(ExecutionFailure::Fatal)?;
+                work.status = WorkStatus::Executed;
+                Works::<T>::insert(work_id, work);
+                ExecutionReceipts::<T>::insert(work_id, output.receipt_hash);
+                Self::deposit_event(Event::WorkExecuted {
+                    work_id,
+                    receipt_hash: output.receipt_hash,
+                });
+            }
+            LastExecutionReceipt::<T>::put(output.receipt_hash);
+            Ok(())
+        }
+
+        fn map_validation_error(error: ValidationError) -> ExecutionFailure {
+            match error {
+                ValidationError::State(_) | ValidationError::Invariant(_) => {
+                    ExecutionFailure::Fatal
+                }
+                ValidationError::GasExceeded | ValidationError::DeltaTooLarge => {
+                    ExecutionFailure::Fatal
+                }
+            }
+        }
+
+        fn apply_delta(delta: ValidatedDelta) -> Result<(), ExecutionFailure> {
+            for change in delta.into_changes() {
+                Self::apply_change(change)?;
+            }
+            Ok(())
+        }
+
+        fn apply_change(change: ProtocolStateChange) -> Result<(), ExecutionFailure> {
+            match change.operation {
+                StateOperation::Upsert | StateOperation::Update => {
+                    let value = change.value.ok_or(ExecutionFailure::Fatal)?;
+                    ProtocolState::<T>::insert(change.key, value);
+                }
+                StateOperation::Remove => {
+                    ProtocolState::<T>::remove(change.key);
+                }
+            }
+            Ok(())
+        }
+
+        fn candidate_for_work(work_id: WorkId) -> Option<(u8, CandidateRecord<T>)> {
+            let work = Works::<T>::get(work_id)?;
+            Candidates::<T>::get(work_id, work.round).map(|candidate| (work.round, candidate))
+        }
+    }
+
+    pub struct FrameProtocolState<T: Config>(core::marker::PhantomData<T>);
+
+    impl<T: Config> ProtocolStateReader for FrameProtocolState<T> {
+        fn get(&self, key: &[u8; 31]) -> Result<Option<Vec<u8>>, StateError> {
+            Ok(ProtocolState::<T>::get(key).map(|value| value.into_inner()))
+        }
+    }
+
+    enum ExecutionFailure {
+        Yielded(WorkId, ExecutionOutcome),
+        Fatal,
+    }
+
+    impl From<DispatchError> for ExecutionFailure {
+        fn from(_: DispatchError) -> Self {
+            Self::Fatal
         }
     }
 }

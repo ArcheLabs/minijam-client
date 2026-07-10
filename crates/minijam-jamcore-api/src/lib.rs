@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 #![cfg_attr(not(feature = "std"), no_std)]
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use minijam_protocol::{
     blake2_256, BridgeEffects, ConsumedReports, EpochIndex, Hash, ProtocolStateChange, ReportBatch,
     ServiceOutputs, StateChanges,
 };
-use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
+use parity_scale_codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 
 pub const INTERFACE_VERSION: u16 = 1;
@@ -57,7 +60,9 @@ impl MiniJamExecutionOutputV1 {
     }
 }
 
-#[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(
+    Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
+)]
 pub enum MiniJamError {
     Input(InputError),
     Execution(ExecutionOutcome),
@@ -65,7 +70,9 @@ pub enum MiniJamError {
     Invariant(InvariantError),
 }
 
-#[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(
+    Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
+)]
 pub enum InputError {
     UnsupportedVersion,
     InvalidReportEncoding,
@@ -74,14 +81,18 @@ pub enum InputError {
     LimitExceeded,
 }
 
-#[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(
+    Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
+)]
 pub enum ExecutionOutcome {
     OutOfGas,
     Trap,
     ServiceFailure,
 }
 
-#[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(
+    Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
+)]
 pub enum StateError {
     MissingState,
     Decode,
@@ -89,7 +100,9 @@ pub enum StateError {
     InvalidOperation,
 }
 
-#[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(
+    Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
+)]
 pub enum InvariantError {
     DuplicateKey,
     UnsortedChanges,
@@ -98,7 +111,7 @@ pub enum InvariantError {
 }
 
 pub trait ProtocolStateReader {
-    fn get(&self, key: &[u8; 31]) -> Result<Option<&[u8]>, StateError>;
+    fn get(&self, key: &[u8; 31]) -> Result<Option<Vec<u8>>, StateError>;
 }
 
 pub trait MiniJamExecutor {
@@ -107,6 +120,19 @@ pub trait MiniJamExecutor {
         input: MiniJamExecutionInputV1,
         state: &R,
     ) -> Result<MiniJamExecutionOutputV1, MiniJamError>;
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NoopMiniJamExecutor;
+
+impl MiniJamExecutor for NoopMiniJamExecutor {
+    fn execute<R: ProtocolStateReader>(
+        &self,
+        _input: MiniJamExecutionInputV1,
+        _state: &R,
+    ) -> Result<MiniJamExecutionOutputV1, MiniJamError> {
+        Ok(MiniJamExecutionOutputV1::empty())
+    }
 }
 
 pub fn normalize_changes(changes: &mut [ProtocolStateChange]) -> Result<(), InvariantError> {

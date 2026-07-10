@@ -4822,6 +4822,7 @@ dependencies = [
  "frame-support",
  "frame-system",
  "frame-system-rpc-runtime-api",
+ "minijam-jamcore-api",
  "pallet-aura",
  "pallet-balances",
  "pallet-grandpa",
@@ -5454,7 +5455,9 @@ version = "0.1.0"
 dependencies = [
  "frame-support",
  "frame-system",
+ "minijam-jamcore-api",
  "minijam-protocol",
+ "minijam-state-adapter",
  "pallet-balances",
  "pallet-minijam-workers",
  "parity-scale-codec",

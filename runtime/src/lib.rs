@@ -250,6 +250,9 @@ impl pallet_minijam::Config for Runtime {
     type VoteWindow = ConstU32<10>;
     type MaxCandidateRounds = ConstU8<3>;
     type MaxPendingWorks = ConstU32<64>;
+    type MaxExecutionReports = ConstU32<4>;
+    type MaxExecutionGas = ConstU64<10_000_000>;
+    type JamCoreExecutor = minijam_jamcore_api::NoopMiniJamExecutor;
 }
 
 #[frame_support::runtime]

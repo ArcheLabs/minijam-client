@@ -3,9 +3,14 @@ use frame_support::{
     assert_ok, derive_impl, parameter_types,
     traits::tokens::fungible::{Inspect, InspectHold},
 };
+use minijam_jamcore_api::{
+    MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionOutputV1, MiniJamExecutor,
+    ProtocolStateReader,
+};
 use minijam_protocol::{
-    blake2_256, BulletinEvidence, CanonicalReportBytes, ReportEnvelopeV1, ReportMetadataV1,
-    ReportSignatures, Verdict, WorkerVoteV1, PROTOCOL_VERSION_V1,
+    blake2_256, BulletinEvidence, CanonicalReportBytes, ProtocolStateChange, ReportEnvelopeV1,
+    ReportMetadataV1, ReportSignatures, StateOperation, StateValue, Verdict, WorkerVoteV1,
+    NS_SERVICE_STORAGE, PROTOCOL_VERSION_V1,
 };
 use sp_core::{sr25519, Pair};
 use sp_runtime::BuildStorage;
@@ -111,6 +116,36 @@ impl pallet_minijam::Config for Test {
     type VoteWindow = frame_support::traits::ConstU32<10>;
     type MaxCandidateRounds = frame_support::traits::ConstU8<3>;
     type MaxPendingWorks = frame_support::traits::ConstU32<8>;
+    type MaxExecutionReports = frame_support::traits::ConstU32<4>;
+    type MaxExecutionGas = frame_support::traits::ConstU64<1_000_000>;
+    type JamCoreExecutor = TestExecutor;
+}
+
+#[derive(Default)]
+pub struct TestExecutor;
+
+impl MiniJamExecutor for TestExecutor {
+    fn execute<R: ProtocolStateReader>(
+        &self,
+        input: MiniJamExecutionInputV1,
+        _state: &R,
+    ) -> Result<MiniJamExecutionOutputV1, MiniJamError> {
+        let mut output = MiniJamExecutionOutputV1::empty();
+        let mut key = [0u8; 31];
+        key[0] = NS_SERVICE_STORAGE;
+        key[30] = 7;
+        output
+            .ordered_changes
+            .try_push(ProtocolStateChange {
+                key,
+                operation: StateOperation::Upsert,
+                value: Some(StateValue::try_from(vec![input.reports.len() as u8]).unwrap()),
+            })
+            .unwrap();
+        output.gas_used = 10;
+        output.receipt_hash = output.compute_receipt_hash();
+        Ok(output)
+    }
 }
 
 fn new_test_ext() -> sp_io::TestExternalities {
@@ -225,14 +260,73 @@ fn accepted_candidate_releases_bonds_and_enters_execution_queue() {
             pallet_minijam::WorkStatus::Accepted
         );
         assert_eq!(
-            pallet_minijam::ExecutionQueue::<Test>::get().as_slice(),
-            &[0]
+            pallet_minijam::ExecutionQueue::<Test>::get()
+                .iter()
+                .map(|item| item.work_id)
+                .collect::<Vec<_>>(),
+            vec![0]
         );
         let work_reason: RuntimeHoldReason = pallet_minijam::HoldReason::WorkDeposit.into();
         let candidate_reason: RuntimeHoldReason = pallet_minijam::HoldReason::CandidateBond.into();
         assert_eq!(Balances::balance_on_hold(&work_reason, &5), 0);
         assert_eq!(Balances::balance_on_hold(&candidate_reason, &6), 0);
         assert_eq!(Balances::total_balance(&6), 10_011);
+    });
+}
+
+#[test]
+fn accepted_candidate_executes_next_block_and_commits_delta() {
+    new_test_ext().execute_with(|| {
+        let pairs = activate_workers();
+        assert_ok!(MiniJam::submit_work(RuntimeOrigin::signed(5)));
+        assert_ok!(MiniJam::submit_candidate(
+            RuntimeOrigin::signed(6),
+            Box::new(envelope(0, 0))
+        ));
+        let assignment = Workers::assignment(0, 0).unwrap();
+        vote(
+            &pairs[assignment[0] as usize],
+            assignment[0],
+            Verdict::Support,
+        );
+        vote(
+            &pairs[assignment[1] as usize],
+            assignment[1],
+            Verdict::Support,
+        );
+        vote(
+            &pairs[assignment[2] as usize],
+            assignment[2],
+            Verdict::Oppose(minijam_protocol::OpposeReason::MissingData),
+        );
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_initialize(100);
+
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(100);
+        assert_eq!(
+            MiniJam::work(0).unwrap().status,
+            pallet_minijam::WorkStatus::Accepted
+        );
+        assert_eq!(pallet_minijam::ExecutionQueue::<Test>::get().len(), 1);
+
+        System::set_block_number(101);
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(101);
+
+        let mut key = [0u8; 31];
+        key[0] = NS_SERVICE_STORAGE;
+        key[30] = 7;
+        assert_eq!(
+            pallet_minijam::ProtocolState::<Test>::get(key)
+                .unwrap()
+                .into_inner(),
+            vec![1]
+        );
+        assert_eq!(
+            MiniJam::work(0).unwrap().status,
+            pallet_minijam::WorkStatus::Executed
+        );
+        assert!(pallet_minijam::ExecutionQueue::<Test>::get().is_empty());
+        assert!(pallet_minijam::ExecutionReceipts::<Test>::get(0).is_some());
+        assert!(pallet_minijam::LastExecutionReceipt::<Test>::get().is_some());
     });
 }
 

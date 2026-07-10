@@ -8,6 +8,8 @@ license.workspace = true
 frame-support.workspace = true
 frame-system.workspace = true
 minijam-protocol = { path = "../../crates/minijam-protocol", default-features = false }
+minijam-jamcore-api = { path = "../../crates/minijam-jamcore-api", default-features = false }
+minijam-state-adapter = { path = "../../crates/minijam-state-adapter", default-features = false }
 pallet-minijam-workers = { path = "../minijam-workers", default-features = false }
 parity-scale-codec.workspace = true
 scale-info.workspace = true
@@ -23,6 +25,8 @@ default = ["std"]
 std = [
   "frame-support/std",
   "frame-system/std",
+  "minijam-jamcore-api/std",
+  "minijam-state-adapter/std",
   "minijam-protocol/std",
   "pallet-minijam-workers/std",
   "parity-scale-codec/std",
