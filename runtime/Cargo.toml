@@ -10,6 +10,7 @@ frame-executive.workspace = true
 frame-support.workspace = true
 frame-system.workspace = true
 frame-system-rpc-runtime-api.workspace = true
+jambda-minijam-executive = { path = "../../jambda/crates/minijam-executive", default-features = false }
 minijam-jamcore-api = { path = "../crates/minijam-jamcore-api", default-features = false }
 pallet-aura.workspace = true
 pallet-balances.workspace = true
