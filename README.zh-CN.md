@@ -1,14 +1,26 @@
 # MiniJAM 客户端
 
-[English](README.md) | 简体中文
+English | 简体中文
 
-> MiniJAM 仍处于早期开发阶段。当前代码用于协议、执行边界和本地网络验证，尚未面向生产环境。
+> MiniJAM 仍处于早期开发阶段，尚未面向生产环境。
+>
 
-MiniJAM 是一个由独立链承载、兼容 JAM 执行模型的实验性执行环境。本仓库提供 MiniJAM 的公开协议与 ABI、确定性的 Worker 分配和投票机制、兼容 Bulletin Chain 语义的本地模拟器，以及可在 `no_std` 环境中使用的 jambda MiniJAM 执行边界。
+MiniJAM 是一个运行精简版 JAM 协议的平行链。
 
-真实报告语料导入和链下 Refine Worker 尚未实现，已明确推迟至后续里程碑。
+## 与 JAM 的区别
 
-## 当前里程碑
+MiniJAM 把灰皮书中的 JAM 执行模型收缩到一个可在独立链上验证的最小协议面。
+
+- 共识与链：MiniJAM 使用 Polkadot SDK 平行链替换 JAM 共享。
+- Worker 与客户端边界：Worker 侧按多客户端目标设计，不同 Worker 客户端可以独立实现提交、验证和投票逻辑；Runtime 侧当前是单一 Runtime，不支持多 Runtime 客户端替换，这会导致链不一致 。
+- Work 与 Guarantees：MiniJAM 将 guarantee 流水线压缩为 Work、`ReportEnvelopeV1`、候选报告保证金和 Worker 投票。
+- Assurance 与可用性：MiniJAM 不实现 JAM 的 assurance 语义，当前用 `BulletinEvidence`、Bulletin-compatible simulator 和 Worker 投票抽象数据可用性边界。
+- 争议与裁决：MiniJAM 不实现全局 disputes、judgments 等工作报告正确性、一致性逻辑。将其交由 Work round 内的 Support/Oppose、缺席惩罚、候选报告拒绝惩罚和 equivocation proof。
+- 状态与状态转换：MiniJAM 保留了 JAM 的原始状态和状态转换逻辑，但部分状态始终保持默认值。这方便链下 Worker 的多客户端实现，无需实现一套单独的逻辑。
+- Accumulate：MiniJAM 保留了累积逻辑，并将其作为 Runtime 运行，因此在运行上无法并行。
+- 桥接：与 JAM 不同，MiniJAM 依赖于平行链，因此具有特殊的 Token 桥接需求。这是通过监测特定存储来实现的。
+
+## 当前进度
 
 当前仓库已经包含：
 
@@ -16,16 +28,8 @@ MiniJAM 是一个由独立链承载、兼容 JAM 执行模型的实验性执行�
 - 确定性的 Worker 筛选、任务分配、多轮候选报告和表决逻辑；
 - MiniJAM JamCore 执行接口，以及执行结果的规范化与原子状态校验；
 - Bulletin 存储抽象和可注入故障的本地模拟器；
-- 入站托管与出站释放所需的桥接账本和 Runtime Pallet；
-- 基于 Aura/GRANDPA 的开发节点、Runtime、开发链和本地测试网配置；
-- 与 jambda 仓库衔接的 `no_std` MiniJAM Executive。
-
-当前尚未包含：
-
-- 生产级 Bulletin Chain 后端；
-- 真实报告语料的导入管线；
-- 链下 Refine Worker 及其完整调度、网络和运维组件；
-- 生产网络参数、安全审计与稳定性承诺。
+- 入站托管与出站释放所需的桥接；
+- 在 jambda 基础上实现的 MiniJAM Executive。
 
 ## 工作流程
 
@@ -64,7 +68,7 @@ Runtime 还提供暂停执行和隔离待执行队列的 Root 管理操作，用
 以下数值来自 `minijam-protocol` 的当前开发配置，可能在协议稳定前调整：
 
 | 参数 | 当前值 |
-| --- | ---: |
+| --- | --- |
 | 候选 Worker 集合 | 8 |
 | 每轮最多 Work 数 | 4 |
 | 每个 Work 分配的 Worker 数 | 3 |
@@ -93,7 +97,7 @@ Runtime 还提供暂停执行和隔离待执行队列的 Root 管理操作，用
 
 `runtime` 当前通过相对路径依赖 jambda，因此两个仓库需要放在同一父目录下：
 
-```text
+```
 workspace/
 ├── jambda/
 └── minijam-client/
@@ -163,9 +167,9 @@ cargo test --workspace
 
 - 公共协议当前为 `PROTOCOL_VERSION_V1`，JamCore 接口当前为 `INTERFACE_VERSION = 1`。
 - 报告、批次、状态值和执行队列均有明确上限，以保证 Runtime 执行有界。
-- `minijam-bulletin-simulator` 只复现本地开发所需的 Bulletin 语义，不能替代生产存储服务。
+- `minijam-bulletin-simulator` 只复现本地开发所需的 Bulletin 语义。
 - 经济参数、惩罚比例和管理权限仍属于开发配置，不应视为主网最终参数。
 
 ## 许可证
 
-本项目采用 [Apache License 2.0](LICENSE) 许可证。
+本项目采用 Apache License 2.0 许可证。
