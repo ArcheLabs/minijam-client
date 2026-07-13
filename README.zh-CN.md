@@ -95,13 +95,13 @@ Runtime 还提供暂停执行和隔离待执行队列的 Root 管理操作，用
 
 仓库中的 `rust-toolchain.toml` 会固定 Rust 工具链，并安装 `rustfmt`、`clippy`、`rust-src`、`wasm32-unknown-unknown` 和 `wasm32v1-none`。
 
-`runtime` 当前通过相对路径依赖 jambda，因此两个仓库需要放在同一父目录下：
+生产 Runtime 当前依赖私有 jambda submodule。授权开发者在构建 Runtime 前需要先初始化：
 
+```bash
+git submodule update --init external/jambda
 ```
-workspace/
-├── jambda/
-└── minijam-client/
-```
+
+检出的 submodule 版本必须包含 `crates/minijam-executive`；生产 Runtime 构建只面向拥有该私有 jambda 版本权限的开发者。
 
 进入 `minijam-client` 后运行：
 
@@ -120,10 +120,10 @@ cargo check \
   --target wasm32-unknown-unknown
 ```
 
-在相邻的 jambda 仓库中检查 MiniJAM 执行边界：
+在 jambda submodule 中检查 MiniJAM 执行边界：
 
 ```bash
-cd ../jambda
+cd external/jambda
 cargo check \
   -p jambda-minijam-executive \
   --no-default-features \

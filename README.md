@@ -95,13 +95,13 @@ The following values come from the current development configuration in `minijam
 
 The repository's `rust-toolchain.toml` pins the Rust toolchain and installs `rustfmt`, `clippy`, `rust-src`, `wasm32-unknown-unknown`, and `wasm32v1-none`.
 
-`runtime` currently depends on jambda through a relative path, so both repositories must be placed under the same parent directory:
+The production Runtime currently depends on the private jambda submodule. Authorized developers should initialize it before building the Runtime:
 
-```text
-workspace/
-├── jambda/
-└── minijam-client/
+```bash
+git submodule update --init external/jambda
 ```
+
+The checked-out submodule revision must contain `crates/minijam-executive`; production Runtime builds are only available to developers with access to that private jambda revision.
 
 After entering `minijam-client`, run:
 
@@ -120,10 +120,10 @@ cargo check \
   --target wasm32-unknown-unknown
 ```
 
-Check the MiniJAM execution boundary from the sibling jambda repository:
+Check the MiniJAM execution boundary from the jambda submodule:
 
 ```bash
-cd ../jambda
+cd external/jambda
 cargo check \
   -p jambda-minijam-executive \
   --no-default-features \

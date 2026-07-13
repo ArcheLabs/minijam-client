@@ -3,7 +3,7 @@
 
 extern crate alloc;
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{borrow::ToOwned, collections::BTreeMap, vec::Vec};
 use minijam_jamcore_api::{
     InvariantError, MiniJamExecutionInputV1, MiniJamExecutionOutputV1, ProtocolStateReader,
     StateError,

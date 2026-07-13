@@ -15,6 +15,7 @@ members = [
   "runtime",
   "node",
 ]
+exclude = ["external/jambda"]
 
 [workspace.package]
 version = "0.1.0"
@@ -81,6 +82,10 @@ sp-version = { git = "https://github.com/paritytech/polkadot-sdk.git", rev = "2e
 substrate-wasm-builder = { git = "https://github.com/paritytech/polkadot-sdk.git", rev = "2e4dd0bc22366a5af820492528869a493b5a5208" }
 substrate-build-script-utils = { git = "https://github.com/paritytech/polkadot-sdk.git", rev = "2e4dd0bc22366a5af820492528869a493b5a5208", default-features = false }
 substrate-frame-rpc-system = { git = "https://github.com/paritytech/polkadot-sdk.git", rev = "2e4dd0bc22366a5af820492528869a493b5a5208", default-features = false }
+
+[patch.crates-io]
+minijam-jamcore-api = { path = "crates/minijam-jamcore-api" }
+minijam-protocol = { path = "crates/minijam-protocol" }
 
 [profile.release]
 panic = "abort"
