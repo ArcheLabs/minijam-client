@@ -3,19 +3,17 @@ use frame_support::{
     assert_ok, derive_impl, parameter_types,
     traits::tokens::fungible::{Inspect, InspectHold},
 };
-use minijam_bridge_engine::BridgeAdminRecordSource;
 use minijam_jamcore_api::{
-    MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionOutputV1, MiniJamExecutor,
+    InputError, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionOutputV1, MiniJamExecutor,
     ProtocolStateReader,
 };
 use minijam_protocol::{
-    blake2_256, BulletinEvidence, CanonicalReportBytes, ProtocolStateChange, ReportEnvelopeV1,
-    ReportMetadataV1, ReportSignatures, StateOperation, StateValue, Verdict, WorkerVoteV1,
-    NS_ADMIN_BRIDGE, NS_SERVICE_STORAGE, PROTOCOL_VERSION_V1,
+    blake2_256, BulletinEvidence, CanonicalReportBytes, PreimageMetadataV1, ProtocolStateChange,
+    ReportEnvelopeV1, ReportMetadataV1, ReportSignatures, StateOperation, StateValue, Verdict,
+    WorkerVoteV1, NS_SERVICE_STORAGE, PROTOCOL_VERSION_V1,
 };
 use sp_core::{sr25519, Pair};
 use sp_runtime::BuildStorage;
-use std::{cell::RefCell, vec::Vec as StdVec};
 
 type Block = frame_system::mocking::MockBlock<Test>;
 
@@ -121,8 +119,7 @@ impl pallet_minijam::Config for Test {
     type MaxExecutionReports = frame_support::traits::ConstU32<4>;
     type MaxExecutionGas = frame_support::traits::ConstU64<1_000_000>;
     type JamCoreExecutor = TestExecutor;
-    type BridgeAdminRecords = TestBridgeAdminRecords;
-    type MaxBridgeAdminRecords = frame_support::traits::ConstU32<8>;
+    type MaxPendingPreimages = frame_support::traits::ConstU32<8>;
 }
 
 #[derive(Default)]
@@ -135,6 +132,22 @@ impl MiniJamExecutor for TestExecutor {
         _state: &R,
     ) -> Result<MiniJamExecutionOutputV1, MiniJamError> {
         let mut output = MiniJamExecutionOutputV1::empty();
+        output.consumed_reports = input
+            .reports
+            .iter()
+            .map(|report| blake2_256(report))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        output.consumed_preimages = input
+            .preimages
+            .iter()
+            .map(|preimage| blake2_256(preimage))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        output.header_hash = [1; 32];
+        output.accumulate_root = [2; 32];
         let mut key = [0u8; 31];
         key[0] = NS_SERVICE_STORAGE;
         key[30] = 7;
@@ -150,43 +163,24 @@ impl MiniJamExecutor for TestExecutor {
         output.receipt_hash = output.compute_receipt_hash();
         Ok(output)
     }
-}
 
-pub struct TestBridgeAdminRecords;
-
-thread_local! {
-    static BRIDGE_RECORDS: RefCell<StdVec<([u8; 31], StateValue)>> = const { RefCell::new(StdVec::new()) };
-}
-
-impl TestBridgeAdminRecords {
-    fn push(key: [u8; 31], value: StateValue) {
-        BRIDGE_RECORDS.with(|records| records.borrow_mut().push((key, value)));
-    }
-
-    fn clear() {
-        BRIDGE_RECORDS.with(|records| records.borrow_mut().clear());
-    }
-
-    fn len() -> usize {
-        BRIDGE_RECORDS.with(|records| records.borrow().len())
-    }
-}
-
-impl BridgeAdminRecordSource for TestBridgeAdminRecords {
-    fn drain_admin_records(
-        limit: u32,
-    ) -> Result<StdVec<([u8; 31], StateValue)>, minijam_bridge_engine::BridgeError> {
-        BRIDGE_RECORDS.with(|records| {
-            let mut records = records.borrow_mut();
-            records.sort_by_key(|(key, _)| *key);
-            let count = (limit as usize).min(records.len());
-            Ok(records.drain(..count).collect())
+    fn validate_preimage_submission<R: ProtocolStateReader>(
+        &self,
+        bytes: &[u8],
+        _state: &R,
+    ) -> Result<PreimageMetadataV1, MiniJamError> {
+        if bytes.is_empty() {
+            return Err(MiniJamError::Input(InputError::InvalidPreimageEncoding));
+        }
+        Ok(PreimageMetadataV1 {
+            requester: u32::from(bytes[0]),
+            blob_hash: blake2_256(bytes),
+            blob_len: bytes.len() as u32,
         })
     }
 }
 
 fn new_test_ext() -> sp_io::TestExternalities {
-    TestBridgeAdminRecords::clear();
     let mut storage = frame_system::GenesisConfig::<Test>::default()
         .build_storage()
         .unwrap();
@@ -360,7 +354,7 @@ fn accepted_candidate_executes_next_block_and_commits_delta() {
         );
         assert_eq!(
             MiniJam::work(0).unwrap().status,
-            pallet_minijam::WorkStatus::Executed
+            pallet_minijam::WorkStatus::Imported
         );
         assert!(pallet_minijam::ExecutionQueue::<Test>::get().is_empty());
         assert!(pallet_minijam::ExecutionReceipts::<Test>::get(0).is_some());
@@ -369,51 +363,24 @@ fn accepted_candidate_executes_next_block_and_commits_delta() {
 }
 
 #[test]
-fn bridge_admin_records_are_committed_in_execution_transaction() {
+fn queued_preimages_are_imported_with_next_virtual_block() {
     new_test_ext().execute_with(|| {
-        let mut bridge_key = [0u8; 31];
-        bridge_key[0] = NS_ADMIN_BRIDGE;
-        bridge_key[30] = 9;
-        TestBridgeAdminRecords::push(bridge_key, StateValue::try_from(vec![9, 9]).unwrap());
+        let preimage = minijam_protocol::CanonicalPreimageBytes::try_from(vec![7, 8, 9]).unwrap();
+        let canonical_hash = blake2_256(&preimage);
+        assert_ok!(MiniJam::submit_preimage(RuntimeOrigin::signed(6), preimage));
+        assert_eq!(pallet_minijam::PendingPreimages::<Test>::get().len(), 1);
 
-        let pairs = activate_workers();
-        assert_ok!(MiniJam::submit_work(RuntimeOrigin::signed(5)));
-        assert_ok!(MiniJam::submit_candidate(
-            RuntimeOrigin::signed(6),
-            Box::new(envelope(0, 0))
+        System::set_block_number(100);
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(100);
+
+        assert!(pallet_minijam::PendingPreimages::<Test>::get().is_empty());
+        assert!(!pallet_minijam::PendingPreimageKeys::<Test>::contains_key(
+            pallet_minijam::PreimageKeyV1 {
+                requester: 7,
+                blob_hash: canonical_hash,
+                blob_len: 3
+            }
         ));
-        let assignment = Workers::assignment(0, 0).unwrap();
-        vote(
-            &pairs[assignment[0] as usize],
-            assignment[0],
-            Verdict::Support,
-        );
-        vote(
-            &pairs[assignment[1] as usize],
-            assignment[1],
-            Verdict::Support,
-        );
-        vote(
-            &pairs[assignment[2] as usize],
-            assignment[2],
-            Verdict::Oppose(minijam_protocol::OpposeReason::MissingData),
-        );
-        <MiniJam as frame_support::traits::Hooks<u64>>::on_initialize(100);
-
-        System::set_block_number(101);
-        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(101);
-
-        assert_eq!(
-            pallet_minijam::ProtocolState::<Test>::get(bridge_key)
-                .unwrap()
-                .into_inner(),
-            vec![9, 9]
-        );
-        assert_eq!(TestBridgeAdminRecords::len(), 0);
-        assert_eq!(
-            MiniJam::work(0).unwrap().status,
-            pallet_minijam::WorkStatus::Executed
-        );
     });
 }
 
@@ -457,7 +424,7 @@ fn root_pause_skips_execution_until_resumed() {
         <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(101);
         assert_eq!(
             MiniJam::work(0).unwrap().status,
-            pallet_minijam::WorkStatus::Executed
+            pallet_minijam::WorkStatus::Imported
         );
         assert!(pallet_minijam::ExecutionQueue::<Test>::get().is_empty());
     });

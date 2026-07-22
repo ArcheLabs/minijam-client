@@ -8,7 +8,7 @@ use minijam_jamcore_api::{
     InvariantError, MiniJamExecutionInputV1, MiniJamExecutionOutputV1, ProtocolStateReader,
     StateError,
 };
-use minijam_protocol::{ProtocolNamespace, ProtocolStateChange, StateOperation, MAX_DELTA_BYTES};
+use minijam_protocol::{ProtocolStateChange, StateOperation, MAX_DELTA_BYTES};
 use parity_scale_codec::Encode;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,10 +56,6 @@ pub fn validate_execution_output<R: ProtocolStateReader>(
     }
 
     for change in changes {
-        if ProtocolNamespace::from_key(&change.key).is_none() {
-            return Err(ValidationError::Invariant(InvariantError::ForbiddenChange));
-        }
-
         let exists = state.get(&change.key)?.is_some();
         match (change.operation, change.value.is_some(), exists) {
             (StateOperation::Upsert, true, false)
@@ -136,8 +132,8 @@ mod tests {
     use super::*;
     use minijam_jamcore_api::MiniJamExecutionOutputV1;
     use minijam_protocol::{
-        CanonicalReportBytes, ProtocolStateChange, ReportBatch, StateChanges, StateValue,
-        NS_ADMIN_BRIDGE, NS_SERVICE_STORAGE, PROTOCOL_VERSION_V1,
+        CanonicalReportBytes, PreimageBatch, ProtocolStateChange, ReportBatch, StateChanges,
+        StateValue, NS_ADMIN_BRIDGE, NS_SERVICE_STORAGE, PROTOCOL_VERSION_V1,
     };
 
     fn key(namespace: u8, discriminator: u8) -> [u8; 31] {
@@ -149,11 +145,14 @@ mod tests {
 
     fn input(max_gas: u64) -> MiniJamExecutionInputV1 {
         MiniJamExecutionInputV1 {
-            slot: 1,
-            epoch: 0,
-            reports: ReportBatch::try_from(Vec::<CanonicalReportBytes>::new()).unwrap(),
-            max_gas,
             protocol_version: PROTOCOL_VERSION_V1,
+            slot: 1,
+            parent_hash: [1; 32],
+            parent_state_root: [2; 32],
+            entropy: [3; 32],
+            reports: ReportBatch::try_from(Vec::<CanonicalReportBytes>::new()).unwrap(),
+            preimages: PreimageBatch::default(),
+            max_gas,
         }
     }
 
@@ -200,25 +199,22 @@ mod tests {
     }
 
     #[test]
-    fn rejects_forbidden_namespace_without_writes() {
-        let forbidden = key(0x80, 1);
-        let state = MemoryProtocolState::default();
-        let before = state.clone();
-        let result = validate_execution_output(
+    fn accepts_standard_jam_opaque_keys() {
+        let standard_system_key = key(0x01, 1);
+        let mut state = MemoryProtocolState::default();
+        let delta = validate_execution_output(
             &input(100),
             &output(vec![ProtocolStateChange {
-                key: forbidden,
+                key: standard_system_key,
                 operation: StateOperation::Upsert,
                 value: Some(value(1)),
             }]),
             &state,
-        );
+        )
+        .unwrap();
 
-        assert_eq!(
-            result,
-            Err(ValidationError::Invariant(InvariantError::ForbiddenChange))
-        );
-        assert_eq!(state, before);
+        state.apply_validated(delta);
+        assert_eq!(state.value(&standard_system_key), Some([1].as_slice()));
     }
 
     #[test]

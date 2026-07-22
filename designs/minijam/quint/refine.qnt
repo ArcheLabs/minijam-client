@@ -1,8 +1,8 @@
 // Abstract refine model.
 //
-// MiniJAM v1 does not execute a real PVM here. Refine is represented by
-// workers producing a candidate report whose envelope carries abstract
-// metadata, delta, service outputs, preimages and exports.
+// MiniJAM Runtime does not interpret refine output as a MiniJAM delta. Workers
+// submit an opaque canonical JAM WorkReport projection that the Executive later
+// imports into a virtual JAM block.
 module refine {
   import types.* from "./types"
   import messages.* from "./messages"
@@ -11,6 +11,12 @@ module refine {
     match pkg.workId {
       | MkWorkId(i) => hashOf(i)
       | _WorkIdSentinel => hashOf(0)
+    }
+
+  pure def reportHashOf(pkg: WorkPackage, round: Round): Hash =
+    match pkg.workId {
+      | MkWorkId(i) => hashOf(i * 100 + round)
+      | _WorkIdSentinel => hashOf(round)
     }
 
   pure def defaultMetadata(pkg: WorkPackage): ReportMetadata = {
@@ -48,45 +54,31 @@ module refine {
     importsRoot: hashOf(11)
   }
 
-  pure def validServiceDelta(local: int, value: int): StateChange = {
-    key: { namespace: ServiceStorage, local: local },
-    op: Upsert,
-    value: Some(value)
-  }
-
-  pure def validPreimageDelta(local: int, value: int): StateChange = {
-    key: { namespace: Preimage, local: local },
-    op: Upsert,
-    value: Some(value)
-  }
-
-  pure def forbiddenDelta(local: int): StateChange = {
-    key: { namespace: ForbiddenNamespace, local: local },
-    op: Upsert,
-    value: Some(1)
+  pure def canonicalReport(pkg: WorkPackage, round: Round, deps: Set[Hash], gas: Gas): CanonicalWorkReport = {
+    reportHash: reportHashOf(pkg, round),
+    packageHash: packageHash(pkg),
+    exportsRoot: defaultMetadata(pkg).exportsRoot,
+    authorizerHash: hashOf(300 + round),
+    core: match pkg.workId { | MkWorkId(i) => i % 2 | _WorkIdSentinel => 0 },
+    accumulateGas: gas,
+    dependencies: deps
   }
 
   pure def candidateReport(
     pkg: WorkPackage,
     round: Round,
     submitter: AccountId,
-    delta: List[StateChange],
-    outcome: ExecutionOutcome
+    deps: Set[Hash],
+    gas: Gas
   ): ReportEnvelope = {
     protocolVersion: ProtocolVersion,
     chainId: ChainId,
     workId: pkg.workId,
     service: pkg.service,
     round: round,
-    reportHash: match pkg.workId { | MkWorkId(i) => hashOf(i * 100 + round) | _WorkIdSentinel => hashOf(round) },
-    metadata: defaultMetadata(pkg),
-    parentStateRoot: pkg.parentStateRoot,
-    postStateRoot: stateRootAfter(pkg.parentStateRoot, match pkg.workId { | MkWorkId(i) => hashOf(i * 100 + round) | _WorkIdSentinel => hashOf(round) }),
-    bulletinFault: NoBulletinFault,
-    delta: delta,
-    outputs: List({ service: MkServiceId(1), outputHash: hashOf(700 + round) }),
-    bridgeEffects: List(),
-    gasUsed: 10,
-    outcome: outcome
+    reportHash: reportHashOf(pkg, round),
+    metadata: { ...defaultMetadata(pkg), accumulateGas: gas },
+    canonical: canonicalReport(pkg, round, deps, gas),
+    bulletinFault: NoBulletinFault
   }
 }

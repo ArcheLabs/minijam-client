@@ -5,7 +5,7 @@
 - Rust toolchain: `nightly-2026-05-02`
 - FRAME runtime Wasm target: `wasm32v1-none`
 - jambda no-std check target: `wasm32-unknown-unknown`
-- jambda base commit: `eaa656092f93a97688f1449ba7f07b38b753baca`
+- jambda submodule commit: `8e03baf44d7f315a2c4313d499d64f5dfe9cf185`
 - Gray Paper semantics: `0.7.2`
 - Bulletin Chain compatibility commit:
   `b6c2827d232669b525c0906cc20def0e5eb4676b`

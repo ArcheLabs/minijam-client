@@ -1,8 +1,8 @@
 // Foundational types and bounded model constants for MiniJAM.
 //
-// Cryptography, SCALE bytes, canonical report bytes, CIDs and signatures are
-// modelled as opaque integers. The model checks equality, ordering and state
-// transitions, not byte-level encodings.
+// Cryptography, canonical JAM encodings and state roots are modelled as opaque
+// integers. The model checks protocol ordering and state-transition boundaries,
+// not byte-level encodings.
 module types {
   type Option[a] = Some(a) | None
 
@@ -18,23 +18,12 @@ module types {
   type Balance = int
   type Gas = int
 
-  type Namespace =
-    | System
-    | ServiceInfo
-    | ServiceStorage
-    | ServiceLookup
-    | Preimage
-    | AdminBridge
-    | ForbiddenNamespace
-
-  type StateOperation = Upsert | Update | Remove
-
   type WorkStatus =
     | InsufficientWorkers
     | AwaitingCandidate
     | Voting
     | Accepted
-    | Executed
+    | Imported
     | Failed
 
   type Verdict = Support | Oppose
@@ -48,6 +37,23 @@ module types {
     | FatalStateError
     | FatalInvariantError
 
+  type ExecutivePhase =
+    | Start
+    | LastHistoryDone
+    | SafroleDone
+    | PreimagesPrepared
+    | AccumulateDone
+    | CurrentHistoryDone
+    | AuthorizationsDone
+    | StatisticsDone
+    | PreimagesApplied
+    | Finalized
+
+  type RemovedStf =
+    | Disputes
+    | Assurances
+    | ReportsGuarantees
+
   type BulletinFault =
     | NoBulletinFault
     | Missing
@@ -58,8 +64,6 @@ module types {
   pure val ProtocolVersion: int = 1
   pure val ChainId: Hash = { hashBytes: 77 }
 
-  // Small finite-domain constants. These preserve MiniJAM semantics while
-  // keeping Quint exploration tractable.
   pure val MaxWorkers: int = 5
   pure val TopWorkers: int = 4
   pure val WorkersPerWork: int = 3
@@ -97,17 +101,12 @@ module types {
 
   pure def hashOf(i: int): Hash = { hashBytes: i }
 
-  pure def namespaceAllowed(ns: Namespace): bool =
-    ns == System or
-    ns == ServiceInfo or
-    ns == ServiceStorage or
-    ns == ServiceLookup or
-    ns == Preimage or
-    ns == AdminBridge
-
   pure def mapRemove(m: a -> b, k: a): a -> b =
     m.keys().exclude(Set(k)).mapBy(x => m.get(x))
 
   pure def listContains(xs: List[a], x: a): bool =
     xs.indices().exists(i => xs[i] == x)
+
+  pure def listToSet(xs: List[a]): Set[a] =
+    xs.indices().map(i => xs[i])
 }

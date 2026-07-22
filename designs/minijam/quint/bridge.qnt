@@ -1,13 +1,14 @@
-// Native bridge and admin-service record abstraction.
+// Native bridge ledger abstraction.
+//
+// The virtual JAM Executive no longer returns bridge effects or injected admin
+// records. Bridge handling is modelled as a Runtime-only subsystem that may
+// observe configured standard JAM state keys after a successful delta commit.
 module bridge {
   import types.* from "./types"
-  import messages.* from "./messages"
   import state.* from "./state"
 
-  pure def adminBridgeKey(effect: BridgeEffect): ProtocolKey = {
-    namespace: AdminBridge,
-    local: if (effect.direction == BridgeInbound) effect.nonce else 1000 + effect.nonce
-  }
+  pure def bridgeStateKey(effect: BridgeEffect): Hash =
+    hashOf(if (effect.direction == BridgeInbound) effect.nonce else 1000 + effect.nonce)
 
   pure def bridgeIn(s: MiniJamState, account: AccountId, target: ServiceId, amount: Balance): MiniJamState =
     if (amount <= 0) s
@@ -27,7 +28,7 @@ module bridge {
           ...s.bridge,
           nextInboundNonce: nonce + 1,
           escrow: s.bridge.escrow.put(account, oldEscrow + amount),
-          adminRecords: s.bridge.adminRecords.put(adminBridgeKey(effect), amount)
+          observedStateKeys: s.bridge.observedStateKeys.union(Set(bridgeStateKey(effect)))
         }
       }
     }
@@ -43,17 +44,8 @@ module bridge {
           ...s.bridge,
           escrow: s.bridge.escrow.put(effect.account, oldEscrow - effect.amount),
           consumedOutbound: s.bridge.consumedOutbound.union(Set(effect.nonce)),
-          adminRecords: s.bridge.adminRecords.put(adminBridgeKey(effect), effect.amount)
+          observedStateKeys: s.bridge.observedStateKeys.union(Set(bridgeStateKey(effect)))
         }
       }
     }
-
-  pure def consumeAdminRecords(s: MiniJamState): (MiniJamState, List[StateChange]) = {
-    val records = s.bridge.adminRecords.keys().fold(List(), (acc, k) => acc.append({
-      key: k,
-      op: Upsert,
-      value: Some(s.bridge.adminRecords.get(k))
-    }))
-    ({ ...s, bridge: { ...s.bridge, adminRecords: Map() } }, records)
-  }
 }

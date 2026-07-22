@@ -25,7 +25,7 @@ impl SubstrateCli for Cli {
     }
 
     fn support_url() -> String {
-        "https://github.com/libingjiang/minijam-client".into()
+        "https://github.com/ArcheLabs/minijam-client".into()
     }
 
     fn copyright_start_year() -> i32 {

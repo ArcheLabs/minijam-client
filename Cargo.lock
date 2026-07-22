@@ -3746,6 +3746,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "jambda-authorizations"
+version = "0.0.1"
+dependencies = [
+ "jambda-state-backend",
+ "jp-core-primitives",
+]
+
+[[package]]
+name = "jambda-history"
+version = "0.0.1"
+dependencies = [
+ "jam-codec",
+ "jambda-state-backend",
+ "jp-core-primitives",
+ "log",
+]
+
+[[package]]
 name = "jambda-logging"
 version = "0.0.1"
 dependencies = [
@@ -3758,13 +3776,37 @@ version = "0.0.1"
 dependencies = [
  "jam-codec",
  "jambda-accumulate",
+ "jambda-authorizations",
+ "jambda-history",
+ "jambda-preimages",
+ "jambda-safrole",
  "jambda-state-backend",
+ "jambda-statistics",
  "jp-core-primitives",
  "jp-vm-interp",
  "jp-vm-primitives",
  "minijam-jamcore-api",
  "minijam-protocol",
  "spin 0.10.0",
+]
+
+[[package]]
+name = "jambda-preimages"
+version = "0.0.1"
+dependencies = [
+ "jambda-state-backend",
+ "jp-core-primitives",
+ "jp-crypto-primitives",
+]
+
+[[package]]
+name = "jambda-safrole"
+version = "0.0.1"
+dependencies = [
+ "jam-codec",
+ "jambda-state-backend",
+ "jp-core-primitives",
+ "log",
 ]
 
 [[package]]
@@ -3781,6 +3823,15 @@ dependencies = [
  "jp-vm-primitives",
  "log",
  "paste",
+]
+
+[[package]]
+name = "jambda-statistics"
+version = "0.0.1"
+dependencies = [
+ "jam-codec",
+ "jambda-state-backend",
+ "jp-core-primitives",
 ]
 
 [[package]]

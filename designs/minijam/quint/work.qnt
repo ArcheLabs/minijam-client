@@ -38,7 +38,8 @@ module work {
         {
           ...s,
           works: s.works.put(workId, { ...w, status: Voting }),
-          candidates: s.candidates.put((workId, w.round), cand)
+          candidates: s.candidates.put((workId, w.round), cand),
+          acceptedReports: s.acceptedReports.put(report.reportHash, report)
         }
       }
     }

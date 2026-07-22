@@ -49,14 +49,15 @@ pub type BlockNumber = u32;
 pub type EpochIndex = u32;
 
 pub type CanonicalReportBytes = BoundedVec<u8, ConstU32<1_048_576>>;
+pub type CanonicalPreimageBytes = BoundedVec<u8, ConstU32<1_048_576>>;
 pub type BulletinProofBytes = BoundedVec<u8, ConstU32<65_536>>;
 pub type ReportSignatures = BoundedVec<WorkerSignature, ConstU32<8>>;
 pub type StateValue = BoundedVec<u8, ConstU32<1_048_576>>;
 pub type StateChanges = BoundedVec<ProtocolStateChange, ConstU32<4_096>>;
 pub type ReportBatch = BoundedVec<CanonicalReportBytes, ConstU32<4>>;
+pub type PreimageBatch = BoundedVec<CanonicalPreimageBytes, ConstU32<64>>;
 pub type ConsumedReports = BoundedVec<Hash, ConstU32<4>>;
-pub type ServiceOutputs = BoundedVec<ServiceOutput, ConstU32<1_024>>;
-pub type BridgeEffects = BoundedVec<BridgeEffect, ConstU32<1_024>>;
+pub type ConsumedPreimages = BoundedVec<Hash, ConstU32<64>>;
 
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub enum HashingAlgorithm {
@@ -120,6 +121,13 @@ pub struct ReportMetadataV1 {
     pub context_hash: Hash,
     pub exports_root: Hash,
     pub accumulate_gas: u64,
+}
+
+#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+pub struct PreimageMetadataV1 {
+    pub requester: u32,
+    pub blob_hash: Hash,
+    pub blob_len: u32,
 }
 
 #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
@@ -215,41 +223,11 @@ pub enum StateOperation {
     Remove,
 }
 
-#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-pub enum ProtocolNamespace {
-    System,
-    ServiceInfo,
-    ServiceStorage,
-    ServiceLookup,
-    Preimage,
-    AdminBridge,
-}
-
-impl ProtocolNamespace {
-    pub fn from_key(key: &[u8; 31]) -> Option<Self> {
-        match key[0] {
-            NS_SYSTEM => Some(Self::System),
-            NS_SERVICE_INFO => Some(Self::ServiceInfo),
-            NS_SERVICE_STORAGE => Some(Self::ServiceStorage),
-            NS_SERVICE_LOOKUP => Some(Self::ServiceLookup),
-            NS_PREIMAGE => Some(Self::Preimage),
-            NS_ADMIN_BRIDGE => Some(Self::AdminBridge),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub struct ProtocolStateChange {
     pub key: [u8; 31],
     pub operation: StateOperation,
     pub value: Option<StateValue>,
-}
-
-#[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-pub struct ServiceOutput {
-    pub service_id: u32,
-    pub output_hash: Hash,
 }
 
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]

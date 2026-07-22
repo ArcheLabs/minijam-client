@@ -49,14 +49,12 @@ impl MiniJamExecutor for MockExecutor {
                         operation: StateOperation::Upsert,
                         value: Some(value.clone()),
                     })
-                    .map_err(|_| MiniJamError::Invariant(InvariantError::ForbiddenChange))?;
+                    .map_err(|_| MiniJamError::Invariant(InvariantError::DuplicateKey))?;
                 output.receipt_hash = output.compute_receipt_hash();
                 Ok(output)
             }
             MockMode::StateError => Err(MiniJamError::State(StateError::MissingState)),
-            MockMode::InvariantError => {
-                Err(MiniJamError::Invariant(InvariantError::ForbiddenChange))
-            }
+            MockMode::InvariantError => Err(MiniJamError::Invariant(InvariantError::DuplicateKey)),
         }
     }
 }

@@ -1,57 +1,71 @@
 # Implementation status
 
-## Completed in the foundation milestone
+MiniJAM is an early development codebase. The public repository contains the
+protocol surface, runtime pallets, node skeleton, local simulators, and the
+gitlink for the private jambda execution submodule. It does not contain the
+private jambda source code.
 
-- Pinned Rust, Gray Paper, jambda, and Bulletin compatibility baselines.
-- `no_std` MiniJam protocol types and JAMCore ABI.
-- Bounded canonical report envelope and worker vote payload.
-- Deterministic top-N worker selection and balanced work assignment.
-- Support/Oppose voting, attendance, and slash calculations.
-- Bulletin-compatible Raw/Blake2b-256 CID store/fetch/renew simulator.
-- Fault injection for missing, corrupt, and timeout responses.
-- Native-asset bridge nonce and escrow core.
-- Mock JAMCore executor and deterministic receipt generation.
-- Runtime-independent protocol state adapter with namespace, ordering, operation,
-  gas, receipt, and total-delta validation.
-- Transaction-style in-memory protocol state application with rollback tests.
-- `pallet-minijam-workers` registration with a dedicated balance hold reason,
-  bounded candidate pool, next-epoch activation, and deterministic Top-N epoch
+## Implemented
+
+- Pinned Rust, Polkadot SDK, JAM Gray Paper, jambda submodule, and Bulletin
+  compatibility baselines.
+- `no_std` MiniJAM protocol types, JamCore ABI, bounded report envelopes,
+  Worker vote payloads, protocol state changes, and bridge effect types.
+- Deterministic Top-N Worker selection, balanced Work assignment, per-round duty
+  limits, Support/Oppose voting, attendance accounting, rewards, slashing, and
+  equivocation proofs.
+- `pallet-minijam-workers` registration, session keys, stake holds, next-epoch
+  activation, key/stake updates, delayed release, suspension, and epoch
   snapshots.
-- Next-epoch worker key/stake updates, immediate holds for stake increases, and
-  two-epoch delayed release for stake decreases.
-- Delayed-block-hash, domain-separated worker assignment with strict K, M, and
-  per-worker duty bounds; insufficient pools never lower K.
-- sr25519 session-key vote verification, explicit Support/Oppose thresholds,
-  locked decisions with continued duty responses, and deadline finalization
-  with bounded absentee recording.
-- Equal timely-response rewards for Support/Oppose, absence slashing with a
-  proportional/minimum rule, and slash resolution into the funded reward pool.
-- Assignment-key-frozen equivocation proofs with one-shot 20% slashing and
-  two-epoch worker suspension.
-- `pallet-minijam` work deposits, candidate bonds, bounded pending queue,
-  assignment/voting lifecycle, candidate rejection slashing, three-round
-  retry/failure, accepted submitter reward, and execution queue handoff.
-- Polkadot SDK stable2603 runtime with System, Timestamp, Aura, GRANDPA,
-  Balances, TransactionPayment, Sudo, MiniJam workers, and MiniJam lifecycle;
-  native and `wasm32v1-none` release builds are wired.
-- jambda logging split into std tracing and no_std no-op facades.
-- jambda `minijam-executive` canonical report metadata projection.
-- Native and Wasm `no_std` compilation of the MiniJam execution boundary.
-- Removal of state-backend's direct work-output Merkle dependency; the
-  standard JAM accumulate wrapper retains its existing root result.
+- `pallet-minijam` Work deposits, candidate bonds, pending queue, assignment and
+  voting lifecycle, candidate rejection slashing, three-round retry/failure,
+  accepted submitter reward, and bounded execution queue handoff.
+- Runtime execution hook that runs accepted reports at block finalization,
+  validates JamCore output, writes protocol state atomically, records execution
+  receipts, and supports Root pause/quarantine controls.
+- Runtime-independent protocol state adapter with namespace, ordering,
+  operation, gas, receipt, total-delta, and rollback validation.
+- FRAME storage binding for MiniJAM protocol state, service outputs, consumed
+  reports, execution receipts, and bridge effects.
+- Native-asset inbound escrow, outbound release, replay protection, bridge
+  ledger encoding, and `pallet-minijam-bridge` balance hold integration.
+- Bulletin storage API plus a local Raw/Blake2b-256 CID simulator with
+  fetch/store/renew/status operations and missing/corrupt/timeout fault
+  injection.
+- Mock JamCore executor and deterministic receipt generation for tests.
+- Polkadot SDK stable2603 solo-chain runtime with System, Timestamp, Aura,
+  GRANDPA, Balances, TransactionPayment, Sudo, MiniJAM workers, MiniJAM
+  lifecycle, and MiniJAM bridge pallets.
+- Development node CLI, RPC wiring, dev/local chain specs, Aura authoring, and
+  GRANDPA finality service.
+- Private jambda submodule integration for `jambda-minijam-executive`, including
+  the runtime dependency path and `wasm32v1-none` no-default Runtime dependency
+  validation.
 
-## Intentionally deferred
+## Deferred
 
-- Existing report corpus import and execution tests.
-- Worker client and refine.
+- Production Bulletin Chain backend and production data-availability network.
+- Real report corpus import, report replay, and full execution conformance
+  tests.
+- Off-chain Worker client, Refine execution, export segment generation, upload,
+  and operational networking.
+- Full JAM assurance, global dispute, judgment, verdict, audit, and chain
+  rollback semantics.
+- Production runtime weights, benchmarks, economic parameters, security audit,
+  and mainnet stability commitments.
+- Full Runtime and node builds. The current no-default `wasm32v1-none` Runtime
+  dependency check passes, but host Runtime compilation and the Substrate
+  release Wasm builder still hit `generic_const_exprs` trait-solver overflows in
+  the private jambda `TinySpec` state backend and codec path.
+- Public distribution flow for prebuilt Runtime artifacts for users without
+  access to the private jambda submodule.
 
-## Remaining before the foundation MVP is complete
+## Public release notes
 
-- Polkadot SDK solo-chain node/service and dev/local chain specs.
-- FRAME storage binding for the validated protocol state adapter.
-- Runtime execution hook and JAM state storage.
-- Balances hold integration for bridge escrow.
-- Full DAG-PB chunked Bulletin uploads and persistent simulator metadata.
-- MiniJam accumulate-core execution and protocol delta export.
-- Runtime benchmarks, weights, pause/quarantine recovery, and node restart
-  integration tests.
+- Public protocol, pallet, simulator, and node sources are present in this
+  repository.
+- Full Runtime and node builds currently require access to the private jambda
+  submodule revision recorded in `external/jambda`.
+- Public crate and pallet tests currently run with
+  `cargo test --workspace --exclude minijam-runtime --exclude minijam-node`.
+- `.agent` planning files are ignored and are not part of the public Git index.

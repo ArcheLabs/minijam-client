@@ -5,20 +5,20 @@ English | 简体中文
 > MiniJAM 仍处于早期开发阶段，尚未面向生产环境。
 >
 
-MiniJAM 是一个运行精简版 JAM 协议的平行链。
+MiniJAM 是一个运行精简版 JAM 协议的独立 Polkadot SDK 链。
 
 ## 与 JAM 的区别
 
 MiniJAM 把灰皮书中的 JAM 执行模型收缩到一个可在独立链上验证的最小协议面。
 
-- 共识与链：MiniJAM 使用 Polkadot SDK 平行链替换 JAM 共享。
-- Worker 与客户端边界：Worker 侧按多客户端目标设计，不同 Worker 客户端可以独立实现提交、验证和投票逻辑；Runtime 侧当前是单一 Runtime，不支持多 Runtime 客户端替换，这会导致链不一致 。
+- 共识与链：MiniJAM 使用独立 Polkadot SDK 链承载协议状态，替代 JAM 共享共识。
+- Worker 与客户端边界：Worker 侧按多客户端目标设计，不同 Worker 客户端可以独立实现提交、验证和投票逻辑；Runtime 侧当前是单一 Runtime，不支持多 Runtime 客户端替换，这会导致链不一致。
 - Work 与 Guarantees：MiniJAM 将 guarantee 流水线压缩为 Work、`ReportEnvelopeV1`、候选报告保证金和 Worker 投票。
 - Assurance 与可用性：MiniJAM 不实现 JAM 的 assurance 语义，当前用 `BulletinEvidence`、Bulletin-compatible simulator 和 Worker 投票抽象数据可用性边界。
 - 争议与裁决：MiniJAM 不实现全局 disputes、judgments 等工作报告正确性、一致性逻辑。将其交由 Work round 内的 Support/Oppose、缺席惩罚、候选报告拒绝惩罚和 equivocation proof。
 - 状态与状态转换：MiniJAM 保留了 JAM 的原始状态和状态转换逻辑，但部分状态始终保持默认值。这方便链下 Worker 的多客户端实现，无需实现一套单独的逻辑。
 - Accumulate：MiniJAM 保留了累积逻辑，并将其作为 Runtime 运行，因此在运行上无法并行。
-- 桥接：与 JAM 不同，MiniJAM 依赖于平行链，因此具有特殊的 Token 桥接需求。这是通过监测特定存储来实现的。
+- 桥接：与 JAM 不同，MiniJAM 有原生资产托管与释放需求。这通过 Runtime bridge effects 和防重放桥接存储实现。
 
 ## 当前进度
 
@@ -95,18 +95,18 @@ Runtime 还提供暂停执行和隔离待执行队列的 Root 管理操作，用
 
 仓库中的 `rust-toolchain.toml` 会固定 Rust 工具链，并安装 `rustfmt`、`clippy`、`rust-src`、`wasm32-unknown-unknown` 和 `wasm32v1-none`。
 
-生产 Runtime 当前依赖私有 jambda submodule。授权开发者在构建 Runtime 前需要先初始化：
+公开协议、Worker、桥接、Bulletin 和 state-adapter crate 已包含在本仓库中。完整 Runtime 与节点构建当前依赖私有 jambda submodule；授权开发者在构建 Runtime 前需要先初始化：
 
 ```bash
 git submodule update --init external/jambda
 ```
 
-检出的 submodule 版本必须包含 `crates/minijam-executive`；生产 Runtime 构建只面向拥有该私有 jambda 版本权限的开发者。
+检出的 submodule 版本必须包含 `crates/minijam-executive`；生产 Runtime 与节点构建只面向拥有该私有 jambda 版本权限的开发者。
 
-进入 `minijam-client` 后运行：
+进入 `minijam-client` 后，运行公开 crate 与 pallet 测试：
 
 ```bash
-cargo test --workspace
+cargo test --workspace --exclude minijam-runtime --exclude minijam-node
 ```
 
 检查需要在 Wasm 中运行的核心 crate 是否保持 `no_std` 兼容：
@@ -120,33 +120,24 @@ cargo check \
   --target wasm32-unknown-unknown
 ```
 
-在 jambda submodule 中检查 MiniJAM 执行边界：
+检查 Runtime Wasm 依赖闭包：
 
 ```bash
-cd external/jambda
 cargo check \
-  -p jambda-minijam-executive \
+  -p minijam-runtime \
   --no-default-features \
-  --target wasm32-unknown-unknown
+  --target wasm32v1-none
 ```
 
 ## 构建并运行本地节点
 
-构建发布版本：
+当前已经包含节点源码、链配置、RPC 接线、Aura 出块和 GRANDPA 服务。完整 Runtime 与节点构建当前仍需要在私有 jambda 中修复 `TinySpec` state backend 和 codec 路径上的 `generic_const_exprs` trait-solver overflow。
+
+Runtime 构建路径修复后，预期的本地节点流程如下：
 
 ```bash
 cargo build --release -p minijam-node
-```
-
-使用临时数据库启动单节点开发链：
-
-```bash
 cargo run --release -p minijam-node -- --dev --tmp
-```
-
-生成开发链配置：
-
-```bash
 cargo run --release -p minijam-node -- export-chain-spec --chain dev
 ```
 
@@ -158,10 +149,10 @@ cargo run --release -p minijam-node -- export-chain-spec --chain dev
 
 ```bash
 cargo fmt --all -- --check
-cargo test --workspace
+cargo test --workspace --exclude minijam-runtime --exclude minijam-node
 ```
 
-涉及 Runtime 执行边界的变更还应同时执行上文的两个 Wasm `no_std` 检查。
+涉及 Runtime 执行边界的变更还应同时执行上文的 Wasm `no_std` 检查。
 
 ## 兼容性与稳定性
 

@@ -1,4 +1,4 @@
-// Protocol messages and execution records for the MiniJAM model.
+// Protocol messages and virtual JAM block execution records.
 module messages {
   import types.* from "./types"
 
@@ -21,30 +21,20 @@ module messages {
     accumulateGas: Gas
   }
 
-  type ProtocolKey = {
-    namespace: Namespace,
-    local: int
+  type CanonicalWorkReport = {
+    reportHash: Hash,
+    packageHash: Hash,
+    exportsRoot: Hash,
+    authorizerHash: Hash,
+    core: int,
+    accumulateGas: Gas,
+    dependencies: Set[Hash]
   }
 
-  type StateChange = {
-    key: ProtocolKey,
-    op: StateOperation,
-    value: Option[int]
-  }
-
-  type ServiceOutput = {
-    service: ServiceId,
-    outputHash: Hash
-  }
-
-  type BridgeDirection = BridgeInbound | BridgeOutbound
-
-  type BridgeEffect = {
-    direction: BridgeDirection,
-    nonce: Nonce,
-    service: ServiceId,
-    account: AccountId,
-    amount: Balance
+  type CanonicalPreimage = {
+    preimageHash: Hash,
+    requester: ServiceId,
+    blobLength: int
   }
 
   type ReportEnvelope = {
@@ -55,14 +45,8 @@ module messages {
     round: Round,
     reportHash: Hash,
     metadata: ReportMetadata,
-    parentStateRoot: Hash,
-    postStateRoot: Hash,
-    bulletinFault: BulletinFault,
-    delta: List[StateChange],
-    outputs: List[ServiceOutput],
-    bridgeEffects: List[BridgeEffect],
-    gasUsed: Gas,
-    outcome: ExecutionOutcome
+    canonical: CanonicalWorkReport,
+    bulletinFault: BulletinFault
   }
 
   type WorkerVote = {
@@ -77,43 +61,56 @@ module messages {
   }
 
   type ExecutionInput = {
+    protocolVersion: int,
     slot: BlockNumber,
-    epoch: EpochIndex,
-    reports: List[ReportEnvelope],
-    maxGas: Gas,
-    protocolVersion: int
+    parentHash: Hash,
+    parentStateRoot: Hash,
+    entropy: Hash,
+    reports: List[CanonicalWorkReport],
+    preimages: List[CanonicalPreimage],
+    maxGas: Gas
   }
 
   type ExecutionOutput = {
-    orderedChanges: List[StateChange],
-    consumedReports: List[Hash],
-    serviceOutputs: List[ServiceOutput],
-    bridgeEffects: List[BridgeEffect],
+    importedReports: Set[Hash],
+    importedPreimages: Set[Hash],
+    headerHash: Hash,
+    accumulateRoot: Hash,
     gasUsed: Gas,
     receiptHash: Hash,
-    outcome: ExecutionOutcome
+    outcome: ExecutionOutcome,
+    phases: List[ExecutivePhase],
+    ticketsUsed: Set[Hash],
+    removedStfs: Set[RemovedStf]
   }
 
-  pure def keyLess(a: ProtocolKey, b: ProtocolKey): bool =
-    if (a.namespace == b.namespace) a.local < b.local
-    else namespaceRank(a.namespace) < namespaceRank(b.namespace)
+  pure def reportGas(reports: List[CanonicalWorkReport]): Gas =
+    reports.indices().fold(0, (acc, i) => acc + reports[i].accumulateGas)
 
-  pure def namespaceRank(ns: Namespace): int =
-    if (ns == System) 0
-    else if (ns == ServiceInfo) 1
-    else if (ns == ServiceStorage) 2
-    else if (ns == ServiceLookup) 3
-    else if (ns == Preimage) 4
-    else if (ns == AdminBridge) 5
-    else 99
+  pure def reportHashes(reports: List[CanonicalWorkReport]): Set[Hash] =
+    reports.indices().map(i => reports[i].reportHash)
 
-  pure def changesOrderedUnique(changes: List[StateChange]): bool =
-    changes.indices().forall(i =>
-      i == 0 or keyLess(changes[i - 1].key, changes[i].key))
+  pure def preimageHashes(preimages: List[CanonicalPreimage]): Set[Hash] =
+    preimages.indices().map(i => preimages[i].preimageHash)
 
-  pure def changesAllowed(changes: List[StateChange]): bool =
-    changes.indices().forall(i => namespaceAllowed(changes[i].key.namespace))
+  pure def virtualHeaderHash(input: ExecutionInput): Hash =
+    { hashBytes:
+        input.parentHash.hashBytes +
+        input.parentStateRoot.hashBytes +
+        input.entropy.hashBytes +
+        input.slot +
+        input.reports.length() * 17 +
+        input.preimages.length() * 19 +
+        input.protocolVersion
+    }
 
-  pure def stateRootAfter(parent: Hash, reportHash: Hash): Hash =
-    { hashBytes: parent.hashBytes + reportHash.hashBytes + 1 }
+  pure def virtualReceiptHash(input: ExecutionInput, output: ExecutionOutput): Hash =
+    { hashBytes:
+        output.headerHash.hashBytes +
+        output.accumulateRoot.hashBytes +
+        output.gasUsed +
+        output.importedReports.size() * 23 +
+        output.importedPreimages.size() * 29 +
+        input.maxGas
+    }
 }

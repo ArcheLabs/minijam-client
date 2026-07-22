@@ -3,6 +3,7 @@ module invariants {
   import types.* from "./types"
   import messages.* from "./messages"
   import state.* from "./state"
+  import executive.* from "./executive"
   import state_vars.* from "./state_vars"
 
   pure def voteWellFormedIn(s: MiniJamState, vote: WorkerVote, block: BlockNumber): bool =
@@ -35,7 +36,7 @@ module invariants {
       val votes = mj.votes.keys().filter(k => k._1 == workId and k._2 == work.round)
       val supports = votes.filter(k => mj.votes.get(k).verdict == Support).size()
       val opposes = votes.filter(k => mj.votes.get(k).verdict == Oppose).size()
-      (work.status != Accepted or supports >= SupportThreshold) and
+      (work.status != Accepted and work.status != Imported or supports >= SupportThreshold) and
       (work.status != Failed or opposes >= OpposeThreshold or work.round >= MaxCandidateRounds)
     })
 
@@ -48,43 +49,60 @@ module invariants {
       mj.works.keys().contains(mj.executionQueue[i]) and
       mj.works.get(mj.executionQueue[i]).status == Accepted)
 
-  val paused_or_quarantined_not_executed_invariant: bool =
-    if (mj.executionPaused) mj == prevMj or lastExecution.consumedReports == List()
+  val paused_or_quarantined_not_imported_invariant: bool =
+    if (mj.executionPaused) mj == prevMj or lastExecution.importedReports == Set()
     else mj.quarantinedExecutionQueue.indices().forall(i =>
       mj.works.keys().contains(mj.quarantinedExecutionQueue[i]) and
-      mj.works.get(mj.quarantinedExecutionQueue[i]).status != Executed)
+      mj.works.get(mj.quarantinedExecutionQueue[i]).status != Imported)
 
-  val delta_allowlist_invariant: bool =
-    lastExecution.outcome != ExecutionOk or
-    lastDelta.indices().forall(i => namespaceAllowed(lastDelta[i].key.namespace))
-
-  val delta_order_unique_invariant: bool =
-    lastExecution.outcome != ExecutionOk or changesOrderedUnique(lastDelta)
-
-  val execution_atomicity_invariant: bool =
-    if (lastExecution.outcome == FatalStateError or lastExecution.outcome == FatalInvariantError)
-      mj.protocolState == prevMj.protocolState and
-      mj.serviceStorage == prevMj.serviceStorage and
-      mj.serviceRoots == prevMj.serviceRoots and
-      mj.bridge.adminRecords == prevMj.bridge.adminRecords and
-      mj.appliedReports == prevMj.appliedReports
+  val virtual_block_atomicity_invariant: bool =
+    if (lastExecution.outcome != ExecutionOk and lastExecution.phases == List(Start))
+      mj.jam == prevMj.jam and
+      mj.executionQueue == prevMj.executionQueue and
+      mj.pendingPreimages == prevMj.pendingPreimages
     else true
 
-  val service_root_continuity_invariant: bool =
-    mj.appliedReports.forall(reportHash => {
-      val report = mj.acceptedReports.get(reportHash)
-      report.parentStateRoot != report.postStateRoot and
-      report.postStateRoot == stateRootAfter(report.parentStateRoot, report.reportHash)
-    })
+  val retained_stf_order_invariant: bool =
+    lastExecution.outcome != ExecutionOk or lastExecution.phases == RetainedPhaseOrder
 
-  val accepted_report_parent_continuity_invariant: bool =
+  val tickets_always_empty_invariant: bool =
+    lastExecution.ticketsUsed == Set()
+
+  val removed_stfs_never_run_invariant: bool =
+    lastExecution.removedStfs == RemovedStfs
+
+  val reports_bypass_assurance_invariant: bool =
     lastExecution.outcome != ExecutionOk or
-    lastExecution.consumedReports.indices().forall(i => {
-      val reportHash = lastExecution.consumedReports[i]
-      mj.acceptedReports.keys().contains(reportHash) and
-      mj.serviceRoots.get(mj.acceptedReports.get(reportHash).service) ==
-        mj.acceptedReports.get(reportHash).postStateRoot
-    })
+    mj.jam.accumulateInputReports == lastExecution.importedReports
+
+  val reports_bypass_guarantee_invariant: bool =
+    lastExecution.outcome != ExecutionOk or
+    lastExecution.removedStfs.contains(ReportsGuarantees)
+
+  val history_uses_imported_reports_invariant: bool =
+    lastExecution.outcome != ExecutionOk or
+    mj.jam.currentHistoryPackages ==
+      lastExecution.importedReports.map(h => {
+        val report = mj.acceptedReports.get(h)
+        report.metadata.packageHash
+      })
+
+  val authorization_uses_imported_reports_invariant: bool =
+    lastExecution.outcome != ExecutionOk or
+    mj.jam.authorizationConsumed ==
+      lastExecution.importedReports.map(h => mj.acceptedReports.get(h).canonical.authorizerHash)
+
+  val preimage_snapshot_invariant: bool =
+    lastExecution.outcome != ExecutionOk or
+    lastExecution.importedPreimages.subseteq(prevMj.pendingPreimages.indices().map(i => prevMj.pendingPreimages[i].preimageHash))
+
+  val runtime_import_not_accumulation_invariant: bool =
+    lastExecution.outcome != ExecutionOk or
+    lastExecution.importedReports.forall(reportHash =>
+      mj.works.keys().exists(workId =>
+        mj.works.get(workId).status == Imported and
+        mj.acceptedReports.keys().contains(reportHash))
+    )
 
   val malformed_vote_rejected_invariant: bool =
     lastVotes.length() == 0 or
@@ -102,17 +120,8 @@ module invariants {
     mj.rewardPool >= 0 and
     mj.workers.keys().forall(w => mj.workers.get(w).activeStake >= 0)
 
-  val preimage_consistency_invariant: bool =
-    mj.serviceLookups.forall(k =>
-      mj.preimages.keys().contains(hashOf(1000 + k._2)) or
-      lastFault == Missing or lastFault == Expired or lastFault == Timeout or lastFault == Corrupt)
-
-  val export_determinism_invariant: bool =
-    mj.appliedReports.forall(reportHash => {
-      val report = mj.acceptedReports.get(reportHash)
-      mj.exports.keys().contains((report.workId, report.metadata.exportsRoot)) and
-      mj.exports.get((report.workId, report.metadata.exportsRoot)) == report.metadata.exportsRoot
-    })
+  val bulletin_fault_isolation_invariant: bool =
+    lastFault == NoBulletinFault or mj.jam == prevMj.jam
 
   val invariants: bool =
     assignment_invariant and
@@ -120,16 +129,20 @@ module invariants {
     vote_threshold_invariant and
     single_vote_or_equivocation_invariant and
     execution_requires_acceptance_invariant and
-    paused_or_quarantined_not_executed_invariant and
-    delta_allowlist_invariant and
-    delta_order_unique_invariant and
-    execution_atomicity_invariant and
-    service_root_continuity_invariant and
-    accepted_report_parent_continuity_invariant and
+    paused_or_quarantined_not_imported_invariant and
+    virtual_block_atomicity_invariant and
+    retained_stf_order_invariant and
+    tickets_always_empty_invariant and
+    removed_stfs_never_run_invariant and
+    reports_bypass_assurance_invariant and
+    reports_bypass_guarantee_invariant and
+    history_uses_imported_reports_invariant and
+    authorization_uses_imported_reports_invariant and
+    preimage_snapshot_invariant and
+    runtime_import_not_accumulation_invariant and
     malformed_vote_rejected_invariant and
     bridge_nonce_invariant and
     bridge_escrow_invariant and
     reward_slash_conservation_invariant and
-    preimage_consistency_invariant and
-    export_determinism_invariant
+    bulletin_fault_isolation_invariant
 }

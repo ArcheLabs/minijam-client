@@ -7,7 +7,7 @@ pub use pallet::*;
 
 #[frame_support::pallet]
 pub mod pallet {
-    use alloc::{boxed::Box, vec::Vec};
+    use alloc::{boxed::Box, collections::BTreeSet, vec::Vec};
     use frame_support::{
         pallet_prelude::*,
         storage::{with_transaction, TransactionOutcome},
@@ -18,14 +18,14 @@ pub mod pallet {
         transactional,
     };
     use frame_system::pallet_prelude::*;
-    use minijam_bridge_engine::BridgeAdminRecordSource;
     use minijam_jamcore_api::{
-        ExecutionOutcome, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionOutputV1,
-        MiniJamExecutor, ProtocolStateReader, StateError,
+        ExecutionOutcome, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutor,
+        ProtocolStateReader, StateError,
     };
     use minijam_protocol::{
-        CanonicalReportBytes, Hash, ProtocolStateChange, ReportEnvelopeV1, StateOperation,
-        StateValue, PROTOCOL_VERSION_V1,
+        blake2_256, CanonicalPreimageBytes, CanonicalReportBytes, Hash, PreimageBatch,
+        PreimageMetadataV1, ProtocolStateChange, ReportEnvelopeV1, StateOperation, StateValue,
+        PROTOCOL_VERSION_V1,
     };
     use minijam_state_adapter::{validate_execution_output, ValidatedDelta, ValidationError};
     use pallet_minijam_workers::RoundDecision;
@@ -52,7 +52,7 @@ pub mod pallet {
         AwaitingCandidate,
         Voting,
         Accepted,
-        Executed,
+        Imported,
         Failed,
     }
 
@@ -78,6 +78,31 @@ pub mod pallet {
         pub submitter: T::AccountId,
         pub envelope: ReportEnvelopeV1,
         pub vote_deadline: BlockNumberFor<T>,
+    }
+
+    #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    pub struct PreimageKeyV1 {
+        pub requester: u32,
+        pub blob_hash: Hash,
+        pub blob_len: u32,
+    }
+
+    impl From<PreimageMetadataV1> for PreimageKeyV1 {
+        fn from(metadata: PreimageMetadataV1) -> Self {
+            Self {
+                requester: metadata.requester,
+                blob_hash: metadata.blob_hash,
+                blob_len: metadata.blob_len,
+            }
+        }
+    }
+
+    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    #[scale_info(skip_type_params(T))]
+    pub struct PendingPreimage<T: Config> {
+        pub submitter: T::AccountId,
+        pub canonical: CanonicalPreimageBytes,
+        pub metadata: PreimageMetadataV1,
     }
 
     #[pallet::composite_enum]
@@ -135,10 +160,8 @@ pub mod pallet {
 
         type JamCoreExecutor: MiniJamExecutor + Default;
 
-        type BridgeAdminRecords: BridgeAdminRecordSource;
-
         #[pallet::constant]
-        type MaxBridgeAdminRecords: Get<u32>;
+        type MaxPendingPreimages: Get<u32>;
     }
 
     #[pallet::pallet]
@@ -189,6 +212,14 @@ pub mod pallet {
     #[pallet::storage]
     pub type ExecutionPaused<T: Config> = StorageValue<_, bool, ValueQuery>;
 
+    #[pallet::storage]
+    pub type PendingPreimages<T: Config> =
+        StorageValue<_, BoundedVec<PendingPreimage<T>, T::MaxPendingPreimages>, ValueQuery>;
+
+    #[pallet::storage]
+    pub type PendingPreimageKeys<T: Config> =
+        StorageMap<_, Blake2_128Concat, PreimageKeyV1, (), OptionQuery>;
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -219,9 +250,14 @@ pub mod pallet {
         WorkFailed {
             work_id: WorkId,
         },
-        WorkExecuted {
+        ReportImported {
             work_id: WorkId,
             receipt_hash: Hash,
+        },
+        PreimageQueued {
+            requester: u32,
+            blob_hash: Hash,
+            blob_len: u32,
         },
         ExecutionYielded {
             work_id: WorkId,
@@ -249,6 +285,9 @@ pub mod pallet {
         InconsistentState,
         ExecutionQueueFull,
         ExecutionPaused,
+        InvalidPreimage,
+        DuplicatePendingPreimage,
+        TooManyPendingPreimages,
     }
 
     #[pallet::hooks]
@@ -420,6 +459,43 @@ pub mod pallet {
             Self::deposit_event(Event::ExecutionQueueQuarantined { count });
             Ok(())
         }
+
+        #[pallet::call_index(4)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(2, 2))]
+        #[transactional]
+        pub fn submit_preimage(
+            origin: OriginFor<T>,
+            canonical_preimage: CanonicalPreimageBytes,
+        ) -> DispatchResult {
+            let submitter = ensure_signed(origin)?;
+            let state = FrameProtocolState::<T>(Default::default());
+            let executor = T::JamCoreExecutor::default();
+            let metadata = executor
+                .validate_preimage_submission(&canonical_preimage, &state)
+                .map_err(|_| Error::<T>::InvalidPreimage)?;
+            let key = PreimageKeyV1::from(metadata);
+            ensure!(
+                !PendingPreimageKeys::<T>::contains_key(key),
+                Error::<T>::DuplicatePendingPreimage
+            );
+
+            PendingPreimages::<T>::try_mutate(|pending| {
+                pending
+                    .try_push(PendingPreimage::<T> {
+                        submitter,
+                        canonical: canonical_preimage,
+                        metadata,
+                    })
+                    .map_err(|_| Error::<T>::TooManyPendingPreimages)
+            })?;
+            PendingPreimageKeys::<T>::insert(key, ());
+            Self::deposit_event(Event::PreimageQueued {
+                requester: metadata.requester,
+                blob_hash: metadata.blob_hash,
+                blob_len: metadata.blob_len,
+            });
+            Ok(())
+        }
     }
 
     impl<T: Config> Pallet<T> {
@@ -575,6 +651,7 @@ pub mod pallet {
 
         fn execute_due_reports(block: BlockNumberFor<T>) {
             let mut queue = ExecutionQueue::<T>::get();
+            let pending_preimages = PendingPreimages::<T>::get();
             let max_reports = T::MaxExecutionReports::get() as usize;
             let mut due: Vec<ExecutionItem<T>> = Vec::new();
             let mut retained: Vec<ExecutionItem<T>> = Vec::new();
@@ -587,7 +664,7 @@ pub mod pallet {
                 }
             }
 
-            if due.is_empty() {
+            if due.is_empty() && pending_preimages.is_empty() {
                 if let Ok(retained) =
                     BoundedVec::<ExecutionItem<T>, T::MaxPendingWorks>::try_from(retained)
                 {
@@ -620,15 +697,6 @@ pub mod pallet {
             match result {
                 Ok(()) => {}
                 Err(ExecutionFailure::Yielded(work_id, outcome)) => {
-                    ExecutionQueue::<T>::mutate(|queue| {
-                        if let Some(index) = queue.iter().position(|item| item.work_id == work_id) {
-                            queue.swap_remove(index);
-                        }
-                    });
-                    if let Some(mut work) = Works::<T>::get(work_id) {
-                        work.status = WorkStatus::Failed;
-                        Works::<T>::insert(work_id, work);
-                    }
                     Self::deposit_event(Event::ExecutionYielded { work_id, outcome });
                 }
                 Err(ExecutionFailure::Fatal) => {
@@ -658,12 +726,16 @@ pub mod pallet {
             }
 
             let reports = reports.try_into().map_err(|_| ExecutionFailure::Fatal)?;
+            let preimages = Self::pending_preimage_batch()?;
             let input = MiniJamExecutionInputV1 {
-                slot: block.saturated_into(),
-                epoch: pallet_minijam_workers::Pallet::<T>::current_epoch(),
-                reports,
-                max_gas: T::MaxExecutionGas::get(),
                 protocol_version: PROTOCOL_VERSION_V1,
+                slot: block.saturated_into(),
+                parent_hash: Self::host_parent_hash(block),
+                parent_state_root: Self::host_parent_state_root(block),
+                entropy: Self::host_entropy(block),
+                reports,
+                preimages,
+                max_gas: T::MaxExecutionGas::get(),
             };
             let state = FrameProtocolState::<T>(Default::default());
             let executor = T::JamCoreExecutor::default();
@@ -679,48 +751,30 @@ pub mod pallet {
                 Err(MiniJamError::Input(_)) => return Err(ExecutionFailure::Fatal),
             };
 
-            let output = Self::with_bridge_admin_records(output)?;
             let delta = validate_execution_output(&input, &output, &state)
                 .map_err(Self::map_validation_error)?;
             Self::apply_delta(delta)?;
+            Self::consume_preimages(&output.consumed_preimages);
 
+            let consumed_reports: BTreeSet<Hash> =
+                output.consumed_reports.iter().copied().collect();
             for work_id in work_ids {
+                let (_, candidate) =
+                    Self::candidate_for_work(work_id).ok_or(ExecutionFailure::Fatal)?;
+                if !consumed_reports.contains(&candidate.envelope.canonical_report_hash) {
+                    continue;
+                }
                 let mut work = Works::<T>::get(work_id).ok_or(ExecutionFailure::Fatal)?;
-                work.status = WorkStatus::Executed;
+                work.status = WorkStatus::Imported;
                 Works::<T>::insert(work_id, work);
                 ExecutionReceipts::<T>::insert(work_id, output.receipt_hash);
-                Self::deposit_event(Event::WorkExecuted {
+                Self::deposit_event(Event::ReportImported {
                     work_id,
                     receipt_hash: output.receipt_hash,
                 });
             }
             LastExecutionReceipt::<T>::put(output.receipt_hash);
             Ok(())
-        }
-
-        fn with_bridge_admin_records(
-            mut output: MiniJamExecutionOutputV1,
-        ) -> Result<MiniJamExecutionOutputV1, ExecutionFailure> {
-            let records =
-                T::BridgeAdminRecords::drain_admin_records(T::MaxBridgeAdminRecords::get())
-                    .map_err(|_| ExecutionFailure::Fatal)?;
-            if records.is_empty() {
-                return Ok(output);
-            }
-
-            let mut changes: Vec<ProtocolStateChange> = output.ordered_changes.into_inner();
-            for (key, value) in records {
-                changes.push(ProtocolStateChange {
-                    key,
-                    operation: StateOperation::Upsert,
-                    value: Some(value),
-                });
-            }
-            minijam_jamcore_api::normalize_changes(&mut changes)
-                .map_err(|_| ExecutionFailure::Fatal)?;
-            output.ordered_changes = changes.try_into().map_err(|_| ExecutionFailure::Fatal)?;
-            output.receipt_hash = output.compute_receipt_hash();
-            Ok(output)
         }
 
         fn map_validation_error(error: ValidationError) -> ExecutionFailure {
@@ -752,6 +806,57 @@ pub mod pallet {
                 }
             }
             Ok(())
+        }
+
+        fn pending_preimage_batch() -> Result<PreimageBatch, ExecutionFailure> {
+            let mut pending = PendingPreimages::<T>::get().into_inner();
+            pending.sort_by_key(|preimage| {
+                (
+                    preimage.metadata.requester,
+                    preimage.metadata.blob_hash,
+                    preimage.metadata.blob_len,
+                )
+            });
+            let preimages: Vec<CanonicalPreimageBytes> = pending
+                .into_iter()
+                .map(|preimage| preimage.canonical)
+                .collect();
+            preimages.try_into().map_err(|_| ExecutionFailure::Fatal)
+        }
+
+        fn consume_preimages(consumed_preimages: &[Hash]) {
+            if consumed_preimages.is_empty() {
+                return;
+            }
+            let consumed: BTreeSet<Hash> = consumed_preimages.iter().copied().collect();
+            PendingPreimages::<T>::mutate(|pending| {
+                let mut index = 0;
+                while index < pending.len() {
+                    let canonical_hash = blake2_256(&pending[index].canonical);
+                    if consumed.contains(&canonical_hash) {
+                        PendingPreimageKeys::<T>::remove(PreimageKeyV1::from(
+                            pending[index].metadata,
+                        ));
+                        pending.swap_remove(index);
+                    } else {
+                        index += 1;
+                    }
+                }
+            });
+        }
+
+        fn host_parent_hash(block: BlockNumberFor<T>) -> Hash {
+            let parent_number = block.saturating_sub(One::one());
+            let parent_hash = frame_system::Pallet::<T>::block_hash(parent_number);
+            blake2_256(&parent_hash.encode())
+        }
+
+        fn host_parent_state_root(block: BlockNumberFor<T>) -> Hash {
+            blake2_256(&(b"minijam/parent-state-root", Self::host_parent_hash(block)).encode())
+        }
+
+        fn host_entropy(block: BlockNumberFor<T>) -> Hash {
+            blake2_256(&(b"minijam/host-entropy", block).encode())
         }
 
         fn candidate_for_work(work_id: WorkId) -> Option<(u8, CandidateRecord<T>)> {

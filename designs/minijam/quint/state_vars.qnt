@@ -11,7 +11,6 @@ module state_vars {
   // Ghost variables for transition invariants and trace-oriented tests.
   var prevMj: MiniJamState
   var lastExecution: ExecutionOutput
-  var lastDelta: List[StateChange]
   var lastVotes: List[WorkerVote]
   var lastFault: BulletinFault
 }

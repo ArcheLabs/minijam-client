@@ -2,6 +2,7 @@
 module state {
   import types.* from "./types"
   import messages.* from "./messages"
+  import jam_projection.* from "./jam_projection"
 
   type WorkerRecord = {
     owner: AccountId,
@@ -36,11 +37,21 @@ module state {
     locked: Option[RoundDecision]
   }
 
+  type BridgeDirection = BridgeInbound | BridgeOutbound
+
+  type BridgeEffect = {
+    direction: BridgeDirection,
+    nonce: Nonce,
+    service: ServiceId,
+    account: AccountId,
+    amount: Balance
+  }
+
   type BridgeLedger = {
     nextInboundNonce: Nonce,
     escrow: AccountId -> Balance,
     consumedOutbound: Set[Nonce],
-    adminRecords: ProtocolKey -> int
+    observedStateKeys: Set[Hash]
   }
 
   type BulletinEntry = {
@@ -66,17 +77,9 @@ module state {
     executionQueue: List[WorkId],
     quarantinedExecutionQueue: List[WorkId],
     executionPaused: bool,
-    protocolState: ProtocolKey -> int,
-    serviceStorage: (ServiceId, int) -> int,
-    serviceLookups: Set[(ServiceId, int)],
-    serviceRoots: ServiceId -> Hash,
-    serviceCodeHashes: ServiceId -> Hash,
-    serviceNonce: ServiceId -> int,
-    preimages: Hash -> int,
-    appliedReports: Set[Hash],
+    pendingPreimages: List[CanonicalPreimage],
     acceptedReports: Hash -> ReportEnvelope,
-    serviceOutputs: (WorkId, Hash) -> ServiceOutput,
-    exports: (WorkId, Hash) -> Hash,
+    jam: JamProjection,
     bridge: BridgeLedger,
     bulletin: BulletinState,
     rewardPool: Balance,
@@ -88,7 +91,7 @@ module state {
     nextInboundNonce: 0,
     escrow: Map(),
     consumedOutbound: Set(),
-    adminRecords: Map()
+    observedStateKeys: Set()
   }
 
   pure val emptyBulletin: BulletinState = {
@@ -108,17 +111,9 @@ module state {
     executionQueue: List(),
     quarantinedExecutionQueue: List(),
     executionPaused: false,
-    protocolState: Map(),
-    serviceStorage: Map(),
-    serviceLookups: Set(),
-    serviceRoots: Map(),
-    serviceCodeHashes: Map(),
-    serviceNonce: Map(),
-    preimages: Map(),
-    appliedReports: Set(),
+    pendingPreimages: List(),
     acceptedReports: Map(),
-    serviceOutputs: Map(),
-    exports: Map(),
+    jam: emptyJamProjection,
     bridge: emptyBridge,
     bulletin: emptyBulletin,
     rewardPool: InitialRewardPool,
@@ -145,14 +140,8 @@ module state {
     s.candidates.keys().contains((workId, round))
 
   pure def serviceRoot(s: MiniJamState, serviceId: ServiceId): Hash =
-    if (s.serviceRoots.keys().contains(serviceId)) s.serviceRoots.get(serviceId)
-    else hashOf(0)
+    hashOf(match serviceId { | MkServiceId(i) => i | _ServiceIdSentinel => 0 })
 
   pure def serviceCodeHash(s: MiniJamState, serviceId: ServiceId): Hash =
-    if (s.serviceCodeHashes.keys().contains(serviceId)) s.serviceCodeHashes.get(serviceId)
-    else hashOf(0)
-
-  pure def serviceNonceOf(s: MiniJamState, serviceId: ServiceId): int =
-    if (s.serviceNonce.keys().contains(serviceId)) s.serviceNonce.get(serviceId)
-    else 0
+    hashOf(match serviceId { | MkServiceId(i) => 100 + i | _ServiceIdSentinel => 0 })
 }

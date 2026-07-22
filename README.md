@@ -5,20 +5,20 @@ English | [Simplified Chinese](README.zh-CN.md)
 > MiniJAM is still in early development and is not production-ready.
 >
 
-MiniJAM is a parachain running a simplified version of the JAM protocol.
+MiniJAM is an independent Polkadot SDK chain running a simplified version of the JAM protocol.
 
 ## Differences from JAM
 
 MiniJAM narrows the JAM execution model from the Gray Paper into the smallest protocol surface that can be validated on an independent chain.
 
-- Consensus and chain: MiniJAM uses a Polkadot SDK parachain to host protocol state instead of JAM shared consensus.
+- Consensus and chain: MiniJAM uses an independent Polkadot SDK chain to host protocol state instead of JAM shared consensus.
 - Worker and client boundaries: the Worker side is designed with a multi-client target, so different Worker clients can independently implement submission, validation, and voting logic. The Runtime side is currently a single Runtime and does not support multiple interchangeable Runtime clients, which would cause chain inconsistency.
 - Work and Guarantees: MiniJAM compresses the guarantee pipeline into Work, `ReportEnvelopeV1`, candidate report bonds, and Worker voting.
 - Assurance and availability: MiniJAM does not implement JAM assurance semantics. It currently abstracts the data availability boundary through `BulletinEvidence`, the Bulletin-compatible simulator, and Worker voting.
 - Disputes and verdicts: MiniJAM does not implement global disputes, judgments, or other work-report correctness and consistency logic. These are delegated to Support/Oppose voting within each Work round, absence slashing, candidate report rejection slashing, and equivocation proofs.
 - State and state transition: MiniJAM keeps JAM's original state and state transition logic, but some state always remains at default values. This makes multi-client off-chain Worker implementations easier because they do not need to implement a separate logic set.
 - Accumulate: MiniJAM keeps the accumulation logic and runs it as Runtime logic, so it cannot run in parallel at execution time.
-- Bridge: unlike JAM, MiniJAM depends on a parachain and therefore has special token bridging requirements. This is implemented by monitoring specific storage.
+- Bridge: unlike JAM, MiniJAM has native asset escrow and release requirements. These are implemented through Runtime bridge effects and replay-protected bridge storage.
 
 ## Current Progress
 
@@ -95,18 +95,18 @@ The following values come from the current development configuration in `minijam
 
 The repository's `rust-toolchain.toml` pins the Rust toolchain and installs `rustfmt`, `clippy`, `rust-src`, `wasm32-unknown-unknown`, and `wasm32v1-none`.
 
-The production Runtime currently depends on the private jambda submodule. Authorized developers should initialize it before building the Runtime:
+The public protocol, Worker, bridge, Bulletin, and state-adapter crates are available in this repository. Full Runtime and node builds currently depend on the private jambda submodule. Authorized developers should initialize it before building the Runtime:
 
 ```bash
 git submodule update --init external/jambda
 ```
 
-The checked-out submodule revision must contain `crates/minijam-executive`; production Runtime builds are only available to developers with access to that private jambda revision.
+The checked-out submodule revision must contain `crates/minijam-executive`; production Runtime and node builds are only available to developers with access to that private jambda revision.
 
-After entering `minijam-client`, run:
+After entering `minijam-client`, run the public crate and pallet test suite:
 
 ```bash
-cargo test --workspace
+cargo test --workspace --exclude minijam-runtime --exclude minijam-node
 ```
 
 Check that the core crates that must run in Wasm remain `no_std` compatible:
@@ -120,33 +120,24 @@ cargo check \
   --target wasm32-unknown-unknown
 ```
 
-Check the MiniJAM execution boundary from the jambda submodule:
+Check the Runtime Wasm dependency closure:
 
 ```bash
-cd external/jambda
 cargo check \
-  -p jambda-minijam-executive \
+  -p minijam-runtime \
   --no-default-features \
-  --target wasm32-unknown-unknown
+  --target wasm32v1-none
 ```
 
 ## Build and Run a Local Node
 
-Build the release binary:
+The node source, chain specs, RPC wiring, Aura authoring, and GRANDPA service are present. Full Runtime and node builds currently require private jambda fixes for `generic_const_exprs` trait-solver overflows in the `TinySpec` state backend and codec path.
+
+The following commands are the intended local-node workflow once the Runtime build path is fixed:
 
 ```bash
 cargo build --release -p minijam-node
-```
-
-Start a single-node development chain with a temporary database:
-
-```bash
 cargo run --release -p minijam-node -- --dev --tmp
-```
-
-Generate the development chain spec:
-
-```bash
 cargo run --release -p minijam-node -- export-chain-spec --chain dev
 ```
 
@@ -158,10 +149,10 @@ Before submitting changes, it is recommended to run:
 
 ```bash
 cargo fmt --all -- --check
-cargo test --workspace
+cargo test --workspace --exclude minijam-runtime --exclude minijam-node
 ```
 
-Changes that touch the Runtime execution boundary should also run the two Wasm `no_std` checks above.
+Changes that touch the Runtime execution boundary should also run the Wasm `no_std` checks above.
 
 ## Compatibility and Stability
 

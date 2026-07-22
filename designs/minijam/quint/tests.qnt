@@ -6,33 +6,25 @@ module tests {
   import workers.* from "./workers"
   import work.* from "./work"
   import refine.* from "./refine"
-  import accumulate.* from "./accumulate"
+  import executive.* from "./executive"
   import bridge.* from "./bridge"
   import bulletin.* from "./bulletin"
   import main.* from "./main"
 
+  pure def workPackage(id: WorkId): WorkPackage =
+    defaultWorkPackage(id, MkAccountId(5), MkServiceId(1), serviceRoot(initialMiniJam, MkServiceId(1)), serviceCodeHash(initialMiniJam, MkServiceId(1)))
+
   pure val preparedWork: MiniJamState =
     submitCandidate(
-      submitWork(
-        initialMiniJam,
-        defaultWorkPackage(MkWorkId(1), MkAccountId(5), MkServiceId(1), serviceRoot(initialMiniJam, MkServiceId(1)), serviceCodeHash(initialMiniJam, MkServiceId(1))),
-        0
-      ),
+      submitWork(initialMiniJam, workPackage(MkWorkId(1)), 0),
       MkWorkId(1),
-      candidateReport(
-        defaultWorkPackage(MkWorkId(1), MkAccountId(5), MkServiceId(1), serviceRoot(initialMiniJam, MkServiceId(1)), serviceCodeHash(initialMiniJam, MkServiceId(1))),
-        0,
-        MkAccountId(6),
-        List(validServiceDelta(1, 10)),
-        ExecutionOk
-      ),
+      candidateReport(workPackage(MkWorkId(1)), 0, MkAccountId(6), Set(), 10),
       MkAccountId(6),
       0
     )
 
-  run happyPathTest = {
-    val s0 = preparedWork
-    val cand = s0.candidates.get((MkWorkId(1), 0))
+  pure def acceptedState(s: MiniJamState): MiniJamState = {
+    val cand = s.candidates.get((MkWorkId(1), 0))
     val v1: WorkerVote = {
       worker: MkWorkerId(1),
       workId: MkWorkId(1),
@@ -43,124 +35,113 @@ module tests {
       chainId: ChainId,
       protocolVersion: ProtocolVersion
     }
-    val v2 = { ...v1, worker: MkWorkerId(2) }
-    val s1 = castVote(castVote(s0, v1, 0), v2, 0)
-    val result = executeReport(s1, cand.envelope)
+    castVote(castVote(s, v1, 0), { ...v1, worker: MkWorkerId(2) }, 0)
+  }
+
+  pure def baseInput(reports: List[CanonicalWorkReport], preimages: List[CanonicalPreimage], slot: int): ExecutionInput = {
+    protocolVersion: ProtocolVersion,
+    slot: slot,
+    parentHash: hashOf(10),
+    parentStateRoot: hashOf(20),
+    entropy: hashOf(30),
+    reports: reports,
+    preimages: preimages,
+    maxGas: MaxGas
+  }
+
+  run emptyVirtualBlockTest = {
+    val result = executeVirtualJamBlock(initialMiniJam, baseInput(List(), List(), 1))
     all {
-      assert(s1.works.get(MkWorkId(1)).status == Accepted),
       assert(result._2.outcome == ExecutionOk),
-      assert(result._1.serviceStorage.get((MkServiceId(1), 1)) == 10),
+      assert(result._2.phases == RetainedPhaseOrder),
+      assert(result._1.jam.slot == 1),
       init
     }
   }
 
-  run rejectPathTest = {
-    val s0 = preparedWork
+  run safroleReceivesEmptyTicketsTest = {
+    val result = executeVirtualJamBlock(initialMiniJam, baseInput(List(), List(), 1))
+    all {
+      assert(result._2.ticketsUsed == Set()),
+      assert(result._1.jam.safroleTransitions == 1),
+      init
+    }
+  }
+
+  run acceptedReportIsImportedAndProjectedTest = {
+    val s0 = acceptedState(preparedWork)
     val cand = s0.candidates.get((MkWorkId(1), 0))
-    val baseVote: WorkerVote = {
-      worker: MkWorkerId(1),
-      workId: MkWorkId(1),
-      round: 0,
-      candidateHash: cand.envelope.reportHash,
-      verdict: Oppose,
-      deadline: cand.voteDeadline,
-      chainId: ChainId,
-      protocolVersion: ProtocolVersion
-    }
-    val s1 = castVote(castVote(s0, baseVote, 0), { ...baseVote, worker: MkWorkerId(2) }, 0)
+    val input = baseInput(List(cand.envelope.canonical), List(), 1)
+    val result = executeVirtualJamBlock(s0, input)
     all {
-      assert(s1.works.get(MkWorkId(1)).status == Failed),
+      assert(result._2.importedReports == Set(cand.envelope.reportHash)),
+      assert(result._1.jam.accumulateInputReports.contains(cand.envelope.reportHash)),
+      assert(result._1.jam.currentHistoryPackages.contains(cand.envelope.metadata.packageHash)),
+      assert(result._1.jam.authorizationConsumed.contains(cand.envelope.canonical.authorizerHash)),
       init
     }
   }
 
-  run insufficientWorkersTest = {
-    val s0 = { ...emptyMiniJam,
-      workers: Map(MkWorkerId(1) -> registeredWorker(MkWorkerId(1), MkAccountId(1), MinimumWorkerStake)),
-      activeWorkers: Set(MkWorkerId(1))
-    }
-    val s1 = submitWork(
-      s0,
-      defaultWorkPackage(MkWorkId(1), MkAccountId(5), MkServiceId(1), serviceRoot(s0, MkServiceId(1)), serviceCodeHash(s0, MkServiceId(1))),
-      0
-    )
+  run importedReportMayRemainReadyTest = {
+    val pkg = workPackage(MkWorkId(1))
+    val report = candidateReport(pkg, 0, MkAccountId(6), Set(hashOf(999)), 10)
+    val input = baseInput(List(report.canonical), List(), 1)
+    val result = executeVirtualJamBlock(initialMiniJam, input)
     all {
-      assert(s1.works.get(MkWorkId(1)).status == InsufficientWorkers),
-      assert(not(s1.assignments.keys().contains((MkWorkId(1), 0)))),
+      assert(result._2.importedReports == Set(report.reportHash)),
+      assert(result._1.jam.readyReports.contains(report.reportHash)),
+      assert(not(result._1.jam.accumulatedReports.contains(report.reportHash))),
       init
     }
   }
 
-  run equivocationTest = {
-    val s0 = preparedWork
-    val cand = s0.candidates.get((MkWorkId(1), 0))
-    val v1: WorkerVote = {
-      worker: MkWorkerId(1),
-      workId: MkWorkId(1),
-      round: 0,
-      candidateHash: cand.envelope.reportHash,
-      verdict: Support,
-      deadline: cand.voteDeadline,
-      chainId: ChainId,
-      protocolVersion: ProtocolVersion
+  run preimagePrepareAndApplyTest = {
+    val preimage: CanonicalPreimage = {
+      preimageHash: hashOf(501),
+      requester: MkServiceId(1),
+      blobLength: 3
     }
-    val s1 = castVote(castVote(s0, v1, 0), { ...v1, verdict: Oppose }, 0)
+    val result = executeVirtualJamBlock(initialMiniJam, baseInput(List(), List(preimage), 1))
     all {
-      assert(s1.equivocations.contains((MkWorkId(1), 0, MkWorkerId(1)))),
-      assert(s1.workers.get(MkWorkerId(1)).suspendedUntil > s0.currentEpoch),
+      assert(result._2.importedPreimages == Set(preimage.preimageHash)),
+      assert(result._1.jam.appliedPreimages.contains(preimage.preimageHash)),
       init
     }
   }
 
-  run invalidDeltaRollbackTest = {
-    val pkg = defaultWorkPackage(MkWorkId(1), MkAccountId(5), MkServiceId(1), serviceRoot(initialMiniJam, MkServiceId(1)), serviceCodeHash(initialMiniJam, MkServiceId(1)))
-    val report = candidateReport(pkg, 0, MkAccountId(6), List(forbiddenDelta(1)), ExecutionOk)
-    val result = executeReport(initialMiniJam, report)
-    all {
-      assert(result._1.protocolState == initialMiniJam.protocolState),
-      assert(result._1.serviceStorage == initialMiniJam.serviceStorage),
-      init
-    }
-  }
-
-  run bridgeInboundAtomicityTest = {
-    val s0 = bridgeIn(initialMiniJam, MkAccountId(1), MkServiceId(1), 5)
-    val pkg = defaultWorkPackage(MkWorkId(1), MkAccountId(5), MkServiceId(1), serviceRoot(s0, MkServiceId(1)), serviceCodeHash(s0, MkServiceId(1)))
-    val report = candidateReport(pkg, 0, MkAccountId(6), List(validServiceDelta(1, 10)), ExecutionOk)
-    val result = executeReport(s0, report)
-    all {
-      assert(result._2.orderedChanges.indices().exists(i =>
-        result._2.orderedChanges[i].key.namespace == AdminBridge)),
-      assert(result._1.bridge.adminRecords == Map()),
-      assert(result._1.serviceStorage.get((MkServiceId(1), 1)) == 10),
-      init
-    }
-  }
-
-  run staleReportRejectedTest = {
-    val pkg = defaultWorkPackage(MkWorkId(1), MkAccountId(5), MkServiceId(1), serviceRoot(initialMiniJam, MkServiceId(1)), serviceCodeHash(initialMiniJam, MkServiceId(1)))
-    val report = { ...candidateReport(pkg, 0, MkAccountId(6), List(validServiceDelta(1, 10)), ExecutionOk),
-      parentStateRoot: hashOf(999),
-      postStateRoot: stateRootAfter(hashOf(999), hashOf(100))
-    }
-    val result = executeReport(initialMiniJam, report)
+  run invalidSlotRollsBackTest = {
+    val s0 = { ...initialMiniJam, jam: { ...initialMiniJam.jam, slot: 2 } }
+    val result = executeVirtualJamBlock(s0, baseInput(List(), List(), 2))
     all {
       assert(result._2.outcome == FatalInvariantError),
-      assert(result._1.serviceRoots == initialMiniJam.serviceRoots),
-      assert(result._1.appliedReports == Set()),
+      assert(result._1 == s0),
       init
     }
   }
 
-  run reportReplayRejectedTest = {
-    val pkg = defaultWorkPackage(MkWorkId(1), MkAccountId(5), MkServiceId(1), serviceRoot(initialMiniJam, MkServiceId(1)), serviceCodeHash(initialMiniJam, MkServiceId(1)))
-    val report = candidateReport(pkg, 0, MkAccountId(6), List(validServiceDelta(1, 10)), ExecutionOk)
-    val first = executeReport(initialMiniJam, report)
-    val second = executeReport(first._1, report)
+  run overGasBatchRollsBackTest = {
+    val report = canonicalReport(workPackage(MkWorkId(1)), 0, Set(), MaxGas + 1)
+    val result = executeVirtualJamBlock(initialMiniJam, baseInput(List(report), List(), 1))
     all {
-      assert(first._2.outcome == ExecutionOk),
-      assert(second._2.outcome == FatalInvariantError),
-      assert(second._1 == first._1),
+      assert(result._2.outcome == OutOfGas),
+      assert(result._1 == initialMiniJam),
+      init
+    }
+  }
+
+  run removedStfsAreUnavailableTest = {
+    val result = executeVirtualJamBlock(initialMiniJam, baseInput(List(), List(), 1))
+    all {
+      assert(result._2.removedStfs == Set(Disputes, Assurances, ReportsGuarantees)),
+      init
+    }
+  }
+
+  run receiptCommitsToInputAndOutputTest = {
+    val input = baseInput(List(), List(), 1)
+    val result = executeVirtualJamBlock(initialMiniJam, input)
+    all {
+      assert(result._2.receiptHash == virtualReceiptHash(input, result._2)),
       init
     }
   }
@@ -188,32 +169,11 @@ module tests {
     }
   }
 
-  run deadlineSettlementTest = {
-    val s0 = preparedWork
-    val s1 = settleDeadline(s0, MkWorkId(1), 0, 2)
+  run bridgeInboundLedgerTest = {
+    val s0 = bridgeIn(initialMiniJam, MkAccountId(1), MkServiceId(1), 5)
     all {
-      assert(s1.works.get(MkWorkId(1)).status == Failed),
-      assert(s1.workers.get(MkWorkerId(1)).activeStake < s0.workers.get(MkWorkerId(1)).activeStake),
-      assert(s1.workers.get(MkWorkerId(2)).activeStake < s0.workers.get(MkWorkerId(2)).activeStake),
-      assert(s1.workers.get(MkWorkerId(3)).activeStake < s0.workers.get(MkWorkerId(3)).activeStake),
-      init
-    }
-  }
-
-  run serviceLookupPreimageTest = {
-    val pkg = defaultWorkPackage(MkWorkId(1), MkAccountId(5), MkServiceId(1), serviceRoot(initialMiniJam, MkServiceId(1)), serviceCodeHash(initialMiniJam, MkServiceId(1)))
-    val report = candidateReport(
-      pkg,
-      0,
-      MkAccountId(6),
-      List({ key: { namespace: ServiceLookup, local: 1 }, op: Upsert, value: Some(1) }, validPreimageDelta(1, 99)),
-      ExecutionOk
-    )
-    val result = executeReport(initialMiniJam, report)
-    all {
-      assert(result._2.outcome == ExecutionOk),
-      assert(result._1.serviceLookups.contains((MkServiceId(1), 1))),
-      assert(result._1.preimages.keys().contains(hashOf(1001))),
+      assert(s0.bridge.nextInboundNonce == 1),
+      assert(s0.bridge.escrow.get(MkAccountId(1)) == 5),
       init
     }
   }
@@ -224,7 +184,7 @@ module tests {
     val s1 = injectFault(s0, content, Timeout)
     all {
       assert(fetchStatus(s1, content) == Timeout),
-      assert(s1.protocolState == initialMiniJam.protocolState),
+      assert(s1.jam == initialMiniJam.jam),
       init
     }
   }

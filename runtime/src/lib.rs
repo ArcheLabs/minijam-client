@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #![cfg_attr(not(feature = "std"), no_std)]
+#![recursion_limit = "4096"]
 
 extern crate alloc;
 
@@ -254,24 +255,14 @@ impl pallet_minijam::Config for Runtime {
     type MaxExecutionReports = ConstU32<4>;
     type MaxExecutionGas = ConstU64<10_000_000>;
     type JamCoreExecutor = jambda_minijam_executive::MiniJamExecutive;
-    type BridgeAdminRecords = MiniJamBridge;
-    type MaxBridgeAdminRecords = ConstU32<1_024>;
+    type MaxPendingPreimages = ConstU32<64>;
 }
 
 impl pallet_minijam_bridge::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
     type RuntimeHoldReason = RuntimeHoldReason;
-    type AccountIdConverter = BridgeAccountIdConverter;
     type EscrowAccount = BridgeEscrowAccount;
-}
-
-pub struct BridgeAccountIdConverter;
-
-impl sp_runtime::traits::Convert<AccountId, [u8; 32]> for BridgeAccountIdConverter {
-    fn convert(account: AccountId) -> [u8; 32] {
-        account.into()
-    }
 }
 
 #[frame_support::runtime]

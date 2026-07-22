@@ -7,20 +7,10 @@ module main {
   import workers.* from "./workers"
   import work.* from "./work"
   import refine.* from "./refine"
-  import accumulate.* from "./accumulate"
+  import executive.* from "./executive"
   import bridge.* from "./bridge"
   import bulletin.* from "./bulletin"
   import invariants.* from "./invariants"
-
-  pure val emptyExecution: ExecutionOutput = {
-    orderedChanges: List(),
-    consumedReports: List(),
-    serviceOutputs: List(),
-    bridgeEffects: List(),
-    gasUsed: 0,
-    receiptHash: hashOf(0),
-    outcome: ExecutionOk
-  }
 
   pure val initialWorkers: WorkerId -> WorkerRecord =
     Map(
@@ -33,10 +23,39 @@ module main {
   pure val initialMiniJam: MiniJamState = {
     ...emptyMiniJam,
     workers: initialWorkers,
-    activeWorkers: Set(MkWorkerId(1), MkWorkerId(2), MkWorkerId(3), MkWorkerId(4)),
-    serviceRoots: Map(MkServiceId(1) -> hashOf(0)),
-    serviceCodeHashes: Map(MkServiceId(1) -> hashOf(101)),
-    serviceNonce: Map(MkServiceId(1) -> 0)
+    activeWorkers: Set(MkWorkerId(1), MkWorkerId(2), MkWorkerId(3), MkWorkerId(4))
+  }
+
+  pure def consumePendingPreimages(s: MiniJamState, hashes: Set[Hash]): MiniJamState =
+    { ...s, pendingPreimages: s.pendingPreimages.select(p => not(hashes.contains(p.preimageHash))) }
+
+  pure def markImportedWork(s: MiniJamState, workId: WorkId, output: ExecutionOutput): MiniJamState =
+    if (not(s.works.keys().contains(workId))) s
+    else {
+      val work = s.works.get(workId)
+      val cand = s.candidates.get((workId, work.round))
+      if (output.importedReports.contains(cand.envelope.reportHash))
+        {
+          ...s,
+          works: s.works.put(workId, { ...work, status: Imported }),
+          executionQueue: s.executionQueue.select(w => w != workId)
+        }
+      else s
+    }
+
+  pure def executionInputFor(s: MiniJamState, workId: WorkId, slot: BlockNumber): ExecutionInput = {
+    val work = s.works.get(workId)
+    val cand = s.candidates.get((workId, work.round))
+    {
+      protocolVersion: ProtocolVersion,
+      slot: slot,
+      parentHash: hashOf(slot + 10),
+      parentStateRoot: hashOf(slot + 20),
+      entropy: hashOf(slot + 30),
+      reports: List(cand.envelope.canonical),
+      preimages: s.pendingPreimages,
+      maxGas: MaxGas
+    }
   }
 
   action init = all {
@@ -44,7 +63,6 @@ module main {
     now' = 0,
     prevMj' = initialMiniJam,
     lastExecution' = emptyExecution,
-    lastDelta' = List(),
     lastVotes' = List(),
     lastFault' = NoBulletinFault
   }
@@ -58,7 +76,6 @@ module main {
       now' = now,
       prevMj' = mj,
       lastExecution' = emptyExecution,
-      lastDelta' = List(),
       lastVotes' = List(),
       lastFault' = NoBulletinFault
     }
@@ -67,21 +84,34 @@ module main {
   action stepSubmitCandidate = {
     nondet workId = oneOf(mj.works.keys())
     val rec = mj.works.get(workId)
-    nondet deltaKind = oneOf(Set(0, 1, 2))
-    val delta =
-      if (deltaKind == 0) List(validServiceDelta(1, 10))
-      else if (deltaKind == 1) List(validPreimageDelta(1, 99))
-      else List(forbiddenDelta(1))
-    val report = candidateReport(rec.package, rec.round, MkAccountId(6), delta, ExecutionOk)
+    nondet dependencyKind = oneOf(Set(0, 1))
+    val deps = if (dependencyKind == 0) Set() else Set(hashOf(999))
+    val report = candidateReport(rec.package, rec.round, MkAccountId(6), deps, 10)
     val updated = submitCandidate(mj, workId, report, MkAccountId(6), now)
     all {
       mj' = updated,
       now' = now,
       prevMj' = mj,
       lastExecution' = emptyExecution,
-      lastDelta' = List(),
       lastVotes' = List(),
       lastFault' = report.bulletinFault
+    }
+  }
+
+  action stepSubmitPreimage = {
+    nondet id = oneOf(Set(1, 2, 3))
+    val preimage: CanonicalPreimage = {
+      preimageHash: hashOf(500 + id),
+      requester: MkServiceId(1),
+      blobLength: id
+    }
+    all {
+      mj' = queuePreimage(mj, preimage),
+      now' = now,
+      prevMj' = mj,
+      lastExecution' = emptyExecution,
+      lastVotes' = List(),
+      lastFault' = NoBulletinFault
     }
   }
 
@@ -108,7 +138,6 @@ module main {
       now' = now,
       prevMj' = mj,
       lastExecution' = emptyExecution,
-      lastDelta' = List(),
       lastVotes' = List(vote),
       lastFault' = NoBulletinFault
     }
@@ -141,7 +170,6 @@ module main {
       now' = now,
       prevMj' = mj,
       lastExecution' = emptyExecution,
-      lastDelta' = List(),
       lastVotes' = List(vote),
       lastFault' = NoBulletinFault
     }
@@ -150,43 +178,28 @@ module main {
   action stepExecute = {
     nondet workId = oneOf(WorkDomain)
     val inQueue = listContains(mj.executionQueue, workId)
-    val dummyWork: WorkRecord = {
-      owner: MkAccountId(0),
-      service: MkServiceId(0),
-      package: defaultWorkPackage(workId, MkAccountId(0), MkServiceId(0), hashOf(0), hashOf(0)),
-      round: 0,
-      status: Failed,
-      candidateDeadline: 0,
-      executeAt: 0
+    val input = if (inQueue) executionInputFor(mj, workId, now + 1) else {
+      protocolVersion: ProtocolVersion,
+      slot: now + 1,
+      parentHash: hashOf(0),
+      parentStateRoot: hashOf(0),
+      entropy: hashOf(0),
+      reports: List(),
+      preimages: mj.pendingPreimages,
+      maxGas: MaxGas
     }
-    val work = if (inQueue and mj.works.keys().contains(workId)) mj.works.get(workId) else dummyWork
-    val dummyReport = candidateReport(dummyWork.package, 0, MkAccountId(0), List(), Trap)
-    val dummyCandidate: CandidateRecord = {
-      submitter: MkAccountId(0),
-      envelope: dummyReport,
-      voteDeadline: 0
-    }
-    val cand =
-      if (inQueue and mj.candidates.keys().contains((workId, work.round)))
-        mj.candidates.get((workId, work.round))
-      else dummyCandidate
-    val result = executeReport(mj, cand.envelope)
-    val executed =
+    val result = executeVirtualJamBlock(mj, input)
+    val imported =
       if (mj.executionPaused or result._2.outcome != ExecutionOk) result._1
-      else {
-        ...result._1,
-        works: result._1.works.put(workId, { ...work, status: Executed }),
-        executionQueue: result._1.executionQueue.select(w => w != workId)
-      }
+      else consumePendingPreimages(markImportedWork(result._1, workId, result._2), result._2.importedPreimages)
     all {
       inQueue,
-      mj' = if (mj.executionPaused) mj else executed,
+      mj' = if (mj.executionPaused) mj else imported,
       now' = now,
       prevMj' = mj,
       lastExecution' = if (mj.executionPaused) emptyExecution else result._2,
-      lastDelta' = if (mj.executionPaused) List() else result._2.orderedChanges,
       lastVotes' = List(),
-      lastFault' = cand.envelope.bulletinFault
+      lastFault' = NoBulletinFault
     }
   }
 
@@ -198,7 +211,6 @@ module main {
       now' = now,
       prevMj' = mj,
       lastExecution' = emptyExecution,
-      lastDelta' = List(),
       lastVotes' = List(),
       lastFault' = NoBulletinFault
     }
@@ -214,7 +226,6 @@ module main {
       now' = now,
       prevMj' = mj,
       lastExecution' = emptyExecution,
-      lastDelta' = List(),
       lastVotes' = List(),
       lastFault' = fetchStatus(updated, content)
     }
@@ -229,7 +240,6 @@ module main {
     now' = now + 1,
     prevMj' = mj,
     lastExecution' = emptyExecution,
-    lastDelta' = List(),
     lastVotes' = List(),
     lastFault' = NoBulletinFault
   }
@@ -237,6 +247,7 @@ module main {
   action step = any {
     stepSubmitWork,
     stepSubmitCandidate,
+    stepSubmitPreimage,
     stepVote,
     stepMalformedVote,
     stepExecute,
