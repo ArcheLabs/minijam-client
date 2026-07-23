@@ -178,3 +178,86 @@ pub fn preset_names() -> Vec<PresetId> {
         PresetId::from(sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn section<'a>(patch: &'a Value, snake: &str, camel: &str) -> &'a Value {
+        patch
+            .get(snake)
+            .or_else(|| patch.get(camel))
+            .unwrap_or_else(|| panic!("missing genesis section {snake}/{camel}"))
+    }
+
+    fn field<'a>(section: &'a Value, snake: &str, camel: &str) -> &'a Value {
+        section
+            .get(snake)
+            .or_else(|| section.get(camel))
+            .unwrap_or_else(|| panic!("missing genesis field {snake}/{camel}"))
+    }
+
+    #[test]
+    fn development_genesis_seeds_stage0_service_and_workers() {
+        let patch = development_config_genesis();
+        let mini_jam = section(&patch, "mini_jam", "miniJam");
+        let mini_jam_workers = section(&patch, "mini_jam_workers", "miniJamWorkers");
+
+        let protocol_state = field(mini_jam, "protocol_state", "protocolState")
+            .as_array()
+            .expect("protocol state must be a JSON array");
+        assert!(
+            !protocol_state.is_empty(),
+            "service 0 protocol state must be present"
+        );
+
+        let service_fuel = field(mini_jam, "service_fuel", "serviceFuel")
+            .as_array()
+            .expect("service fuel must be a JSON array");
+        assert!(
+            service_fuel.iter().any(|entry| {
+                entry
+                    .as_array()
+                    .is_some_and(|pair| pair.first() == Some(&Value::from(0)))
+            }),
+            "service 0 fuel must be present"
+        );
+
+        let workers = field(mini_jam_workers, "workers", "workers")
+            .as_array()
+            .expect("workers must be a JSON array");
+        assert_eq!(workers.len(), 3);
+        assert!(workers.iter().all(|entry| {
+            entry.as_array().is_some_and(|worker| {
+                worker.len() == 3 && worker.get(2) == Some(&Value::from(1_000 * UNIT))
+            })
+        }));
+    }
+
+    #[test]
+    fn development_genesis_endows_reward_pool_and_fuel_escrow() {
+        let patch = development_config_genesis();
+        let balances = field(
+            section(&patch, "balances", "balances"),
+            "balances",
+            "balances",
+        )
+        .as_array()
+        .expect("balances must be a JSON array");
+
+        let reward_pool = serde_json::to_value(AccountId::new([9; 32])).unwrap();
+        let fuel_escrow = serde_json::to_value(AccountId::new([7; 32])).unwrap();
+        assert!(
+            balances.iter().any(|entry| entry
+                .as_array()
+                .is_some_and(|pair| pair.first() == Some(&reward_pool))),
+            "reward pool account must be endowed"
+        );
+        assert!(
+            balances.iter().any(|entry| entry
+                .as_array()
+                .is_some_and(|pair| pair.first() == Some(&fuel_escrow))),
+            "fuel escrow account must be endowed"
+        );
+    }
+}
