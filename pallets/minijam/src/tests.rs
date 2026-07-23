@@ -14,7 +14,7 @@ use jp_core_primitives::{
     },
 };
 use minijam_jamcore_api::{
-    InputError, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionInputV2,
+    ExecutionOutcome, InputError, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionInputV2,
     MiniJamExecutionOutputV1, MiniJamExecutionOutputV2, MiniJamExecutor, ProtocolStateReader,
 };
 use minijam_protocol::{
@@ -192,6 +192,15 @@ impl MiniJamExecutor for TestExecutor {
         input: MiniJamExecutionInputV2,
         _state: &R,
     ) -> Result<MiniJamExecutionOutputV2, MiniJamError> {
+        if input.system_ops.iter().any(|op| {
+            matches!(
+                op.command,
+                SystemCommandV1::CreateService { code_hash, .. } if code_hash == [0xee; 32]
+            )
+        }) {
+            return Err(MiniJamError::Execution(ExecutionOutcome::ServiceFailure));
+        }
+
         let mut output = MiniJamExecutionOutputV2::empty();
         output.consumed_reports = input
             .reports
@@ -1018,6 +1027,39 @@ fn invalid_system_ops_are_rejected_before_queueing() {
             pallet_minijam::Error::<Test>::InvalidSystemOp
         );
         assert!(pallet_minijam::PendingSystemOps::<Test>::get().is_empty());
+    });
+}
+
+#[test]
+fn system_op_execution_failure_is_quarantined_without_panic() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(MiniJam::submit_system_op(
+            RuntimeOrigin::signed(5),
+            Box::new(SystemCommandV1::CreateService {
+                code_hash: [0xee; 32],
+                code_len: 32,
+                min_item_gas: 1,
+                min_memo_gas: 1,
+                initial_balance: 100,
+            })
+        ));
+        let pending = pallet_minijam::PendingSystemOps::<Test>::get();
+        let request_id = pending[0].op.request_id;
+
+        System::set_block_number(100);
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(100);
+
+        assert!(pallet_minijam::PendingSystemOps::<Test>::get().is_empty());
+        assert!(!pallet_minijam::PendingSystemOpKeys::<Test>::contains_key(
+            request_id
+        ));
+        let quarantined = pallet_minijam::QuarantinedSystemOps::<Test>::get();
+        assert_eq!(quarantined.len(), 1);
+        assert_eq!(quarantined[0].op.request_id, request_id);
+        assert!(pallet_minijam::LastExecutionReceipt::<Test>::get().is_none());
+
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(101);
+        assert_eq!(pallet_minijam::QuarantinedSystemOps::<Test>::get().len(), 1);
     });
 }
 

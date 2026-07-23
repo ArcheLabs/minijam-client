@@ -317,6 +317,10 @@ pub mod pallet {
         StorageValue<_, BoundedVec<PendingSystemOp<T>, T::MaxPendingSystemOps>, ValueQuery>;
 
     #[pallet::storage]
+    pub type QuarantinedSystemOps<T: Config> =
+        StorageValue<_, BoundedVec<PendingSystemOp<T>, T::MaxPendingSystemOps>, ValueQuery>;
+
+    #[pallet::storage]
     pub type PendingSystemOpKeys<T: Config> =
         StorageMap<_, Blake2_128Concat, Hash, (), OptionQuery>;
 
@@ -430,6 +434,10 @@ pub mod pallet {
         },
         SystemOpConsumed {
             request_id: Hash,
+        },
+        SystemOpFailed {
+            request_id: Hash,
+            outcome: ExecutionOutcome,
         },
         ServiceFunded {
             funder: T::AccountId,
@@ -1079,6 +1087,9 @@ pub mod pallet {
                 Err(ExecutionFailure::Yielded(work_id, outcome)) => {
                     Self::deposit_event(Event::ExecutionYielded { work_id, outcome });
                 }
+                Err(ExecutionFailure::SystemOpsYielded(outcome)) => {
+                    Self::quarantine_pending_system_ops(outcome);
+                }
                 Err(ExecutionFailure::Fatal) => {
                     panic!("fatal MiniJam execution error");
                 }
@@ -1138,6 +1149,8 @@ pub mod pallet {
                 Err(MiniJamError::Execution(outcome)) => {
                     return if let Some(work_id) = work_ids.first().copied() {
                         Err(ExecutionFailure::Yielded(work_id, outcome))
+                    } else if !input.system_ops.is_empty() {
+                        Err(ExecutionFailure::SystemOpsYielded(outcome))
                     } else {
                         Err(ExecutionFailure::Fatal)
                     };
@@ -1260,6 +1273,30 @@ pub mod pallet {
                     }
                 }
             });
+        }
+
+        fn quarantine_pending_system_ops(outcome: ExecutionOutcome) {
+            let pending = PendingSystemOps::<T>::take();
+            if pending.is_empty() {
+                return;
+            }
+
+            let mut quarantined = QuarantinedSystemOps::<T>::get();
+            let mut overflowed = false;
+            for pending in pending {
+                PendingSystemOpKeys::<T>::remove(pending.op.request_id);
+                Self::deposit_event(Event::SystemOpFailed {
+                    request_id: pending.op.request_id,
+                    outcome: outcome.clone(),
+                });
+                if quarantined.try_push(pending).is_err() {
+                    overflowed = true;
+                }
+            }
+            QuarantinedSystemOps::<T>::put(quarantined);
+            if overflowed {
+                SystemOpsPaused::<T>::put(true);
+            }
         }
 
         fn consume_system_ops(consumed_system_ops: &[Hash]) {
@@ -1576,6 +1613,7 @@ pub mod pallet {
 
     enum ExecutionFailure {
         Yielded(WorkId, ExecutionOutcome),
+        SystemOpsYielded(ExecutionOutcome),
         Fatal,
     }
 
