@@ -3,6 +3,8 @@
   "abi_version": 1,
   "artifact": "system-service.blob",
   "byte_len": 45,
+  "sha256": "dec07de6687abc2591fb74d72bcaf50f7c41d0366a03c974b06d5449a39c61e3",
+  "source": "services/system-service/src/system-service.placeholder",
   "stage": 0,
   "note": "Stage 0 placeholder artifact until the system-service PVM compiler pipeline is wired."
 }
