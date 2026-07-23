@@ -72,7 +72,8 @@ jobs:
       - name: Export raw chain spec
         run: |
           mkdir -p stage0-artifacts
-          ./target/release/minijam-node export-chain-spec --chain local --raw > stage0-artifacts/stage0-raw.json
+          ./scripts/export-stage0-chain-specs.sh ./target/release/minijam-node chain-specs
+          cp chain-specs/stage0*.json stage0-artifacts/
       - name: Collect artifacts
         run: |
           cp target/release/minijam-node stage0-artifacts/
