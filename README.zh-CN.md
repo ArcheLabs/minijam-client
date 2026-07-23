@@ -29,7 +29,9 @@ MiniJAM 把灰皮书中的 JAM 执行模型收缩到一个可在独立链上验�
 - MiniJAM JamCore 执行接口，以及执行结果的规范化与原子状态校验；
 - Bulletin 存储抽象和可注入故障的本地模拟器；
 - 入站托管与出站释放所需的桥接；
-- 在 jambda 基础上实现的 MiniJAM Executive。
+- 在 jambda 基础上实现的 MiniJAM Executive；
+- 阶段 0 的 WorkPackage 入口、ContentRef 上限、preimage/system-op 队列、service fuel 预留/结算和 pallet view 查询；
+- `minijam-worker` daemon 骨架，以及可复用的 Worker 内容获取和 bundle 校验 helper。
 
 ## 工作流程
 
@@ -53,6 +55,7 @@ Runtime 还提供暂停执行和隔离待执行队列的 Root 管理操作，用
 | `crates/minijam-jamcore-api` | 版本化 JamCore 输入/输出、错误类型、状态读取和执行器接口 |
 | `crates/minijam-jamcore-mock` | 用于测试的可配置 Mock 执行器 |
 | `crates/minijam-worker-engine` | 与 Runtime 无关的 Worker 排序、分配、投票和惩罚算法 |
+| `crates/minijam-worker` | 阶段 0 Worker daemon 入口和运行配置 |
 | `crates/minijam-bridge-engine` | 入站/出站桥接账本与管理员状态记录编码 |
 | `crates/minijam-bulletin-api` | Bulletin 存储、授权、续期和状态查询接口 |
 | `crates/minijam-bulletin-simulator` | Bulletin 兼容的本地文件模拟器及故障注入 |
@@ -142,6 +145,28 @@ cargo run --release -p minijam-node -- export-chain-spec --chain dev
 ```
 
 开发链使用 Alice 作为 Aura/GRANDPA 权威节点和 Sudo 账户；本地测试网配置包含 Alice 与 Bob 两个权威节点。这些预设仅供本地开发。
+
+## 阶段 0 Worker
+
+Worker daemon 入口为 `minijam-worker`。当前 binary 会校验运行配置并启动轮询循环；链上 RPC 任务发现和 WorkReport 提交是下一步接线内容。
+
+运行一次性 readiness check：
+
+```bash
+cargo run -p minijam-worker -- --once
+```
+
+使用显式本地端点运行：
+
+```bash
+cargo run -p minijam-worker -- \
+  --rpc-url ws://127.0.0.1:9944 \
+  --ipfs-gateway http://127.0.0.1:8080 \
+  --poll-interval-ms 1000 \
+  --max-bundle-bytes 16777216
+```
+
+可复用的 Worker engine 已支持校验 `ContentRef` 的 size/hash 承诺、通过 decoder hook 校验 bundle package-hash 承诺，并提供 memory、HTTP URL 和 IPFS gateway fetcher 适配层。
 
 ## 开发检查
 

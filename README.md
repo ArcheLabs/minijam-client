@@ -30,6 +30,8 @@ The current repository already includes:
 - Bulletin storage abstractions and a local simulator with injectable faults;
 - Bridging required for inbound escrow and outbound release;
 - A MiniJAM Executive implemented on top of jambda.
+- Stage-0 WorkPackage ingress, ContentRef bounds, preimage/system-op queues, service fuel reserve/settlement, and pallet view queries;
+- A `minijam-worker` daemon skeleton plus reusable Worker content fetcher and bundle verification helpers.
 
 ## Workflow
 
@@ -53,6 +55,7 @@ The Runtime also provides Root administration operations for pausing execution a
 | `crates/minijam-jamcore-api` | Versioned JamCore input/output, error types, state reads, and executor interface |
 | `crates/minijam-jamcore-mock` | Configurable mock executor for tests |
 | `crates/minijam-worker-engine` | Runtime-independent Worker ordering, assignment, voting, and slashing algorithms |
+| `crates/minijam-worker` | Stage-0 Worker daemon entry point and operational configuration |
 | `crates/minijam-bridge-engine` | Inbound/outbound bridge ledger and administrator state record encoding |
 | `crates/minijam-bulletin-api` | Bulletin storage, authorization, renewal, and status query interfaces |
 | `crates/minijam-bulletin-simulator` | Bulletin-compatible local file simulator and fault injection |
@@ -142,6 +145,28 @@ cargo run --release -p minijam-node -- export-chain-spec --chain dev
 ```
 
 The development chain uses Alice as the Aura/GRANDPA authority and Sudo account. The local testnet configuration contains Alice and Bob as two authority nodes. These presets are only for local development.
+
+## Stage-0 Worker
+
+The Worker daemon entry point is available as `minijam-worker`. The current binary validates operational configuration and starts the polling loop; chain RPC task discovery and WorkReport submission are the next integration steps.
+
+Run a one-shot readiness check:
+
+```bash
+cargo run -p minijam-worker -- --once
+```
+
+Run with explicit local endpoints:
+
+```bash
+cargo run -p minijam-worker -- \
+  --rpc-url ws://127.0.0.1:9944 \
+  --ipfs-gateway http://127.0.0.1:8080 \
+  --poll-interval-ms 1000 \
+  --max-bundle-bytes 16777216
+```
+
+The reusable Worker engine already verifies `ContentRef` size/hash commitments, validates bundle package-hash commitments through a decoder hook, and provides memory, HTTP-URL, and IPFS-gateway fetcher adapters.
 
 ## Development Checks
 
