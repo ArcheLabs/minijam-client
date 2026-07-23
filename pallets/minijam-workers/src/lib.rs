@@ -17,7 +17,7 @@ pub mod pallet {
         },
     };
     use frame_system::pallet_prelude::*;
-    use minijam_protocol::{Verdict, WorkerVoteV1};
+    use minijam_protocol::{Verdict, WorkerVoteTaskV1, WorkerVoteV1};
     use parity_scale_codec::Encode;
     use sp_core::sr25519;
     use sp_runtime::{traits::SaturatedConversion, Perbill};
@@ -692,6 +692,38 @@ pub mod pallet {
                 },
             );
             Ok(())
+        }
+
+        pub fn open_vote_tasks() -> Vec<WorkerVoteTaskV1> {
+            OpenVoteRounds::<T>::get()
+                .into_iter()
+                .filter_map(|(work_id, round)| {
+                    let voting = VotingRounds::<T>::get((work_id, round))?;
+                    let assignment = Assignments::<T>::get(work_id, round)?;
+                    let assigned_workers = assignment
+                        .iter()
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .try_into()
+                        .ok()?;
+                    let submitted_votes = assignment
+                        .iter()
+                        .copied()
+                        .filter(|worker_id| Votes::<T>::contains_key((work_id, round, *worker_id)))
+                        .collect::<Vec<_>>()
+                        .try_into()
+                        .ok()?;
+                    Some(WorkerVoteTaskV1 {
+                        work_id,
+                        round,
+                        assignment_epoch: voting.assignment_epoch,
+                        candidate_report_hash: voting.candidate_hash,
+                        deadline: voting.deadline.saturated_into(),
+                        assigned_workers,
+                        submitted_votes,
+                    })
+                })
+                .collect()
         }
 
         pub fn assign_work(

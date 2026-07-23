@@ -14,7 +14,7 @@ use std::{
     thread,
 };
 
-use minijam_protocol::{ContentRef, Hash, WorkId};
+use minijam_protocol::{ContentRef, Hash, WorkId, WorkerId};
 use minijam_worker_engine::{
     fetch::{fetch_verified_content, ContentFetcher, FetchError, HttpBytesClient},
     verify_work_bundle, MiniJamWorkBundleDecoder, WorkBundleDecoder, WorkBundleVerificationError,
@@ -185,6 +185,17 @@ pub struct WorkTask {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoteTask {
+    pub work_id: WorkId,
+    pub round: u8,
+    pub assignment_epoch: u32,
+    pub candidate_report_hash: Hash,
+    pub deadline: u32,
+    pub assigned_workers: Vec<WorkerId>,
+    pub submitted_votes: Vec<WorkerId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkerTaskStatus {
     BundleReady { bundle_len: usize },
     BundleRejected { reason: WorkerError },
@@ -299,6 +310,17 @@ impl WorkerChainSource for WsWorkerChainSource {
             .map_err(|error| WorkerError::Chain(error.to_string()))?;
         decode_pending_work_tasks_response(&encoded)
     }
+
+    async fn open_vote_tasks(&self) -> Result<Vec<VoteTask>, WorkerError> {
+        use jsonrpsee::core::client::ClientT;
+
+        let encoded: String = self
+            .client
+            .request("minijam_getOpenVoteTasks", jsonrpsee::rpc_params![])
+            .await
+            .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        decode_open_vote_tasks_response(&encoded)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -331,6 +353,22 @@ impl WorkerChainSource for BlockingHttpWorkerChainSource {
         let encoded = json_rpc_string_result(&response)?;
         decode_pending_work_tasks_response(&encoded)
     }
+
+    async fn open_vote_tasks(&self) -> Result<Vec<VoteTask>, WorkerError> {
+        let response = http_post_json(
+            &self.rpc_url,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "minijam_getOpenVoteTasks",
+                "params": [],
+            })
+            .to_string(),
+        )
+        .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        let encoded = json_rpc_string_result(&response)?;
+        decode_open_vote_tasks_response(&encoded)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -355,6 +393,24 @@ pub fn decode_pending_work_tasks_response(encoded: &str) -> Result<Vec<WorkTask>
             package_hash: task.package_hash,
             canonical_work_package: task.canonical_work_package.into_inner(),
             bundle_ref: task.bundle_ref,
+        })
+        .collect())
+}
+
+pub fn decode_open_vote_tasks_response(encoded: &str) -> Result<Vec<VoteTask>, WorkerError> {
+    let bytes = decode_hex(encoded)?;
+    let tasks = Vec::<minijam_protocol::WorkerVoteTaskV1>::decode(&mut bytes.as_slice())
+        .map_err(|error| WorkerError::Chain(format!("invalid open vote task batch: {error}")))?;
+    Ok(tasks
+        .into_iter()
+        .map(|task| VoteTask {
+            work_id: task.work_id,
+            round: task.round,
+            assignment_epoch: task.assignment_epoch,
+            candidate_report_hash: task.candidate_report_hash,
+            deadline: task.deadline,
+            assigned_workers: task.assigned_workers.into_inner(),
+            submitted_votes: task.submitted_votes.into_inner(),
         })
         .collect())
 }
@@ -628,6 +684,10 @@ impl PersistedWorkerTaskStatus {
 #[async_trait::async_trait]
 pub trait WorkerChainSource: Send + Sync {
     async fn pending_work_tasks(&self) -> Result<Vec<WorkTask>, WorkerError>;
+
+    async fn open_vote_tasks(&self) -> Result<Vec<VoteTask>, WorkerError> {
+        Ok(Vec::new())
+    }
 }
 
 pub struct WorkerRunner<C, F, D> {
@@ -769,7 +829,7 @@ mod tests {
     use super::*;
     use futures::executor::block_on;
     use minijam_protocol::blake2_256;
-    use minijam_protocol::MiniJamWorkBundleV1;
+    use minijam_protocol::{MiniJamWorkBundleV1, WorkerVoteTaskV1};
     use minijam_worker_engine::{fetch::MemoryContentFetcher, MiniJamWorkBundleDecoder};
     use parity_scale_codec::Encode;
 
@@ -969,6 +1029,35 @@ mod tests {
                 package_hash,
                 canonical_work_package: vec![1, 2, 3],
                 bundle_ref,
+            }]
+        );
+    }
+
+    #[test]
+    fn decodes_open_vote_tasks_rpc_response() {
+        let tasks = vec![WorkerVoteTaskV1 {
+            work_id: 42,
+            round: 1,
+            assignment_epoch: 7,
+            candidate_report_hash: [9u8; 32],
+            deadline: 100,
+            assigned_workers: vec![0, 2, 4].try_into().unwrap(),
+            submitted_votes: vec![2].try_into().unwrap(),
+        }];
+        let encoded = hex_encode_for_test(&tasks.encode());
+
+        let decoded = decode_open_vote_tasks_response(&encoded).unwrap();
+
+        assert_eq!(
+            decoded,
+            vec![VoteTask {
+                work_id: 42,
+                round: 1,
+                assignment_epoch: 7,
+                candidate_report_hash: [9u8; 32],
+                deadline: 100,
+                assigned_workers: vec![0, 2, 4],
+                submitted_votes: vec![2],
             }]
         );
     }

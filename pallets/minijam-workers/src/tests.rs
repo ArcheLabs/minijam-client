@@ -342,6 +342,33 @@ fn signed_vote(pair: &sr25519::Pair, worker_id: u64, verdict: Verdict) {
 }
 
 #[test]
+fn open_vote_tasks_project_assignment_and_submitted_votes() {
+    new_test_ext().execute_with(|| {
+        let (pairs, assignment) = setup_signed_voting();
+
+        let tasks = Workers::open_vote_tasks();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].work_id, 77);
+        assert_eq!(tasks[0].round, 0);
+        assert_eq!(tasks[0].assignment_epoch, 1);
+        assert_eq!(tasks[0].candidate_report_hash, [7; 32]);
+        assert_eq!(tasks[0].deadline, 15);
+        assert_eq!(tasks[0].assigned_workers.as_slice(), assignment.as_slice());
+        assert!(tasks[0].submitted_votes.is_empty());
+
+        signed_vote(
+            &pairs[assignment[0] as usize],
+            assignment[0],
+            Verdict::Support,
+        );
+
+        let tasks = Workers::open_vote_tasks();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].submitted_votes.as_slice(), &[assignment[0]]);
+    });
+}
+
+#[test]
 fn threshold_locks_but_round_waits_for_all_workers() {
     new_test_ext().execute_with(|| {
         let (pairs, assignment) = setup_signed_voting();

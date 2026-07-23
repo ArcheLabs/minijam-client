@@ -59,6 +59,8 @@ pub type WorkBundleItemExternalData = BoundedVec<WorkBundleBlob, ConstU32<128>>;
 pub type WorkBundleExternalData = BoundedVec<WorkBundleItemExternalData, ConstU32<64>>;
 pub type WorkBundleImportSegments = BoundedVec<WorkBundleBlob, ConstU32<1_024>>;
 pub type WorkBundleImportProofs = BoundedVec<WorkBundleBlob, ConstU32<1_024>>;
+pub type WorkerVoteAssignments = BoundedVec<WorkerId, ConstU32<8>>;
+pub type WorkerVoteSubmissions = BoundedVec<WorkerId, ConstU32<8>>;
 pub type BulletinProofBytes = BoundedVec<u8, ConstU32<65_536>>;
 pub type ReportSignatures = BoundedVec<WorkerSignature, ConstU32<8>>;
 pub type StateValue = BoundedVec<u8, ConstU32<1_048_576>>;
@@ -246,6 +248,19 @@ pub struct WorkerTaskV1 {
 }
 
 impl DecodeWithMemTracking for WorkerTaskV1 {}
+
+#[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+pub struct WorkerVoteTaskV1 {
+    pub work_id: WorkId,
+    pub round: AssignmentRound,
+    pub assignment_epoch: EpochIndex,
+    pub candidate_report_hash: Hash,
+    pub deadline: BlockNumber,
+    pub assigned_workers: WorkerVoteAssignments,
+    pub submitted_votes: WorkerVoteSubmissions,
+}
+
+impl DecodeWithMemTracking for WorkerVoteTaskV1 {}
 
 #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub struct MiniJamWorkBundleV1 {

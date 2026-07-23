@@ -97,6 +97,17 @@ where
         }
     })?;
 
+    module.register_method("minijam_getOpenVoteTasks", {
+        let client = client.clone();
+        move |_, _, _| -> RpcResult<String> {
+            let tasks = client
+                .runtime_api()
+                .get_open_vote_tasks(finalized_hash(&client))
+                .map_err(runtime_api_error)?;
+            Ok(hex_encode(&parity_scale_codec::Encode::encode(&tasks)))
+        }
+    })?;
+
     module.register_method("minijam_getWorkByPackageHash", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {

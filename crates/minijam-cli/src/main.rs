@@ -79,6 +79,7 @@ enum Command {
         work_id: u64,
     },
     GetPendingWorkTasks,
+    GetOpenVoteTasks,
     GetWorkByPackageHash {
         package_hash: String,
     },
@@ -213,6 +214,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Command::GetPendingWorkTasks => {
             print_rpc_result(&cli.rpc, "minijam_getPendingWorkTasks", json!([]))?
+        }
+        Command::GetOpenVoteTasks => {
+            print_rpc_result(&cli.rpc, "minijam_getOpenVoteTasks", json!([]))?
         }
         Command::GetWorkByPackageHash { package_hash } => print_rpc_result(
             &cli.rpc,
