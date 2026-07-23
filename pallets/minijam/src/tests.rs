@@ -135,6 +135,7 @@ impl pallet_minijam::Config for Test {
     type MaxExecutionReports = frame_support::traits::ConstU32<4>;
     type MaxExecutionGas = frame_support::traits::ConstU64<1_000_000>;
     type MaxWorkPackageBytes = frame_support::traits::ConstU32<512>;
+    type MaxBundleBytes = frame_support::traits::ConstU64<128>;
     type MaxServicesPerWork = frame_support::traits::ConstU32<8>;
     type JamCoreExecutor = TestExecutor;
     type MaxPendingPreimages = frame_support::traits::ConstU32<8>;
@@ -540,6 +541,18 @@ fn submit_work_rejects_duplicate_package_and_invalid_bundle() {
                     cid_v1: Default::default(),
                     content_hash: [0u8; 32],
                     size: 1,
+                }
+            ),
+            pallet_minijam::Error::<Test>::InvalidContentRef
+        );
+        assert_noop!(
+            MiniJam::submit_work(
+                RuntimeOrigin::signed(6),
+                work_package(14),
+                ContentRef {
+                    cid_v1: vec![1].try_into().unwrap(),
+                    content_hash: [0u8; 32],
+                    size: 129,
                 }
             ),
             pallet_minijam::Error::<Test>::InvalidContentRef

@@ -261,6 +261,7 @@ impl pallet_minijam::Config for Runtime {
     type MaxExecutionReports = ConstU32<4>;
     type MaxExecutionGas = ConstU64<10_000_000>;
     type MaxWorkPackageBytes = ConstU32<1_048_576>;
+    type MaxBundleBytes = ConstU64<16_777_216>;
     type MaxServicesPerWork = ConstU32<64>;
     type JamCoreExecutor = jambda_minijam_executive::MiniJamExecutive;
     type MaxPendingPreimages = ConstU32<64>;

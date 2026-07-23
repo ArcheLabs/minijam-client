@@ -226,6 +226,9 @@ pub mod pallet {
         type MaxWorkPackageBytes: Get<u32>;
 
         #[pallet::constant]
+        type MaxBundleBytes: Get<u64>;
+
+        #[pallet::constant]
         type MaxServicesPerWork: Get<u32>;
 
         type JamCoreExecutor: MiniJamExecutor + Default;
@@ -1278,6 +1281,10 @@ pub mod pallet {
         fn validate_content_ref(bundle_ref: &ContentRef) -> DispatchResult {
             ensure!(!bundle_ref.cid_v1.is_empty(), Error::<T>::InvalidContentRef);
             ensure!(bundle_ref.size > 0, Error::<T>::InvalidContentRef);
+            ensure!(
+                bundle_ref.size <= T::MaxBundleBytes::get(),
+                Error::<T>::InvalidContentRef
+            );
             Ok(())
         }
 
