@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "crates/minijam-protocol",
+  "crates/minijam-rpc-runtime-api",
   "crates/minijam-jamcore-api",
   "crates/minijam-jamcore-mock",
   "crates/minijam-worker-engine",

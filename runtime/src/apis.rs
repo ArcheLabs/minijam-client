@@ -4,6 +4,7 @@ use frame_support::{
     weights::Weight,
 };
 use pallet_grandpa::AuthorityId as GrandpaId;
+use parity_scale_codec::Encode;
 use sp_api::impl_runtime_apis;
 use sp_consensus_aura::sr25519::AuthorityId as AuraId;
 use sp_core::{crypto::KeyTypeId, OpaqueMetadata};
@@ -49,6 +50,93 @@ impl_runtime_apis! {
             input: Vec<u8>,
         ) -> Result<Vec<u8>, frame_support::view_functions::ViewFunctionDispatchError> {
             Runtime::execute_view_function(id, input)
+        }
+    }
+
+    impl minijam_rpc_runtime_api::MiniJamRuntimeApi<Block> for Runtime {
+        fn get_work(work_id: minijam_protocol::WorkId) -> Option<Vec<u8>> {
+            pallet_minijam::Pallet::<Runtime>::get_work(work_id).map(|value| value.encode())
+        }
+
+        fn get_work_by_package_hash(package_hash: minijam_protocol::Hash) -> Option<Vec<u8>> {
+            pallet_minijam::Pallet::<Runtime>::get_work_by_package_hash(package_hash)
+                .map(|value| value.encode())
+        }
+
+        fn get_work_bundle_ref(work_id: minijam_protocol::WorkId) -> Option<Vec<u8>> {
+            pallet_minijam::Pallet::<Runtime>::get_work_bundle_ref(work_id)
+                .map(|value| value.encode())
+        }
+
+        fn get_candidate(work_id: minijam_protocol::WorkId, round: u8) -> Option<Vec<u8>> {
+            pallet_minijam::Pallet::<Runtime>::get_candidate(work_id, round)
+                .map(|value| value.encode())
+        }
+
+        fn get_execution_receipt(work_id: minijam_protocol::WorkId) -> Option<minijam_protocol::Hash> {
+            pallet_minijam::Pallet::<Runtime>::get_execution_receipt(work_id)
+        }
+
+        fn get_last_execution_receipt() -> Option<minijam_protocol::Hash> {
+            pallet_minijam::Pallet::<Runtime>::get_last_execution_receipt()
+        }
+
+        fn get_service_fuel(service_id: u32) -> Vec<u8> {
+            pallet_minijam::Pallet::<Runtime>::get_service_fuel(service_id).encode()
+        }
+
+        fn get_work_fuel_reservation(work_id: minijam_protocol::WorkId) -> Option<Vec<u8>> {
+            pallet_minijam::Pallet::<Runtime>::get_work_fuel_reservation(work_id)
+                .map(|value| value.encode())
+        }
+
+        fn get_work_fuel_settlement(work_id: minijam_protocol::WorkId) -> Option<Vec<u8>> {
+            pallet_minijam::Pallet::<Runtime>::get_work_fuel_settlement(work_id)
+                .map(|value| value.encode())
+        }
+
+        fn get_pending_preimages() -> Vec<u8> {
+            pallet_minijam::Pallet::<Runtime>::get_pending_preimages().encode()
+        }
+
+        fn has_pending_preimage(
+            requester: u32,
+            blob_hash: minijam_protocol::Hash,
+            blob_len: u32,
+        ) -> bool {
+            pallet_minijam::Pallet::<Runtime>::has_pending_preimage(
+                requester,
+                blob_hash,
+                blob_len,
+            )
+        }
+
+        fn get_pending_system_ops() -> Vec<u8> {
+            pallet_minijam::Pallet::<Runtime>::get_pending_system_ops().encode()
+        }
+
+        fn get_quarantined_system_ops() -> Vec<u8> {
+            pallet_minijam::Pallet::<Runtime>::get_quarantined_system_ops().encode()
+        }
+
+        fn get_system_op(request_id: minijam_protocol::Hash) -> Option<Vec<u8>> {
+            pallet_minijam::Pallet::<Runtime>::get_system_op(request_id)
+                .map(|value| value.encode())
+        }
+
+        fn get_system_receipt(request_id: minijam_protocol::Hash) -> Option<Vec<u8>> {
+            pallet_minijam::Pallet::<Runtime>::get_system_receipt(request_id)
+                .map(|value| value.encode())
+        }
+
+        fn get_system_service_info() -> Option<Vec<u8>> {
+            pallet_minijam::Pallet::<Runtime>::get_system_service_info()
+                .map(|value| value.encode())
+        }
+
+        fn get_protocol_state(key: [u8; 31]) -> Option<Vec<u8>> {
+            pallet_minijam::Pallet::<Runtime>::get_protocol_state(key)
+                .map(|value| value.encode())
         }
     }
 

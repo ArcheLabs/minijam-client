@@ -5000,6 +5000,8 @@ dependencies = [
  "frame-system",
  "futures",
  "jsonrpsee",
+ "minijam-protocol",
+ "minijam-rpc-runtime-api",
  "minijam-runtime",
  "pallet-transaction-payment",
  "pallet-transaction-payment-rpc",
@@ -5040,6 +5042,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "minijam-rpc-runtime-api"
+version = "0.1.0"
+dependencies = [
+ "minijam-protocol",
+ "parity-scale-codec",
+ "sp-api",
+]
+
+[[package]]
 name = "minijam-runtime"
 version = "0.1.0"
 dependencies = [
@@ -5049,6 +5060,8 @@ dependencies = [
  "frame-system-rpc-runtime-api",
  "jambda-minijam-executive",
  "minijam-jamcore-api",
+ "minijam-protocol",
+ "minijam-rpc-runtime-api",
  "pallet-aura",
  "pallet-balances",
  "pallet-grandpa",

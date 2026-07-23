@@ -16,6 +16,8 @@ clap = { features = ["derive"], workspace = true }
 frame-system = { default-features = true, workspace = true }
 futures = { features = ["thread-pool"], workspace = true }
 jsonrpsee = { features = ["server"], workspace = true }
+minijam-protocol = { path = "../crates/minijam-protocol", default-features = true }
+minijam-rpc-runtime-api = { path = "../crates/minijam-rpc-runtime-api", default-features = true }
 pallet-transaction-payment = { default-features = true, workspace = true }
 pallet-transaction-payment-rpc = { default-features = true, workspace = true }
 minijam-runtime = { path = "../runtime", default-features = true }

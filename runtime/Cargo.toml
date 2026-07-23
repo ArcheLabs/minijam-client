@@ -12,6 +12,8 @@ frame-system.workspace = true
 frame-system-rpc-runtime-api.workspace = true
 jambda-minijam-executive = { path = "../external/jambda/crates/minijam-executive", default-features = false }
 minijam-jamcore-api = { path = "../crates/minijam-jamcore-api", default-features = false }
+minijam-protocol = { path = "../crates/minijam-protocol", default-features = false }
+minijam-rpc-runtime-api = { path = "../crates/minijam-rpc-runtime-api", default-features = false }
 pallet-aura.workspace = true
 pallet-balances.workspace = true
 pallet-grandpa.workspace = true
@@ -50,6 +52,8 @@ std = [
   "frame-system-rpc-runtime-api/std",
   "frame-system/std",
   "minijam-jamcore-api/std",
+  "minijam-protocol/std",
+  "minijam-rpc-runtime-api/std",
   "pallet-aura/std",
   "pallet-balances/std",
   "pallet-grandpa/std",
