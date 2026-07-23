@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 frame-support.workspace = true
 frame-system.workspace = true
+jam-codec = { version = "0.1.1", default-features = false }
+jp-core-primitives = { path = "../../external/jambda/crates/core-primitives", default-features = false }
 minijam-bridge-engine = { path = "../../crates/minijam-bridge-engine", default-features = false }
 minijam-protocol = { path = "../../crates/minijam-protocol", default-features = false }
 minijam-jamcore-api = { path = "../../crates/minijam-jamcore-api", default-features = false }
@@ -26,6 +28,8 @@ default = ["std"]
 std = [
   "frame-support/std",
   "frame-system/std",
+  "jam-codec/std",
+  "jp-core-primitives/std",
   "minijam-bridge-engine/std",
   "minijam-jamcore-api/std",
   "minijam-state-adapter/std",

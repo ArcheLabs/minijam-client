@@ -5682,6 +5682,8 @@ version = "0.1.0"
 dependencies = [
  "frame-support",
  "frame-system",
+ "jam-codec",
+ "jp-core-primitives",
  "minijam-bridge-engine",
  "minijam-jamcore-api",
  "minijam-protocol",

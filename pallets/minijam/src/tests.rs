@@ -3,6 +3,12 @@ use frame_support::{
     assert_noop, assert_ok, derive_impl, parameter_types,
     traits::tokens::fungible::{Inspect, InspectHold},
 };
+use jam_codec::Encode as JamEncode;
+use jp_core_primitives::{
+    crypto::OpaqueHash,
+    simple::{ByteSequence, TimeSlot},
+    work::{RefineContext, WorkItem, WorkPackage},
+};
 use minijam_jamcore_api::{
     InputError, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionInputV2,
     MiniJamExecutionOutputV1, MiniJamExecutionOutputV2, MiniJamExecutor, ProtocolStateReader,
@@ -125,7 +131,8 @@ impl pallet_minijam::Config for Test {
     type MaxPendingWorks = frame_support::traits::ConstU32<8>;
     type MaxExecutionReports = frame_support::traits::ConstU32<4>;
     type MaxExecutionGas = frame_support::traits::ConstU64<1_000_000>;
-    type MaxWorkPackageBytes = frame_support::traits::ConstU32<64>;
+    type MaxWorkPackageBytes = frame_support::traits::ConstU32<512>;
+    type MaxServicesPerWork = frame_support::traits::ConstU32<8>;
     type JamCoreExecutor = TestExecutor;
     type MaxPendingPreimages = frame_support::traits::ConstU32<8>;
     type MaxPendingSystemOps = frame_support::traits::ConstU32<8>;
@@ -288,7 +295,42 @@ fn service_info_key(service_id: u32) -> [u8; 31] {
 fn work_package(
     seed: u8,
 ) -> frame_support::BoundedVec<u8, <Test as pallet_minijam::Config>::MaxWorkPackageBytes> {
-    vec![seed, seed.wrapping_add(1)].try_into().unwrap()
+    encoded_work_package(seed, Vec::new())
+}
+
+fn work_item(service: u32, refine_gas_limit: u64, accumulate_gas_limit: u64) -> WorkItem {
+    WorkItem {
+        service,
+        code_hash: OpaqueHash([9u8; 32]),
+        refine_gas_limit,
+        accumulate_gas_limit,
+        export_count: 0,
+        payload: ByteSequence::from(Vec::new()),
+        import_segments: Vec::new(),
+        extrinsic: Vec::new(),
+    }
+}
+
+fn encoded_work_package(
+    seed: u8,
+    items: Vec<WorkItem>,
+) -> frame_support::BoundedVec<u8, <Test as pallet_minijam::Config>::MaxWorkPackageBytes> {
+    let package = WorkPackage {
+        auth_code_host: 0,
+        auth_code_hash: OpaqueHash([seed; 32]),
+        context: RefineContext {
+            anchor: OpaqueHash([1u8; 32]),
+            state_root: OpaqueHash([2u8; 32]),
+            beefy_root: OpaqueHash([3u8; 32]),
+            lookup_anchor: OpaqueHash([4u8; 32]),
+            lookup_anchor_slot: TimeSlot(5),
+            prerequisites: Vec::new(),
+        },
+        authorization: ByteSequence::from(Vec::new()),
+        authorizer_config: ByteSequence::from(Vec::new()),
+        items,
+    };
+    JamEncode::encode(&package).try_into().unwrap()
 }
 
 fn bundle_ref(seed: u8) -> ContentRef {
@@ -624,6 +666,57 @@ fn fund_service_rejects_unknown_service_and_zero_amount() {
             MiniJam::fund_service(RuntimeOrigin::signed(5), 7, 0),
             pallet_minijam::Error::<Test>::ZeroFuelAmount
         );
+    });
+}
+
+#[test]
+fn submit_work_reserves_service_fuel_by_work_items() {
+    new_test_ext().execute_with(|| {
+        pallet_minijam::ProtocolState::<Test>::insert(
+            service_info_key(7),
+            StateValue::try_from(vec![1, 2, 3]).unwrap(),
+        );
+        assert_ok!(MiniJam::fund_service(RuntimeOrigin::signed(5), 7, 100));
+
+        let package = encoded_work_package(21, vec![work_item(7, 10, 20)]);
+        assert_ok!(MiniJam::submit_work(
+            RuntimeOrigin::signed(5),
+            package,
+            bundle_ref(21)
+        ));
+
+        let fuel = pallet_minijam::ServiceFuelAccounts::<Test>::get(7);
+        assert_eq!(fuel.available, 70);
+        assert_eq!(fuel.reserved, 30);
+        let work = MiniJam::work(0).unwrap();
+        assert_eq!(work.fuel_reservation.len(), 1);
+        assert_eq!(work.fuel_reservation[0].service_id, 7);
+        assert_eq!(work.fuel_reservation[0].refine_limit, 10);
+        assert_eq!(work.fuel_reservation[0].accumulate_limit, 20);
+        assert_eq!(work.fuel_reservation[0].reserved, 30);
+    });
+}
+
+#[test]
+fn submit_work_rejects_when_service_fuel_is_insufficient() {
+    new_test_ext().execute_with(|| {
+        pallet_minijam::ProtocolState::<Test>::insert(
+            service_info_key(7),
+            StateValue::try_from(vec![1, 2, 3]).unwrap(),
+        );
+        assert_ok!(MiniJam::fund_service(RuntimeOrigin::signed(5), 7, 10));
+
+        assert_noop!(
+            MiniJam::submit_work(
+                RuntimeOrigin::signed(5),
+                encoded_work_package(22, vec![work_item(7, 10, 20)]),
+                bundle_ref(22)
+            ),
+            pallet_minijam::Error::<Test>::InsufficientServiceFuel
+        );
+        let fuel = pallet_minijam::ServiceFuelAccounts::<Test>::get(7);
+        assert_eq!(fuel.available, 10);
+        assert_eq!(fuel.reserved, 0);
     });
 }
 

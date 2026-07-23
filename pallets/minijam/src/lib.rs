@@ -7,7 +7,11 @@ pub use pallet::*;
 
 #[frame_support::pallet]
 pub mod pallet {
-    use alloc::{boxed::Box, collections::BTreeSet, vec::Vec};
+    use alloc::{
+        boxed::Box,
+        collections::{BTreeMap, BTreeSet},
+        vec::Vec,
+    };
     use frame_support::{
         pallet_prelude::*,
         storage::{with_transaction, TransactionOutcome},
@@ -18,6 +22,8 @@ pub mod pallet {
         transactional,
     };
     use frame_system::pallet_prelude::*;
+    use jam_codec::Decode as JamDecode;
+    use jp_core_primitives::work::WorkPackage;
     use minijam_jamcore_api::{
         ExecutionOutcome, MiniJamError, MiniJamExecutionInputV2, MiniJamExecutor,
         ProtocolStateReader, StateError,
@@ -48,6 +54,14 @@ pub mod pallet {
                 reserved: Default::default(),
             }
         }
+    }
+
+    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    pub struct ServiceFuelReservation<Balance> {
+        pub service_id: u32,
+        pub refine_limit: u64,
+        pub accumulate_limit: u64,
+        pub reserved: Balance,
     }
 
     #[derive(
@@ -85,6 +99,8 @@ pub mod pallet {
         pub package_hash: Hash,
         pub canonical_work_package: BoundedVec<u8, T::MaxWorkPackageBytes>,
         pub bundle_ref: ContentRef,
+        pub fuel_reservation:
+            BoundedVec<ServiceFuelReservation<BalanceOf<T>>, T::MaxServicesPerWork>,
         pub round: u8,
         pub status: WorkStatus,
         pub candidate_deadline: BlockNumberFor<T>,
@@ -202,6 +218,9 @@ pub mod pallet {
 
         #[pallet::constant]
         type MaxWorkPackageBytes: Get<u32>;
+
+        #[pallet::constant]
+        type MaxServicesPerWork: Get<u32>;
 
         type JamCoreExecutor: MiniJamExecutor + Default;
 
@@ -329,6 +348,10 @@ pub mod pallet {
             bundle_ref: ContentRef,
             status: WorkStatus,
         },
+        WorkFuelReserved {
+            work_id: WorkId,
+            total: BalanceOf<T>,
+        },
         CandidateSubmitted {
             work_id: WorkId,
             round: u8,
@@ -399,6 +422,8 @@ pub mod pallet {
         InvalidWorkPackage,
         DuplicateWorkPackage,
         InvalidContentRef,
+        TooManyServicesPerWork,
+        InsufficientServiceFuel,
         WorkNotFound,
         CandidateNotExpected,
         CandidateAlreadySubmitted,
@@ -476,6 +501,8 @@ pub mod pallet {
                 Error::<T>::InvalidWorkPackage
             );
             Self::validate_content_ref(&bundle_ref)?;
+            let work_package = Self::decode_work_package(&canonical_work_package)?;
+            let fuel_reservation = Self::reserve_work_fuel(&work_package)?;
             let package_hash = blake2_256(&canonical_work_package);
             ensure!(
                 !WorkByPackageHash::<T>::contains_key(package_hash),
@@ -498,6 +525,7 @@ pub mod pallet {
                     package_hash,
                     canonical_work_package,
                     bundle_ref: bundle_ref.clone(),
+                    fuel_reservation: fuel_reservation.clone(),
                     round: 0,
                     status: WorkStatus::InsufficientWorkers,
                     candidate_deadline: Zero::zero(),
@@ -516,6 +544,17 @@ pub mod pallet {
                 bundle_ref,
                 status,
             });
+            let total_reserved = fuel_reservation
+                .iter()
+                .fold(BalanceOf::<T>::zero(), |total, reservation| {
+                    total.saturating_add(reservation.reserved)
+                });
+            if !total_reserved.is_zero() {
+                Self::deposit_event(Event::WorkFuelReserved {
+                    work_id,
+                    total: total_reserved,
+                });
+            }
             Ok(())
         }
 
@@ -1137,6 +1176,72 @@ pub mod pallet {
             ensure!(!bundle_ref.cid_v1.is_empty(), Error::<T>::InvalidContentRef);
             ensure!(bundle_ref.size > 0, Error::<T>::InvalidContentRef);
             Ok(())
+        }
+
+        fn decode_work_package(bytes: &[u8]) -> Result<WorkPackage, DispatchError> {
+            let mut input = bytes;
+            let package =
+                WorkPackage::decode(&mut input).map_err(|_| Error::<T>::InvalidWorkPackage)?;
+            ensure!(input.is_empty(), Error::<T>::InvalidWorkPackage);
+            Ok(package)
+        }
+
+        fn reserve_work_fuel(
+            package: &WorkPackage,
+        ) -> Result<
+            BoundedVec<ServiceFuelReservation<BalanceOf<T>>, T::MaxServicesPerWork>,
+            DispatchError,
+        > {
+            let mut grouped = BTreeMap::<u32, (u64, u64)>::new();
+            for item in &package.items {
+                let entry = grouped.entry(item.service).or_insert((0, 0));
+                entry.0 = entry
+                    .0
+                    .checked_add(item.refine_gas_limit)
+                    .ok_or(Error::<T>::InvalidWorkPackage)?;
+                entry.1 = entry
+                    .1
+                    .checked_add(item.accumulate_gas_limit)
+                    .ok_or(Error::<T>::InvalidWorkPackage)?;
+            }
+
+            let mut reservations = Vec::new();
+            for (service_id, (refine_limit, accumulate_limit)) in grouped {
+                ensure!(Self::service_exists(service_id), Error::<T>::UnknownService);
+                let reserved = Self::fuel_cost(refine_limit, accumulate_limit);
+                if reserved.is_zero() {
+                    continue;
+                }
+                ServiceFuelAccounts::<T>::try_mutate(service_id, |account| {
+                    ensure!(
+                        account.available >= reserved,
+                        Error::<T>::InsufficientServiceFuel
+                    );
+                    account.available = account.available.saturating_sub(reserved);
+                    account.reserved = account.reserved.saturating_add(reserved);
+                    Ok::<(), DispatchError>(())
+                })?;
+                reservations.push(ServiceFuelReservation {
+                    service_id,
+                    refine_limit,
+                    accumulate_limit,
+                    reserved,
+                });
+            }
+
+            reservations
+                .try_into()
+                .map_err(|_| Error::<T>::TooManyServicesPerWork.into())
+        }
+
+        fn fuel_cost(refine_gas: u64, accumulate_gas: u64) -> BalanceOf<T> {
+            let refine_cost = refine_gas
+                .saturated_into::<BalanceOf<T>>()
+                .saturating_mul(T::RefineGasPrice::get());
+            let accumulate_cost = accumulate_gas
+                .saturated_into::<BalanceOf<T>>()
+                .saturating_mul(T::AccumulateGasPrice::get());
+            refine_cost.saturating_add(accumulate_cost)
         }
 
         fn system_op_sender(account: &T::AccountId) -> [u8; 32] {
