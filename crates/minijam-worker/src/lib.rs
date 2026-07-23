@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#![feature(generic_const_exprs)]
+#![allow(incomplete_features)]
+#![recursion_limit = "4096"]
+
 use core::time::Duration;
 use std::{
     collections::BTreeMap,
@@ -14,8 +18,18 @@ use std::{
     thread,
 };
 
+use jam_codec::{Decode as JamDecode, Encode as JamEncode};
+use jambda_state_backend::StateBackend;
+use jp_core_primitives::{
+    error::DataBaseError,
+    spec::TinySpec,
+    state::{column, ColumnFamily, StateKey, StoreChange, StoreOp},
+    traits::DataBase,
+};
+use jp_vm_interp::InterpBackend;
 use minijam_protocol::{
-    ContentRef, Hash, Verdict, WorkId, WorkerId, WorkerVoteV1, PROTOCOL_VERSION_V1,
+    BulletinEvidence, ContentRef, Hash, ReportEnvelopeV1, Verdict, WorkId, WorkerId, WorkerVoteV1,
+    PROTOCOL_VERSION_V1,
 };
 use minijam_worker_engine::{
     fetch::{fetch_verified_content, ContentFetcher, FetchError, HttpBytesClient},
@@ -25,6 +39,7 @@ use parity_scale_codec::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sp_core::{sr25519, Pair};
+use std::sync::Mutex;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkerConfig {
@@ -221,6 +236,12 @@ pub struct PreparedVoteSubmission {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedCandidateSubmission {
+    pub envelope: ReportEnvelopeV1,
+    pub exported_segment_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkerTaskStatus {
     BundleReady { bundle_len: usize },
     BundleRejected { reason: WorkerError },
@@ -231,6 +252,7 @@ pub enum WorkerError {
     Chain(String),
     Fetch(FetchError),
     Bundle(WorkBundleVerificationError),
+    Refine(String),
     Signing(String),
 }
 
@@ -392,6 +414,156 @@ impl BlockingHttpWorkerChainSource {
     }
 }
 
+pub trait ProtocolStateSource {
+    fn protocol_state_value(&self, key: [u8; 31]) -> Result<Option<Vec<u8>>, WorkerError>;
+}
+
+impl ProtocolStateSource for BlockingHttpWorkerChainSource {
+    fn protocol_state_value(&self, key: [u8; 31]) -> Result<Option<Vec<u8>>, WorkerError> {
+        let response = http_post_json(
+            &self.rpc_url,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "minijam_getProtocolState",
+                "params": [hex_encode(&key)],
+            })
+            .to_string(),
+        )
+        .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        let Some(encoded) = json_rpc_optional_string_result(&response)? else {
+            return Ok(None);
+        };
+        let bytes = decode_hex(&encoded)?;
+        let value =
+            minijam_protocol::StateValue::decode(&mut bytes.as_slice()).map_err(|error| {
+                WorkerError::Chain(format!("invalid protocol state value: {error}"))
+            })?;
+        Ok(Some(value.into_inner()))
+    }
+}
+
+struct ProtocolStateDb<'a, S> {
+    source: &'a S,
+    writes: Mutex<BTreeMap<(ColumnFamily, Vec<u8>), Vec<u8>>>,
+    deletes: Mutex<BTreeMap<(ColumnFamily, Vec<u8>), ()>>,
+}
+
+impl<'a, S> ProtocolStateDb<'a, S> {
+    fn new(source: &'a S) -> Self {
+        Self {
+            source,
+            writes: Mutex::new(BTreeMap::new()),
+            deletes: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn key(col: ColumnFamily, key: &[u8]) -> (ColumnFamily, Vec<u8>) {
+        (col, key.to_vec())
+    }
+}
+
+unsafe impl<S> Sync for ProtocolStateDb<'_, S> {}
+
+impl<S> DataBase for ProtocolStateDb<'_, S>
+where
+    S: ProtocolStateSource,
+{
+    fn key_may_exist<K: AsRef<[u8]>>(&self, col: ColumnFamily, key: &K) -> bool {
+        self.get(col, key).ok().flatten().is_some()
+    }
+
+    fn get<K: AsRef<[u8]>>(
+        &self,
+        col: ColumnFamily,
+        key: &K,
+    ) -> Result<Option<Vec<u8>>, DataBaseError> {
+        let key = key.as_ref();
+        let db_key = Self::key(col, key);
+        if self.deletes.lock().unwrap().contains_key(&db_key) {
+            return Ok(None);
+        }
+        if let Some(value) = self.writes.lock().unwrap().get(&db_key).cloned() {
+            return Ok(Some(value));
+        }
+        if col != column::COL_STATE || key.len() != 31 {
+            return Ok(None);
+        }
+        let mut state_key = [0u8; 31];
+        state_key.copy_from_slice(key);
+        self.source
+            .protocol_state_value(state_key)
+            .map_err(|error| DataBaseError::Other(format!("{error:?}")))
+    }
+
+    fn del<K: AsRef<[u8]>>(&self, col: ColumnFamily, key: &K) -> Result<(), DataBaseError> {
+        let db_key = Self::key(col, key.as_ref());
+        self.writes.lock().unwrap().remove(&db_key);
+        self.deletes.lock().unwrap().insert(db_key, ());
+        Ok(())
+    }
+
+    fn multi_get<K: AsRef<[u8]>>(
+        &self,
+        keys: &[K],
+        col: ColumnFamily,
+    ) -> Result<Vec<Option<Vec<u8>>>, DataBaseError> {
+        keys.iter().map(|key| self.get(col, key)).collect()
+    }
+
+    fn put<K: AsRef<[u8]>>(
+        &self,
+        col: ColumnFamily,
+        key: &K,
+        value: Box<[u8]>,
+    ) -> Result<(), DataBaseError> {
+        let db_key = Self::key(col, key.as_ref());
+        self.deletes.lock().unwrap().remove(&db_key);
+        self.writes.lock().unwrap().insert(db_key, value.into_vec());
+        Ok(())
+    }
+
+    fn batch_write(&self, changes: &[StoreChange]) -> Result<(), DataBaseError> {
+        for change in changes {
+            let key = change.key.to_db_key();
+            match change.op {
+                StoreOp::Remove => self.del(change.col(), &key)?,
+                StoreOp::Upsert | StoreOp::Update => {
+                    let value = change.value.clone().ok_or(DataBaseError::NotFound)?;
+                    self.put(change.col(), &key, value)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn batch_write_cf<K: AsRef<[u8]>>(
+        &self,
+        col: ColumnFamily,
+        entries: &[(K, Vec<u8>)],
+    ) -> Result<(), DataBaseError> {
+        for (key, value) in entries {
+            self.put(col, key, value.clone().into_boxed_slice())?;
+        }
+        Ok(())
+    }
+
+    fn multi_seek_for_prev<F>(
+        &self,
+        _col: ColumnFamily,
+        keys: &[&StateKey],
+        mut callback: F,
+    ) -> Result<(), DataBaseError>
+    where
+        F: FnMut(usize, Option<(&[u8], &[u8])>),
+    {
+        for index in 0..keys.len() {
+            callback(index, None);
+        }
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl WorkerChainSource for BlockingHttpWorkerChainSource {
     async fn pending_work_tasks(&self) -> Result<Vec<WorkTask>, WorkerError> {
@@ -519,6 +691,81 @@ pub fn prepare_vote_submission(
     }
 }
 
+pub fn prepare_candidate_envelope<S>(
+    state: &S,
+    chain_id: Hash,
+    core_index: u16,
+    task: &WorkTask,
+    bundle_bytes: &[u8],
+) -> Result<PreparedCandidateSubmission, WorkerError>
+where
+    S: ProtocolStateSource,
+{
+    let mut raw = bundle_bytes;
+    let bundle = jambda_refine::MiniJamWorkBundleV1::decode(&mut raw)
+        .map_err(|error| WorkerError::Refine(format!("invalid Jambda work bundle: {error}")))?;
+    if !raw.is_empty() {
+        return Err(WorkerError::Refine(
+            "Jambda work bundle contains trailing bytes".into(),
+        ));
+    }
+    if bundle.version != jambda_refine::MINIJAM_WORK_BUNDLE_VERSION_V1 {
+        return Err(WorkerError::Refine(format!(
+            "unsupported Jambda work bundle version {}",
+            bundle.version
+        )));
+    }
+    if !bundle.package_hash_matches() || bundle.package_hash.0 != task.package_hash {
+        return Err(WorkerError::Refine(
+            "Jambda work bundle package hash does not match task".into(),
+        ));
+    }
+    let canonical_work_package = bundle.work_package.encode();
+    if canonical_work_package != task.canonical_work_package {
+        return Err(WorkerError::Refine(
+            "Jambda work bundle package does not match task canonical work package".into(),
+        ));
+    }
+
+    let input = bundle.into_work_report_input(core_index);
+    let db = ProtocolStateDb::new(state);
+    let mut backend = StateBackend::<TinySpec, _>::new_tiny(db);
+    backend
+        .load_tiny_from_db()
+        .map_err(|error| WorkerError::Refine(format!("failed to load Jambda state: {error:?}")))?;
+    let output = jambda_refine::compute_work_report::<
+        TinySpec,
+        ProtocolStateDb<'_, S>,
+        StateBackend<TinySpec, ProtocolStateDb<'_, S>>,
+        InterpBackend,
+        jp_vm_engine::InnerEngine<InterpBackend>,
+    >(&backend, input, InterpBackend::default())
+    .map_err(|error| WorkerError::Refine(format!("Jambda refine failed: {error:?}")))?;
+    let canonical_report = output.report.encode();
+    let projected_metadata =
+        jambda_minijam_executive::MiniJamExecutive::project_report(&canonical_report).map_err(
+            |error| WorkerError::Refine(format!("invalid generated report projection: {error:?}")),
+        )?;
+    let canonical_report_hash = minijam_protocol::blake2_256(&canonical_report);
+    let envelope = ReportEnvelopeV1 {
+        protocol_version: PROTOCOL_VERSION_V1,
+        chain_id,
+        work_id: task.work_id,
+        assignment_round: task.round,
+        canonical_report: canonical_report
+            .try_into()
+            .map_err(|_| WorkerError::Refine("generated report exceeds envelope limit".into()))?,
+        canonical_report_hash,
+        projected_metadata,
+        bulletin_evidence: BulletinEvidence::NoExternalProofV1 { receipt: None },
+        signatures: Default::default(),
+    };
+    Ok(PreparedCandidateSubmission {
+        envelope,
+        exported_segment_count: output.exported_segments.len(),
+    })
+}
+
 fn json_rpc_string_result(response: &str) -> Result<String, WorkerError> {
     let value: Value = serde_json::from_str(response)
         .map_err(|error| WorkerError::Chain(format!("invalid JSON-RPC response: {error}")))?;
@@ -532,6 +779,21 @@ fn json_rpc_string_result(response: &str) -> Result<String, WorkerError> {
         .ok_or_else(|| {
             WorkerError::Chain("JSON-RPC response did not contain a string result".into())
         })
+}
+
+fn json_rpc_optional_string_result(response: &str) -> Result<Option<String>, WorkerError> {
+    let value: Value = serde_json::from_str(response)
+        .map_err(|error| WorkerError::Chain(format!("invalid JSON-RPC response: {error}")))?;
+    if let Some(error) = value.get("error") {
+        return Err(WorkerError::Chain(format!("JSON-RPC error: {error}")));
+    }
+    match value.get("result") {
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(result)) => Ok(Some(result.clone())),
+        _ => Err(WorkerError::Chain(
+            "JSON-RPC response did not contain an optional string result".into(),
+        )),
+    }
 }
 
 fn http_post_json(url: &str, body: &str) -> Result<String, HttpError> {
@@ -1087,6 +1349,14 @@ mod tests {
         tasks: Vec<WorkTask>,
     }
 
+    struct EmptyProtocolStateSource;
+
+    impl ProtocolStateSource for EmptyProtocolStateSource {
+        fn protocol_state_value(&self, _key: [u8; 31]) -> Result<Option<Vec<u8>>, WorkerError> {
+            Ok(None)
+        }
+    }
+
     #[async_trait::async_trait]
     impl WorkerChainSource for TestChainSource {
         async fn pending_work_tasks(&self) -> Result<Vec<WorkTask>, WorkerError> {
@@ -1163,7 +1433,7 @@ mod tests {
                 state_root: OpaqueHash([3u8; 32]),
                 beefy_root: OpaqueHash([4u8; 32]),
                 lookup_anchor: OpaqueHash([5u8; 32]),
-                lookup_anchor_slot: TimeSlot(6),
+                lookup_anchor_slot: TimeSlot(0),
                 prerequisites: Vec::new(),
             },
             authorization: ByteSequence::from(Vec::new()),
@@ -1186,6 +1456,26 @@ mod tests {
             jambda_refine::MiniJamWorkBundleV1::new(&input).encode(),
             package_hash,
         )
+    }
+
+    fn refine_task(work_id: WorkId, round: u8, package_hash: Hash, bundle: &[u8]) -> WorkTask {
+        let mut raw = bundle;
+        let bundle = jambda_refine::MiniJamWorkBundleV1::decode(&mut raw).unwrap();
+        let encoded_bundle = bundle.encode();
+        WorkTask {
+            work_id,
+            round,
+            package_hash,
+            canonical_work_package: bundle.work_package.encode(),
+            bundle_ref: ContentRef {
+                cid_v1: format!("cid-{work_id}-{round}")
+                    .into_bytes()
+                    .try_into()
+                    .unwrap(),
+                content_hash: blake2_256(&encoded_bundle),
+                size: encoded_bundle.len() as u64,
+            },
+        }
     }
 
     #[test]
@@ -1434,6 +1724,29 @@ mod tests {
                 reason: WorkerError::Bundle(WorkBundleVerificationError::PackageHashMismatch)
             })
         ));
+    }
+
+    #[test]
+    fn prepares_candidate_envelope_with_real_jambda_refine_report() {
+        let (bundle, package_hash) = refine_bundle(9);
+        let task = refine_task(77, 2, package_hash, &bundle);
+
+        let prepared =
+            prepare_candidate_envelope(&EmptyProtocolStateSource, [42u8; 32], 0, &task, &bundle)
+                .unwrap();
+
+        assert_eq!(prepared.envelope.work_id, 77);
+        assert_eq!(prepared.envelope.assignment_round, 2);
+        assert_eq!(prepared.envelope.chain_id, [42u8; 32]);
+        assert_eq!(
+            prepared.envelope.computed_report_hash(),
+            prepared.envelope.canonical_report_hash
+        );
+        assert_eq!(
+            prepared.envelope.projected_metadata.package_hash,
+            package_hash
+        );
+        assert_eq!(prepared.exported_segment_count, 0);
     }
 
     fn hex_encode_for_test(bytes: &[u8]) -> String {

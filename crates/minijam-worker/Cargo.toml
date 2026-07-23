@@ -8,6 +8,13 @@ license.workspace = true
 async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
 futures.workspace = true
+jam-codec = { version = "0.1.1", default-features = false }
+jambda-minijam-executive = { path = "../../external/jambda/crates/minijam-executive", features = ["std"] }
+jambda-refine = { path = "../../external/jambda/crates/refine", default-features = false }
+jambda-state-backend = { path = "../../external/jambda/crates/state-backend" }
+jp-core-primitives = { path = "../../external/jambda/crates/core-primitives", default-features = false }
+jp-vm-engine = { path = "../../external/jambda/vm/engine", features = ["std"] }
+jp-vm-interp = { path = "../../external/jambda/vm/interp", features = ["std"] }
 jsonrpsee = { workspace = true, features = ["ws-client"] }
 minijam-protocol = { path = "../minijam-protocol" }
 minijam-runtime = { path = "../../runtime" }
@@ -20,7 +27,4 @@ sp-core = { workspace = true, default-features = true }
 toml.workspace = true
 
 [dev-dependencies]
-jam-codec = { version = "0.1.1", default-features = false }
-jambda-refine = { path = "../../external/jambda/crates/refine", default-features = false }
-jp-core-primitives = { path = "../../external/jambda/crates/core-primitives", default-features = false }
 tempfile.workspace = true
