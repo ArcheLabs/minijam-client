@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `954914420e7a555d70028cf709a7b7779864fbc7`
+- minijam-client current implementation commit: `498bcd3af8dd41ee116ce9396d61d4ed3a3c0267`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -92,8 +92,8 @@ Evidence:
 
 - [x] Runtime and node expose a `stage0` chain spec preset with fixed non-development authority, worker, sudo, faucet, reward, and escrow public accounts.
 - [x] Release artifact CI exports `stage0.json` and `stage0-raw.json` through `scripts/export-stage0-chain-specs.sh`.
-- [ ] Committed or published `chain-specs/stage0.json`
-- [ ] Committed or published `chain-specs/stage0-raw.json`
+- [x] Committed or published `chain-specs/stage0.json`
+- [x] Committed or published `chain-specs/stage0-raw.json`
 - [ ] Deployment topology, Docker, systemd, compose, monitoring stack.
 - [ ] Public RPC safety profile and authority RPC isolation.
 
@@ -102,6 +102,10 @@ Evidence:
 - `cargo test -p minijam-runtime genesis_config_presets`
 - `cargo check -p minijam-node`
 - `bash -n scripts/export-stage0-chain-specs.sh`
+- `cargo build -p minijam-node`
+- `./scripts/export-stage0-chain-specs.sh ./target/debug/minijam-node chain-specs`
+- `python3 -m json.tool chain-specs/stage0.json >/dev/null`
+- `python3 -m json.tool chain-specs/stage0-raw.json >/dev/null`
 
 ## M7: Cross-Process E2E
 
@@ -122,6 +126,6 @@ Evidence:
 
 - Service 0 is still a placeholder artifact and cannot satisfy the public testnet CreateService requirement.
 - Worker binary is not yet connected to chain RPC or transaction submission.
-- Fixed non-development stage0 preset exists, but generated chain-spec JSON files are not yet committed or published.
+- Stage0 chain-spec JSON files exist, but deployment topology and public RPC safety profile are not yet defined.
 - No faucet or custom public RPC exists yet.
 - Cross-process E2E and Canary evidence are missing.
