@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `ada01cac8af0b09470e41bf6c654806b04b6ed52`
+- minijam-client current implementation commit: `07b3e40a9467fa34521319f040cfa734f65d60a2`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -81,10 +81,17 @@ Evidence:
 
 - [x] Runtime embeds `artifacts/system-service.blob` instead of an inline byte string.
 - [x] Manifest length is tested against the embedded blob.
-- [ ] `services/system-service/` source tree exists.
-- [ ] `scripts/build-system-service.sh` deterministically rebuilds the blob and manifest.
+- [x] `services/system-service/` source tree exists.
+- [x] `scripts/build-system-service.sh` deterministically rebuilds the blob and manifest.
 - [ ] Blob is a real executable PVM artifact, not a placeholder.
 - [ ] CreateService end-to-end test creates a new service through service 0 accumulation.
+
+Evidence:
+
+- `bash -n scripts/build-system-service.sh`
+- `./scripts/build-system-service.sh`
+- `python3 -m json.tool artifacts/system-service.manifest.json`
+- `cargo test -p minijam-runtime system_service_manifest_matches_embedded_blob`
 
 ## M5: Public Interfaces, CLI, Faucet
 
