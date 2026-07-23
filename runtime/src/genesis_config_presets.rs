@@ -17,6 +17,7 @@ use crate::{
 
 const DEV_BALANCE: Balance = 1_000_000 * UNIT;
 const REWARD_POOL_BALANCE: Balance = 1_000_000 * UNIT;
+const SYSTEM_SERVICE_FUEL: Balance = 1_000 * UNIT;
 const SYSTEM_SERVICE_BLOB: &[u8] = b"minijam-stage0-system-service-placeholder-v1";
 
 fn testnet_genesis(
@@ -25,11 +26,18 @@ fn testnet_genesis(
     root: AccountId,
 ) -> Value {
     let reward_pool = AccountId::new([9; 32]);
+    let fuel_escrow = AccountId::new([7; 32]);
     if !endowed_accounts
         .iter()
         .any(|account| account == &reward_pool)
     {
         endowed_accounts.push(reward_pool.clone());
+    }
+    if !endowed_accounts
+        .iter()
+        .any(|account| account == &fuel_escrow)
+    {
+        endowed_accounts.push(fuel_escrow.clone());
     }
 
     build_struct_json_patch!(RuntimeGenesisConfig {
@@ -40,6 +48,8 @@ fn testnet_genesis(
                 .map(|account| {
                     let balance = if account == reward_pool {
                         REWARD_POOL_BALANCE
+                    } else if account == fuel_escrow {
+                        SYSTEM_SERVICE_FUEL
                     } else {
                         DEV_BALANCE
                     };
@@ -62,6 +72,7 @@ fn testnet_genesis(
         sudo: SudoConfig { key: Some(root) },
         mini_jam: MiniJamConfig {
             protocol_state: system_service_zero_protocol_state(),
+            service_fuel: vec![(0, SYSTEM_SERVICE_FUEL)],
             _phantom: Default::default(),
         },
     })

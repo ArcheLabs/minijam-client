@@ -279,6 +279,7 @@ fn test_ext_with_protocol_state(
         .unwrap();
     pallet_minijam::GenesisConfig::<Test> {
         protocol_state,
+        service_fuel: Vec::new(),
         _phantom: Default::default(),
     }
     .assimilate_storage(&mut storage)
@@ -583,6 +584,28 @@ fn genesis_config_seeds_protocol_state() {
             MiniJam::get_system_service_info().unwrap().into_inner(),
             vec![1, 2, 3]
         );
+    });
+}
+
+#[test]
+fn genesis_config_seeds_service_fuel() {
+    let mut storage = frame_system::GenesisConfig::<Test>::default()
+        .build_storage()
+        .unwrap();
+    pallet_minijam::GenesisConfig::<Test> {
+        protocol_state: Vec::new(),
+        service_fuel: vec![(7, 250), (7, 50), (8, 0)],
+        _phantom: Default::default(),
+    }
+    .assimilate_storage(&mut storage)
+    .unwrap();
+
+    sp_io::TestExternalities::from(storage).execute_with(|| {
+        let fuel = pallet_minijam::ServiceFuelAccounts::<Test>::get(7);
+        assert_eq!(fuel.available, 300);
+        assert_eq!(fuel.reserved, 0);
+        assert_eq!(pallet_minijam::TotalServiceFuel::<Test>::get(), 300);
+        assert_eq!(MiniJam::get_service_fuel(7), fuel);
     });
 }
 

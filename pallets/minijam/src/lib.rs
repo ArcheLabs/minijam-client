@@ -339,6 +339,7 @@ pub mod pallet {
     #[derive(frame_support::DefaultNoBound)]
     pub struct GenesisConfig<T: Config> {
         pub protocol_state: Vec<(Vec<u8>, Vec<u8>)>,
+        pub service_fuel: Vec<(u32, BalanceOf<T>)>,
         #[serde(skip)]
         pub _phantom: core::marker::PhantomData<T>,
     }
@@ -355,6 +356,17 @@ pub mod pallet {
                     .expect("MiniJAM genesis protocol-state values must fit StateValue");
                 ProtocolState::<T>::insert(key, value);
             }
+            let mut total = BalanceOf::<T>::zero();
+            for (service_id, amount) in &self.service_fuel {
+                if amount.is_zero() {
+                    continue;
+                }
+                ServiceFuelAccounts::<T>::mutate(service_id, |account| {
+                    account.available = account.available.saturating_add(*amount);
+                });
+                total = total.saturating_add(*amount);
+            }
+            TotalServiceFuel::<T>::put(total);
         }
     }
 
