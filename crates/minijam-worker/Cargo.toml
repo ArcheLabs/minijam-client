@@ -1,0 +1,10 @@
+[package]
+name = "minijam-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+minijam-worker-engine = { path = "../minijam-worker-engine" }
+

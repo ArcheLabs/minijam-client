@@ -5,6 +5,7 @@ members = [
   "crates/minijam-jamcore-api",
   "crates/minijam-jamcore-mock",
   "crates/minijam-worker-engine",
+  "crates/minijam-worker",
   "crates/minijam-bridge-engine",
   "crates/minijam-bulletin-api",
   "crates/minijam-bulletin-simulator",

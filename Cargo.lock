@@ -5088,6 +5088,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "minijam-worker"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "minijam-worker-engine",
+]
+
+[[package]]
 name = "minijam-worker-engine"
 version = "0.1.0"
 dependencies = [
