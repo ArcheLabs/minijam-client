@@ -3,7 +3,7 @@ use frame_support::{
     assert_noop, assert_ok, derive_impl, parameter_types,
     traits::tokens::fungible::{Inspect, InspectHold},
 };
-use jam_codec::Encode as JamEncode;
+use jam_codec::{Decode as JamDecode, Encode as JamEncode};
 use jp_core_primitives::{
     crypto::OpaqueHash,
     simple::{ByteSequence, TimeSlot},
@@ -16,6 +16,7 @@ use jp_core_primitives::{
 use minijam_jamcore_api::{
     ExecutionOutcome, InputError, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionInputV2,
     MiniJamExecutionOutputV1, MiniJamExecutionOutputV2, MiniJamExecutor, ProtocolStateReader,
+    ReportProjectionV1, ServiceResultProjection,
 };
 use minijam_protocol::{
     blake2_256, BulletinEvidence, CanonicalReportBytes, ContentRef, PreimageMetadataV1,
@@ -258,6 +259,43 @@ impl MiniJamExecutor for TestExecutor {
             blob_len: bytes.len() as u32,
         })
     }
+
+    fn project_report(&self, bytes: &[u8]) -> Result<ReportProjectionV1, MiniJamError> {
+        let mut input = bytes;
+        let report = WorkReport::decode(&mut input)
+            .map_err(|_| MiniJamError::Input(InputError::InvalidReportEncoding))?;
+        if !input.is_empty() {
+            return Err(MiniJamError::Input(InputError::InvalidReportEncoding));
+        }
+
+        let mut total_refine_gas = 0u64;
+        let mut total_accumulate_gas = 0u64;
+        let mut services = Vec::new();
+        for result in &report.results {
+            total_refine_gas = total_refine_gas
+                .checked_add(result.refine_load.gas_used)
+                .ok_or(MiniJamError::Input(InputError::LimitExceeded))?;
+            total_accumulate_gas = total_accumulate_gas
+                .checked_add(result.accumulate_gas)
+                .ok_or(MiniJamError::Input(InputError::LimitExceeded))?;
+            services.push(ServiceResultProjection {
+                service_id: result.service_id,
+                code_hash: result.code_hash.0,
+                refine_gas_used: result.refine_load.gas_used,
+                accumulate_gas: result.accumulate_gas,
+            });
+        }
+
+        Ok(ReportProjectionV1 {
+            package_hash: report.package_spec.hash.0,
+            context_hash: blake2_256(&JamEncode::encode(&report.context)),
+            exports_root: report.package_spec.exports_root.0,
+            result_count: report.results.len() as u32,
+            services,
+            total_refine_gas,
+            total_accumulate_gas,
+        })
+    }
 }
 
 fn new_test_ext() -> sp_io::TestExternalities {
@@ -389,7 +427,8 @@ fn activate_workers() -> Vec<sr25519::Pair> {
 }
 
 fn envelope(work_id: u64, round: u8) -> ReportEnvelopeV1 {
-    let canonical_report = CanonicalReportBytes::try_from(vec![1, 2, 3, round]).unwrap();
+    let package_hash = MiniJam::work(work_id).unwrap().package_hash;
+    let canonical_report = encoded_work_report(package_hash, Vec::new());
     envelope_with_report(work_id, round, canonical_report)
 }
 
@@ -398,6 +437,9 @@ fn envelope_with_report(
     round: u8,
     canonical_report: CanonicalReportBytes,
 ) -> ReportEnvelopeV1 {
+    let projection = TestExecutor
+        .project_report(&canonical_report)
+        .expect("test report must project");
     ReportEnvelopeV1 {
         protocol_version: PROTOCOL_VERSION_V1,
         chain_id: [42; 32],
@@ -406,10 +448,10 @@ fn envelope_with_report(
         canonical_report_hash: blake2_256(&canonical_report),
         canonical_report,
         projected_metadata: ReportMetadataV1 {
-            package_hash: [1; 32],
-            context_hash: [2; 32],
-            exports_root: [3; 32],
-            accumulate_gas: 100,
+            package_hash: projection.package_hash,
+            context_hash: projection.context_hash,
+            exports_root: projection.exports_root,
+            accumulate_gas: projection.total_accumulate_gas,
         },
         bulletin_evidence: BulletinEvidence::NoExternalProofV1 { receipt: None },
         signatures: ReportSignatures::default(),
@@ -505,6 +547,34 @@ fn work_result(service_id: u32, refine_gas_used: u64, accumulate_gas: u64) -> Wo
     }
 }
 
+fn work_result_with_code(
+    service_id: u32,
+    code_hash: [u8; 32],
+    refine_gas_used: u64,
+    accumulate_gas: u64,
+) -> WorkResult {
+    let mut result = work_result(service_id, refine_gas_used, accumulate_gas);
+    result.code_hash = OpaqueHash(code_hash);
+    result
+}
+
+fn submit_assigned_service_work() -> [u8; 32] {
+    activate_workers();
+    pallet_minijam::ProtocolState::<Test>::insert(
+        service_info_key(7),
+        StateValue::try_from(vec![1, 2, 3]).unwrap(),
+    );
+    assert_ok!(MiniJam::fund_service(RuntimeOrigin::signed(5), 7, 100));
+    let package = encoded_work_package(31, vec![work_item(7, 10, 20)]);
+    let package_hash = blake2_256(&package);
+    assert_ok!(MiniJam::submit_work(
+        RuntimeOrigin::signed(5),
+        package,
+        bundle_ref(31)
+    ));
+    package_hash
+}
+
 #[test]
 fn submit_work_stores_package_hash_and_bundle_ref() {
     new_test_ext().execute_with(|| {
@@ -534,6 +604,48 @@ fn submit_work_stores_package_hash_and_bundle_ref() {
         assert_eq!(queried_by_hash.owner, work.owner);
         assert_eq!(queried_by_hash.package_hash, work.package_hash);
         assert_eq!(MiniJam::get_work_bundle_ref(0), Some(bundle));
+    });
+}
+
+#[test]
+fn submit_candidate_rejects_report_not_bound_to_work_package() {
+    new_test_ext().execute_with(|| {
+        let package_hash = submit_assigned_service_work();
+        let cases = [
+            encoded_work_report([0x44; 32], vec![work_result(7, 4, 6)]),
+            encoded_work_report(package_hash, Vec::new()),
+            encoded_work_report(package_hash, vec![work_result(7, 11, 6)]),
+            encoded_work_report(package_hash, vec![work_result(7, 4, 21)]),
+            encoded_work_report(package_hash, vec![work_result(8, 4, 6)]),
+            encoded_work_report(
+                package_hash,
+                vec![work_result_with_code(7, [0xaa; 32], 4, 6)],
+            ),
+        ];
+
+        for report in cases {
+            assert_noop!(
+                MiniJam::submit_candidate(
+                    RuntimeOrigin::signed(6),
+                    Box::new(envelope_with_report(0, 0, report))
+                ),
+                pallet_minijam::Error::<Test>::InvalidReportProjection
+            );
+            assert!(pallet_minijam::Candidates::<Test>::get(0, 0).is_none());
+        }
+
+        let mut trailing = envelope_with_report(
+            0,
+            0,
+            encoded_work_report(package_hash, vec![work_result(7, 4, 6)]),
+        );
+        trailing.canonical_report.try_push(0).unwrap();
+        trailing.canonical_report_hash = blake2_256(&trailing.canonical_report);
+        assert_noop!(
+            MiniJam::submit_candidate(RuntimeOrigin::signed(6), Box::new(trailing)),
+            pallet_minijam::Error::<Test>::InvalidReportProjection
+        );
+        assert!(pallet_minijam::Candidates::<Test>::get(0, 0).is_none());
     });
 }
 

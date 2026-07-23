@@ -15,6 +15,25 @@ use scale_info::TypeInfo;
 pub const INTERFACE_VERSION: u16 = 1;
 pub const EXECUTION_RECEIPT_DOMAIN_V2: &[u8] = b"minijam/execution-receipt/v2";
 
+#[derive(Clone, Debug, Decode, Encode, Eq, PartialEq, TypeInfo)]
+pub struct ServiceResultProjection {
+    pub service_id: u32,
+    pub code_hash: Hash,
+    pub refine_gas_used: u64,
+    pub accumulate_gas: u64,
+}
+
+#[derive(Clone, Debug, Decode, Encode, Eq, PartialEq, TypeInfo)]
+pub struct ReportProjectionV1 {
+    pub package_hash: Hash,
+    pub context_hash: Hash,
+    pub exports_root: Hash,
+    pub result_count: u32,
+    pub services: Vec<ServiceResultProjection>,
+    pub total_refine_gas: u64,
+    pub total_accumulate_gas: u64,
+}
+
 #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub struct MiniJamExecutionInputV1 {
     pub protocol_version: u16,
@@ -297,6 +316,10 @@ pub trait MiniJamExecutor {
         _state: &R,
     ) -> Result<PreimageMetadataV1, MiniJamError> {
         Err(MiniJamError::Input(InputError::InvalidPreimageEncoding))
+    }
+
+    fn project_report(&self, _bytes: &[u8]) -> Result<ReportProjectionV1, MiniJamError> {
+        Err(MiniJamError::Input(InputError::InvalidReportEncoding))
     }
 }
 

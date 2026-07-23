@@ -488,6 +488,7 @@ pub mod pallet {
         CandidateDeadlineExpired,
         InvalidEnvelope,
         InvalidReportHash,
+        InvalidReportProjection,
         VotingSetupFailed,
         InconsistentState,
         ExecutionQueueFull,
@@ -650,6 +651,7 @@ pub mod pallet {
                 envelope.computed_report_hash() == envelope.canonical_report_hash,
                 Error::<T>::InvalidReportHash
             );
+            Self::validate_candidate_report(&work, &envelope)?;
 
             let reason = T::JamHoldReason::from(HoldReason::CandidateBond);
             <T as Config>::Currency::hold(&reason, &submitter, T::CandidateBond::get())?;
@@ -1054,6 +1056,7 @@ pub mod pallet {
             let mut work = Works::<T>::get(work_id).ok_or(Error::<T>::WorkNotFound)?;
             let candidate =
                 Candidates::<T>::get(work_id, work.round).ok_or(Error::<T>::InconsistentState)?;
+            Self::validate_candidate_report(&work, &candidate.envelope)?;
             let candidate_reason = T::JamHoldReason::from(HoldReason::CandidateBond);
             <T as Config>::Currency::release(
                 &candidate_reason,
@@ -1433,6 +1436,59 @@ pub mod pallet {
                 WorkPackage::decode(&mut input).map_err(|_| Error::<T>::InvalidWorkPackage)?;
             ensure!(input.is_empty(), Error::<T>::InvalidWorkPackage);
             Ok(package)
+        }
+
+        fn validate_candidate_report(
+            work: &WorkRecord<T>,
+            envelope: &ReportEnvelopeV1,
+        ) -> DispatchResult {
+            let executor = T::JamCoreExecutor::default();
+            let projection = executor
+                .project_report(&envelope.canonical_report)
+                .map_err(|_| Error::<T>::InvalidReportProjection)?;
+            ensure!(
+                projection.package_hash == work.package_hash,
+                Error::<T>::InvalidReportProjection
+            );
+            ensure!(
+                envelope.projected_metadata.package_hash == projection.package_hash
+                    && envelope.projected_metadata.context_hash == projection.context_hash
+                    && envelope.projected_metadata.exports_root == projection.exports_root
+                    && envelope.projected_metadata.accumulate_gas
+                        == projection.total_accumulate_gas,
+                Error::<T>::InvalidReportProjection
+            );
+
+            let work_package = Self::decode_work_package(&work.canonical_work_package)?;
+            ensure!(
+                projection.result_count as usize == work_package.items.len()
+                    && projection.services.len() == work_package.items.len(),
+                Error::<T>::InvalidReportProjection
+            );
+            ensure!(
+                projection.context_hash
+                    == blake2_256(&jam_codec::Encode::encode(&work_package.context)),
+                Error::<T>::InvalidReportProjection
+            );
+            let total_report_gas = projection
+                .total_refine_gas
+                .checked_add(projection.total_accumulate_gas)
+                .ok_or(Error::<T>::InvalidReportProjection)?;
+            ensure!(
+                total_report_gas <= T::MaxExecutionGas::get(),
+                Error::<T>::InvalidReportProjection
+            );
+
+            for (item, result) in work_package.items.iter().zip(projection.services.iter()) {
+                ensure!(
+                    result.service_id == item.service
+                        && result.code_hash == item.code_hash.0
+                        && result.refine_gas_used <= item.refine_gas_limit
+                        && result.accumulate_gas <= item.accumulate_gas_limit,
+                    Error::<T>::InvalidReportProjection
+                );
+            }
+            Ok(())
         }
 
         fn decode_work_report(bytes: &[u8]) -> Result<WorkReport, ExecutionFailure> {
