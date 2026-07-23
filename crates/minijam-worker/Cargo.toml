@@ -10,10 +10,13 @@ clap = { workspace = true, features = ["derive"] }
 futures.workspace = true
 jsonrpsee = { workspace = true, features = ["ws-client"] }
 minijam-protocol = { path = "../minijam-protocol" }
+minijam-runtime = { path = "../../runtime" }
 minijam-worker-engine = { path = "../minijam-worker-engine" }
+pallet-minijam-workers = { path = "../../pallets/minijam-workers" }
 parity-scale-codec.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["std"] }
+sp-core = { workspace = true, default-features = true }
 toml.workspace = true
 
 [dev-dependencies]

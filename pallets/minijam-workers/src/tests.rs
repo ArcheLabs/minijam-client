@@ -5,7 +5,7 @@ use frame_support::{
 };
 use minijam_protocol::{Verdict, WorkerVoteV1, PROTOCOL_VERSION_V1};
 use sp_core::{sr25519, Pair};
-use sp_runtime::BuildStorage;
+use sp_runtime::{traits::ValidateUnsigned, transaction_validity::TransactionSource, BuildStorage};
 
 type Block = frame_system::mocking::MockBlock<Test>;
 
@@ -339,6 +339,72 @@ fn signed_vote(pair: &sr25519::Pair, worker_id: u64, verdict: Verdict) {
         vote,
         signature
     ));
+}
+
+#[test]
+fn unsigned_vote_uses_worker_session_signature_as_authority() {
+    new_test_ext().execute_with(|| {
+        let (pairs, assignment) = setup_signed_voting();
+        let worker_id = assignment[0];
+        let vote = WorkerVoteV1 {
+            work_id: 77,
+            round: 0,
+            assignment_epoch: 1,
+            candidate_report_hash: [7; 32],
+            verdict: Verdict::Support,
+            deadline: 15,
+            chain_id: [42; 32],
+            protocol_version: PROTOCOL_VERSION_V1,
+        };
+        let signature = pairs[worker_id as usize].sign(&vote.signing_hash()).0;
+        let call = pallet_minijam_workers::Call::<Test>::submit_vote {
+            worker_id,
+            vote: vote.clone(),
+            signature,
+        };
+
+        assert_ok!(<Workers as ValidateUnsigned>::validate_unsigned(
+            TransactionSource::External,
+            &call
+        ));
+        assert_ok!(Workers::submit_vote(
+            RuntimeOrigin::none(),
+            worker_id,
+            vote,
+            signature
+        ));
+    });
+}
+
+#[test]
+fn unsigned_vote_validation_rejects_bad_session_signature() {
+    new_test_ext().execute_with(|| {
+        let (pairs, assignment) = setup_signed_voting();
+        let worker_id = assignment[0];
+        let vote = WorkerVoteV1 {
+            work_id: 77,
+            round: 0,
+            assignment_epoch: 1,
+            candidate_report_hash: [7; 32],
+            verdict: Verdict::Support,
+            deadline: 15,
+            chain_id: [42; 32],
+            protocol_version: PROTOCOL_VERSION_V1,
+        };
+        let bad_index = if worker_id == 0 { 1 } else { 0 };
+        let bad_signature = pairs[bad_index].sign(&vote.signing_hash()).0;
+        let call = pallet_minijam_workers::Call::<Test>::submit_vote {
+            worker_id,
+            vote,
+            signature: bad_signature,
+        };
+
+        assert!(<Workers as ValidateUnsigned>::validate_unsigned(
+            TransactionSource::External,
+            &call
+        )
+        .is_err());
+    });
 }
 
 #[test]

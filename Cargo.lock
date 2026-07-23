@@ -5220,10 +5220,13 @@ dependencies = [
  "futures",
  "jsonrpsee",
  "minijam-protocol",
+ "minijam-runtime",
  "minijam-worker-engine",
+ "pallet-minijam-workers",
  "parity-scale-codec",
  "serde",
  "serde_json",
+ "sp-core",
  "tempfile",
  "toml 0.8.23",
 ]

@@ -20,7 +20,13 @@ pub mod pallet {
     use minijam_protocol::{Verdict, WorkerVoteTaskV1, WorkerVoteV1};
     use parity_scale_codec::Encode;
     use sp_core::sr25519;
-    use sp_runtime::{traits::SaturatedConversion, Perbill};
+    use sp_runtime::{
+        traits::SaturatedConversion,
+        transaction_validity::{
+            InvalidTransaction, TransactionSource, TransactionValidity, ValidTransaction,
+        },
+        Perbill,
+    };
 
     pub type WorkerId = u64;
     pub type EpochIndex = u32;
@@ -531,36 +537,15 @@ pub mod pallet {
             vote: WorkerVoteV1,
             signature: [u8; 64],
         ) -> DispatchResult {
-            let _relayer = ensure_signed(origin)?;
+            if ensure_signed(origin.clone()).is_err() {
+                ensure_none(origin)?;
+            }
             let key = (vote.work_id, vote.round);
+            Self::validate_worker_vote(worker_id, &vote, signature)?;
+            let assignment_len = Assignments::<T>::get(vote.work_id, vote.round)
+                .ok_or(Error::<T>::NotAssigned)?
+                .len();
             let mut voting = VotingRounds::<T>::get(key).ok_or(Error::<T>::VotingNotOpen)?;
-            let assignment =
-                Assignments::<T>::get(vote.work_id, vote.round).ok_or(Error::<T>::NotAssigned)?;
-            ensure!(assignment.contains(&worker_id), Error::<T>::NotAssigned);
-            ensure!(
-                !Votes::<T>::contains_key((vote.work_id, vote.round, worker_id)),
-                Error::<T>::AlreadyVoted
-            );
-            ensure!(
-                frame_system::Pallet::<T>::block_number() <= voting.deadline,
-                Error::<T>::VoteExpired
-            );
-            ensure!(
-                vote.assignment_epoch == voting.assignment_epoch
-                    && vote.candidate_report_hash == voting.candidate_hash
-                    && vote.deadline == voting.deadline.saturated_into::<u32>()
-                    && vote.chain_id == T::ChainId::get()
-                    && vote.protocol_version == T::ProtocolVersion::get(),
-                Error::<T>::VoteMismatch
-            );
-            let session_key = AssignmentKeys::<T>::get((vote.work_id, vote.round, worker_id))
-                .ok_or(Error::<T>::NotAssigned)?;
-            let valid = sp_io::crypto::sr25519_verify(
-                &sr25519::Signature::from_raw(signature),
-                &vote.signing_hash(),
-                &sr25519::Public::from_raw(session_key),
-            );
-            ensure!(valid, Error::<T>::InvalidSignature);
 
             match &vote.verdict {
                 Verdict::Support => voting.support = voting.support.saturating_add(1),
@@ -581,7 +566,7 @@ pub mod pallet {
                 round: vote.round,
                 worker_id,
             });
-            if voting.responses >= assignment.len() as u32 {
+            if voting.responses >= assignment_len as u32 {
                 Self::finalize_voting(vote.work_id, vote.round)?;
             }
             Ok(())
@@ -651,6 +636,22 @@ pub mod pallet {
                 suspended_until: worker.suspended_until,
             });
             Ok(())
+        }
+    }
+
+    #[pallet::validate_unsigned]
+    impl<T: Config> ValidateUnsigned for Pallet<T> {
+        type Call = Call<T>;
+
+        fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
+            match call {
+                Call::submit_vote {
+                    worker_id,
+                    vote,
+                    signature,
+                } => Self::validate_unsigned_vote(*worker_id, vote, *signature),
+                _ => InvalidTransaction::Call.into(),
+            }
         }
     }
 
@@ -724,6 +725,67 @@ pub mod pallet {
                     })
                 })
                 .collect()
+        }
+
+        fn validate_unsigned_vote(
+            worker_id: WorkerId,
+            vote: &WorkerVoteV1,
+            signature: [u8; 64],
+        ) -> TransactionValidity {
+            Self::validate_worker_vote(worker_id, vote, signature)
+                .map_err(|_| InvalidTransaction::BadProof)?;
+            let provides = (
+                b"minijam-worker-vote-v1".as_slice(),
+                vote.work_id,
+                vote.round,
+                worker_id,
+            )
+                .encode();
+            let now: u32 = frame_system::Pallet::<T>::block_number().saturated_into();
+            let longevity = vote.deadline.saturating_sub(now).max(1);
+            ValidTransaction::with_tag_prefix("MiniJamWorkerVote")
+                .priority(100)
+                .and_provides(provides)
+                .longevity(longevity.into())
+                .propagate(true)
+                .build()
+        }
+
+        fn validate_worker_vote(
+            worker_id: WorkerId,
+            vote: &WorkerVoteV1,
+            signature: [u8; 64],
+        ) -> DispatchResult {
+            let key = (vote.work_id, vote.round);
+            let voting = VotingRounds::<T>::get(key).ok_or(Error::<T>::VotingNotOpen)?;
+            let assignment =
+                Assignments::<T>::get(vote.work_id, vote.round).ok_or(Error::<T>::NotAssigned)?;
+            ensure!(assignment.contains(&worker_id), Error::<T>::NotAssigned);
+            ensure!(
+                !Votes::<T>::contains_key((vote.work_id, vote.round, worker_id)),
+                Error::<T>::AlreadyVoted
+            );
+            ensure!(
+                frame_system::Pallet::<T>::block_number() <= voting.deadline,
+                Error::<T>::VoteExpired
+            );
+            ensure!(
+                vote.assignment_epoch == voting.assignment_epoch
+                    && vote.candidate_report_hash == voting.candidate_hash
+                    && vote.deadline == voting.deadline.saturated_into::<u32>()
+                    && vote.chain_id == T::ChainId::get()
+                    && vote.protocol_version == T::ProtocolVersion::get(),
+                Error::<T>::VoteMismatch
+            );
+            let session_key = AssignmentKeys::<T>::get((vote.work_id, vote.round, worker_id))
+                .ok_or(Error::<T>::NotAssigned)?;
+            let valid = sp_io::crypto::sr25519_verify(
+                &sr25519::Signature::from_raw(signature),
+                &vote.signing_hash(),
+                &sr25519::Public::from_raw(session_key),
+            );
+            ensure!(valid, Error::<T>::InvalidSignature);
+            Ok(())
         }
 
         pub fn assign_work(

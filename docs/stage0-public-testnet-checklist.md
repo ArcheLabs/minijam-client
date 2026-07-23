@@ -66,6 +66,7 @@ Evidence:
 - [x] Persistent file-backed recovery database stores worker task statuses and resumes ready bundles after restart.
 - [x] Worker chain RPC reads pending task inputs through `minijam_getPendingWorkTasks`, which executes against the finalized block hash.
 - [x] Real Auditable Work Bundle decoder validates version, SCALE encoding, trailing bytes, and package hash.
+- [x] Worker can build sr25519-signed worker vote payloads, wrap them as unsigned runtime extrinsics, and submit them through `author_submitExtrinsic` behind an explicit smoke-test flag.
 - [ ] Jambda Is-Authorized and Refine execution.
 - [ ] Candidate submission and independent Support/Oppose voting.
 - [x] Prometheus metrics endpoint exposes worker poll, task, bundle-ready, and bundle-rejected counters.
@@ -87,6 +88,9 @@ Evidence:
 - `cargo check -p minijam-runtime -p minijam-node -p minijam-worker`
 - Worker vote-task polling: `cargo test -p minijam-worker runner_records_open_vote_task_metrics`
 - `cargo run -p minijam-worker -- --rpc-url http://127.0.0.1:19944 --state-db /tmp/minijam-worker-vote-task-once.toml --ipfs-gateway http://127.0.0.1:18080 --once` with a local JSON-RPC stub returning no pending work or open vote tasks
+- Unsigned vote validation and dispatch: `cargo test -p pallet-minijam-workers unsigned_vote -- --nocapture`
+- Worker vote signing/submission path: `cargo test -p minijam-worker support_vote -- --nocapture`
+- `cargo check -p minijam-worker`
 
 ## M4: Real Service 0
 
@@ -176,5 +180,5 @@ Evidence:
 ## Current Known Risks
 
 - Service 0 is still a placeholder artifact and cannot satisfy the public testnet CreateService requirement.
-- Worker binary can poll finalized pending task inputs, fetch verified bundles, and observe open vote tasks, but automatic candidate/vote generation, signing, and transaction submission are still pending.
+- Worker binary can poll finalized pending task inputs, fetch verified bundles, observe open vote tasks, and submit explicitly enabled sr25519-signed vote extrinsics. Real refine-backed candidate generation and independent Support/Oppose decisions are still pending.
 - Cross-process E2E and Canary evidence are missing.

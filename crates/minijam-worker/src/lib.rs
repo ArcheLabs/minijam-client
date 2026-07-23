@@ -14,19 +14,25 @@ use std::{
     thread,
 };
 
-use minijam_protocol::{ContentRef, Hash, WorkId, WorkerId};
+use minijam_protocol::{
+    ContentRef, Hash, Verdict, WorkId, WorkerId, WorkerVoteV1, PROTOCOL_VERSION_V1,
+};
 use minijam_worker_engine::{
     fetch::{fetch_verified_content, ContentFetcher, FetchError, HttpBytesClient},
     verify_work_bundle, MiniJamWorkBundleDecoder, WorkBundleDecoder, WorkBundleVerificationError,
 };
-use parity_scale_codec::Decode;
+use parity_scale_codec::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sp_core::{sr25519, Pair};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkerConfig {
     pub rpc_url: String,
     pub key: Option<String>,
+    pub worker_id: Option<WorkerId>,
+    pub chain_id: Hash,
+    pub submit_support_votes: bool,
     pub poll_interval: Duration,
     pub recovery_db_path: Option<PathBuf>,
     pub metrics_bind: Option<String>,
@@ -40,6 +46,9 @@ impl Default for WorkerConfig {
         Self {
             rpc_url: "http://127.0.0.1:9944".into(),
             key: None,
+            worker_id: None,
+            chain_id: [77; 32],
+            submit_support_votes: false,
             poll_interval: Duration::from_millis(1_000),
             recovery_db_path: None,
             metrics_bind: None,
@@ -125,6 +134,12 @@ impl WorkerConfigFile {
             if let Some(key) = worker.key {
                 config.key = Some(key);
             }
+            if let Some(worker_id) = worker.worker_id {
+                config.worker_id = Some(worker_id);
+            }
+            if let Some(submit_support_votes) = worker.submit_support_votes {
+                config.submit_support_votes = submit_support_votes;
+            }
             if let Some(poll_interval_ms) = worker.poll_interval_ms {
                 config.poll_interval = Duration::from_millis(poll_interval_ms);
             }
@@ -159,6 +174,8 @@ struct NodeConfigFile {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 struct WorkerSectionConfigFile {
     key: Option<String>,
+    worker_id: Option<WorkerId>,
+    submit_support_votes: Option<bool>,
     poll_interval_ms: Option<u64>,
     recovery_db_path: Option<PathBuf>,
 }
@@ -196,6 +213,14 @@ pub struct VoteTask {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedVoteSubmission {
+    pub worker_id: WorkerId,
+    pub vote: WorkerVoteV1,
+    pub signature: [u8; 64],
+    pub extrinsic_hex: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkerTaskStatus {
     BundleReady { bundle_len: usize },
     BundleRejected { reason: WorkerError },
@@ -206,6 +231,7 @@ pub enum WorkerError {
     Chain(String),
     Fetch(FetchError),
     Bundle(WorkBundleVerificationError),
+    Signing(String),
 }
 
 #[derive(Debug, Default)]
@@ -344,6 +370,26 @@ impl BlockingHttpWorkerChainSource {
         HttpEndpoint::parse(&rpc_url).map_err(|error| WorkerError::Chain(error.to_string()))?;
         Ok(Self { rpc_url })
     }
+
+    pub async fn submit_raw_extrinsic(&self, extrinsic_hex: &str) -> Result<Hash, WorkerError> {
+        let response = http_post_json(
+            &self.rpc_url,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "author_submitExtrinsic",
+                "params": [extrinsic_hex],
+            })
+            .to_string(),
+        )
+        .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        let encoded = json_rpc_string_result(&response)?;
+        let bytes = decode_hex(&encoded)?;
+        let hash: [u8; 32] = bytes.try_into().map_err(|_| {
+            WorkerError::Chain("author_submitExtrinsic returned a non-32-byte hash".into())
+        })?;
+        Ok(hash)
+    }
 }
 
 #[async_trait::async_trait]
@@ -423,6 +469,54 @@ pub fn decode_open_vote_tasks_response(encoded: &str) -> Result<Vec<VoteTask>, W
             submitted_votes: task.submitted_votes.into_inner(),
         })
         .collect())
+}
+
+pub fn sr25519_pair_from_uri(uri: &str) -> Result<sr25519::Pair, WorkerError> {
+    sr25519::Pair::from_string(uri, None)
+        .map_err(|error| WorkerError::Signing(format!("invalid sr25519 key URI: {error}")))
+}
+
+pub fn prepare_support_vote_submission(
+    worker_id: WorkerId,
+    pair: &sr25519::Pair,
+    chain_id: Hash,
+    task: &VoteTask,
+) -> Option<PreparedVoteSubmission> {
+    if !task.assigned_workers.contains(&worker_id) || task.submitted_votes.contains(&worker_id) {
+        return None;
+    }
+    let vote = WorkerVoteV1 {
+        work_id: task.work_id,
+        round: task.round,
+        assignment_epoch: task.assignment_epoch,
+        candidate_report_hash: task.candidate_report_hash,
+        verdict: Verdict::Support,
+        deadline: task.deadline,
+        chain_id,
+        protocol_version: PROTOCOL_VERSION_V1,
+    };
+    Some(prepare_vote_submission(worker_id, pair, vote))
+}
+
+pub fn prepare_vote_submission(
+    worker_id: WorkerId,
+    pair: &sr25519::Pair,
+    vote: WorkerVoteV1,
+) -> PreparedVoteSubmission {
+    let signature = pair.sign(&vote.signing_hash()).0;
+    let call =
+        minijam_runtime::RuntimeCall::MiniJamWorkers(pallet_minijam_workers::Call::submit_vote {
+            worker_id,
+            vote: vote.clone(),
+            signature,
+        });
+    let extrinsic = minijam_runtime::UncheckedExtrinsic::new_bare(call);
+    PreparedVoteSubmission {
+        worker_id,
+        vote,
+        signature,
+        extrinsic_hex: hex_encode(&extrinsic.encode()),
+    }
 }
 
 fn json_rpc_string_result(response: &str) -> Result<String, WorkerError> {
@@ -540,6 +634,16 @@ fn decode_hex(input: &str) -> Result<Vec<u8>, WorkerError> {
         output.push((high << 4) | low);
     }
     Ok(output)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::from("0x");
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
 
 fn hex_nibble(byte: u8) -> Result<u8, WorkerError> {
@@ -700,6 +804,18 @@ pub trait WorkerChainSource: Send + Sync {
     }
 }
 
+#[async_trait::async_trait]
+pub trait WorkerTxSubmitter: Send + Sync {
+    async fn submit_raw_extrinsic(&self, extrinsic_hex: &str) -> Result<Hash, WorkerError>;
+}
+
+#[async_trait::async_trait]
+impl WorkerTxSubmitter for BlockingHttpWorkerChainSource {
+    async fn submit_raw_extrinsic(&self, extrinsic_hex: &str) -> Result<Hash, WorkerError> {
+        BlockingHttpWorkerChainSource::submit_raw_extrinsic(self, extrinsic_hex).await
+    }
+}
+
 pub struct WorkerRunner<C, F, D> {
     chain: C,
     fetcher: F,
@@ -843,6 +959,38 @@ where
     }
 }
 
+impl<C, F, D> WorkerRunner<C, F, D>
+where
+    C: WorkerChainSource + WorkerTxSubmitter,
+{
+    pub async fn submit_support_votes(
+        &self,
+        worker_id: WorkerId,
+        pair: &sr25519::Pair,
+        chain_id: Hash,
+        metrics: Option<&WorkerMetrics>,
+    ) -> Result<Vec<Hash>, WorkerError> {
+        let tasks = self.chain.open_vote_tasks().await?;
+        if let Some(metrics) = metrics {
+            metrics.record_vote_tasks_seen(tasks.len());
+        }
+        let mut tx_hashes = Vec::new();
+        for task in tasks {
+            let Some(submission) =
+                prepare_support_vote_submission(worker_id, pair, chain_id, &task)
+            else {
+                continue;
+            };
+            tx_hashes.push(
+                self.chain
+                    .submit_raw_extrinsic(&submission.extrinsic_hex)
+                    .await?,
+            );
+        }
+        Ok(tx_hashes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -851,6 +999,7 @@ mod tests {
     use minijam_protocol::{MiniJamWorkBundleV1, WorkerVoteTaskV1};
     use minijam_worker_engine::{fetch::MemoryContentFetcher, MiniJamWorkBundleDecoder};
     use parity_scale_codec::Encode;
+    use std::sync::Mutex;
 
     #[test]
     fn default_worker_config_is_valid() {
@@ -877,6 +1026,8 @@ mod tests {
 
             [worker]
             key = "//Alice"
+            worker_id = 7
+            submit_support_votes = true
             poll_interval_ms = 250
             recovery_db_path = "/var/lib/minijam/worker-state.toml"
 
@@ -893,6 +1044,8 @@ mod tests {
 
         assert_eq!(config.rpc_url, "ws://node.example:9944");
         assert_eq!(config.key, Some("//Alice".into()));
+        assert_eq!(config.worker_id, Some(7));
+        assert!(config.submit_support_votes);
         assert_eq!(config.poll_interval, Duration::from_millis(250));
         assert_eq!(
             config.recovery_db_path,
@@ -946,6 +1099,34 @@ mod tests {
 
         async fn open_vote_tasks(&self) -> Result<Vec<VoteTask>, WorkerError> {
             Ok(self.vote_tasks.clone())
+        }
+    }
+
+    #[derive(Clone)]
+    struct TestVoteSubmitChainSource {
+        vote_tasks: Vec<VoteTask>,
+        submitted: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl WorkerChainSource for TestVoteSubmitChainSource {
+        async fn pending_work_tasks(&self) -> Result<Vec<WorkTask>, WorkerError> {
+            Ok(Vec::new())
+        }
+
+        async fn open_vote_tasks(&self) -> Result<Vec<VoteTask>, WorkerError> {
+            Ok(self.vote_tasks.clone())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkerTxSubmitter for TestVoteSubmitChainSource {
+        async fn submit_raw_extrinsic(&self, extrinsic_hex: &str) -> Result<Hash, WorkerError> {
+            self.submitted
+                .lock()
+                .unwrap()
+                .push(extrinsic_hex.to_string());
+            Ok([7u8; 32])
         }
     }
 
@@ -1121,6 +1302,75 @@ mod tests {
                 submitted_votes: vec![2],
             }]
         );
+    }
+
+    #[test]
+    fn prepares_support_vote_submission_with_session_signature_and_unsigned_extrinsic() {
+        let pair = sr25519::Pair::from_seed(&[1u8; 32]);
+        let task = VoteTask {
+            work_id: 42,
+            round: 1,
+            assignment_epoch: 7,
+            candidate_report_hash: [9u8; 32],
+            deadline: 100,
+            assigned_workers: vec![3, 4, 5],
+            submitted_votes: vec![4],
+        };
+
+        let submission = prepare_support_vote_submission(3, &pair, [42u8; 32], &task).unwrap();
+
+        assert_eq!(submission.worker_id, 3);
+        assert_eq!(submission.vote.work_id, 42);
+        assert_eq!(submission.vote.verdict, Verdict::Support);
+        assert!(sr25519::Pair::verify(
+            &sr25519::Signature::from_raw(submission.signature),
+            &submission.vote.signing_hash(),
+            &pair.public(),
+        ));
+        assert!(submission.extrinsic_hex.starts_with("0x"));
+        assert!(submission.extrinsic_hex.len() > 16);
+        assert!(prepare_support_vote_submission(4, &pair, [42u8; 32], &task).is_none());
+        assert!(prepare_support_vote_submission(9, &pair, [42u8; 32], &task).is_none());
+    }
+
+    #[test]
+    fn runner_submits_support_votes_for_assigned_unsubmitted_worker() {
+        let pair = sr25519::Pair::from_seed(&[1u8; 32]);
+        let submitted = Arc::new(Mutex::new(Vec::new()));
+        let chain = TestVoteSubmitChainSource {
+            vote_tasks: vec![
+                VoteTask {
+                    work_id: 42,
+                    round: 1,
+                    assignment_epoch: 7,
+                    candidate_report_hash: [9u8; 32],
+                    deadline: 100,
+                    assigned_workers: vec![3, 4, 5],
+                    submitted_votes: vec![4],
+                },
+                VoteTask {
+                    work_id: 43,
+                    round: 1,
+                    assignment_epoch: 7,
+                    candidate_report_hash: [8u8; 32],
+                    deadline: 100,
+                    assigned_workers: vec![6, 7, 8],
+                    submitted_votes: Vec::new(),
+                },
+            ],
+            submitted: Arc::clone(&submitted),
+        };
+        let runner = WorkerRunner::stage0(chain, MemoryContentFetcher::new(), 64);
+        let metrics = WorkerMetrics::new();
+
+        let hashes =
+            block_on(runner.submit_support_votes(3, &pair, [42u8; 32], Some(&metrics))).unwrap();
+
+        assert_eq!(hashes, vec![[7u8; 32]]);
+        assert_eq!(submitted.lock().unwrap().len(), 1);
+        assert!(metrics
+            .render_prometheus()
+            .contains("minijam_worker_vote_tasks_seen_total 2"));
     }
 
     #[test]
