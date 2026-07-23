@@ -199,6 +199,14 @@ impl MiniJamExecutor for TestExecutor {
         input: MiniJamExecutionInputV2,
         _state: &R,
     ) -> Result<MiniJamExecutionOutputV2, MiniJamError> {
+        if input
+            .preimages
+            .iter()
+            .any(|preimage| preimage.first() == Some(&0xfe))
+        {
+            return Err(MiniJamError::Input(InputError::InvalidPreimageEncoding));
+        }
+
         if input.system_ops.iter().any(|op| {
             matches!(
                 op.command,
@@ -1249,6 +1257,34 @@ fn system_op_execution_failure_is_quarantined_without_panic() {
 
         <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(101);
         assert_eq!(pallet_minijam::QuarantinedSystemOps::<Test>::get().len(), 1);
+    });
+}
+
+#[test]
+fn preimage_execution_input_failure_is_quarantined_without_panic() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(50);
+        assert_ok!(MiniJam::submit_preimage(
+            RuntimeOrigin::signed(6),
+            vec![0xfe, 1, 2, 3].try_into().unwrap()
+        ));
+        assert_eq!(pallet_minijam::PendingPreimages::<Test>::get().len(), 1);
+
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(50);
+
+        assert!(pallet_minijam::PendingPreimages::<Test>::get().is_empty());
+        assert!(!pallet_minijam::PreimageImportPaused::<Test>::get());
+        let quarantined = pallet_minijam::QuarantinedPreimages::<Test>::get();
+        assert_eq!(quarantined.len(), 1);
+        assert_eq!(quarantined[0].submitter, 6);
+        assert_eq!(quarantined[0].metadata.requester, 254);
+        assert_eq!(quarantined[0].canonical_hash, blake2_256(&[0xfe, 1, 2, 3]));
+        assert_eq!(
+            quarantined[0].error_code,
+            pallet_minijam::ExecutionErrorCode::InvalidInput
+        );
+        assert_eq!(quarantined[0].block_number, 50);
+        assert!(!quarantined[0].retryable);
     });
 }
 

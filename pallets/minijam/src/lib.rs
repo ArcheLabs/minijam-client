@@ -164,7 +164,13 @@ pub mod pallet {
         OutOfGas,
         Trap,
         ServiceFailure,
+        InvalidInput,
+        InvalidOutput,
+        GasExceeded,
+        DeltaTooLarge,
     }
+
+    impl parity_scale_codec::DecodeWithMemTracking for ExecutionErrorCode {}
 
     impl From<ExecutionOutcome> for ExecutionErrorCode {
         fn from(outcome: ExecutionOutcome) -> Self {
@@ -181,6 +187,17 @@ pub mod pallet {
     pub struct QuarantinedSystemOp<T: Config> {
         pub submitter: T::AccountId,
         pub op: SystemOpV1,
+        pub canonical_hash: Hash,
+        pub error_code: ExecutionErrorCode,
+        pub block_number: BlockNumberFor<T>,
+        pub retryable: bool,
+    }
+
+    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    #[scale_info(skip_type_params(T))]
+    pub struct QuarantinedPreimage<T: Config> {
+        pub submitter: T::AccountId,
+        pub metadata: PreimageMetadataV1,
         pub canonical_hash: Hash,
         pub error_code: ExecutionErrorCode,
         pub block_number: BlockNumberFor<T>,
@@ -351,6 +368,10 @@ pub mod pallet {
         StorageMap<_, Blake2_128Concat, PreimageKeyV1, (), OptionQuery>;
 
     #[pallet::storage]
+    pub type QuarantinedPreimages<T: Config> =
+        StorageValue<_, BoundedVec<QuarantinedPreimage<T>, T::MaxPendingPreimages>, ValueQuery>;
+
+    #[pallet::storage]
     pub type PendingSystemOps<T: Config> =
         StorageValue<_, BoundedVec<PendingSystemOp<T>, T::MaxPendingSystemOps>, ValueQuery>;
 
@@ -469,6 +490,12 @@ pub mod pallet {
             requester: u32,
             blob_hash: Hash,
             blob_len: u32,
+        },
+        PreimageFailed {
+            requester: u32,
+            blob_hash: Hash,
+            blob_len: u32,
+            error_code: ExecutionErrorCode,
         },
         SystemOpQueued {
             request_id: Hash,
@@ -1279,6 +1306,9 @@ pub mod pallet {
                 Err(ExecutionFailure::SystemOpsYielded(outcome)) => {
                     Self::quarantine_pending_system_ops(outcome);
                 }
+                Err(ExecutionFailure::PreimagesRejected(error_code)) => {
+                    Self::quarantine_pending_preimages(error_code);
+                }
                 Err(ExecutionFailure::Fatal) => {
                     panic!("fatal MiniJam execution error");
                 }
@@ -1347,11 +1377,22 @@ pub mod pallet {
                 Err(MiniJamError::State(_)) | Err(MiniJamError::Invariant(_)) => {
                     return Err(ExecutionFailure::Fatal);
                 }
-                Err(MiniJamError::Input(_)) => return Err(ExecutionFailure::Fatal),
+                Err(MiniJamError::Input(_)) => {
+                    return if input.reports.is_empty()
+                        && !input.preimages.is_empty()
+                        && input.system_ops.is_empty()
+                    {
+                        Err(ExecutionFailure::PreimagesRejected(
+                            ExecutionErrorCode::InvalidInput,
+                        ))
+                    } else {
+                        Err(ExecutionFailure::Fatal)
+                    };
+                }
             };
 
             let delta = validate_execution_output_v2(&input, &output, &state)
-                .map_err(Self::map_validation_error)?;
+                .map_err(|error| Self::map_validation_error(&input, error))?;
             Self::apply_delta(delta)?;
             Self::consume_preimages(&output.consumed_preimages);
             Self::consume_system_ops(&output.consumed_system_ops);
@@ -1387,7 +1428,24 @@ pub mod pallet {
             })
         }
 
-        fn map_validation_error(error: ValidationError) -> ExecutionFailure {
+        fn map_validation_error(
+            input: &MiniJamExecutionInputV2,
+            error: ValidationError,
+        ) -> ExecutionFailure {
+            if input.reports.is_empty()
+                && !input.preimages.is_empty()
+                && input.system_ops.is_empty()
+            {
+                let code = match error {
+                    ValidationError::GasExceeded => ExecutionErrorCode::GasExceeded,
+                    ValidationError::DeltaTooLarge => ExecutionErrorCode::DeltaTooLarge,
+                    ValidationError::State(_) | ValidationError::Invariant(_) => {
+                        ExecutionErrorCode::InvalidOutput
+                    }
+                };
+                return ExecutionFailure::PreimagesRejected(code);
+            }
+
             match error {
                 ValidationError::State(_) | ValidationError::Invariant(_) => {
                     ExecutionFailure::Fatal
@@ -1462,6 +1520,40 @@ pub mod pallet {
                     }
                 }
             });
+        }
+
+        fn quarantine_pending_preimages(error_code: ExecutionErrorCode) {
+            let pending = PendingPreimages::<T>::take();
+            if pending.is_empty() {
+                return;
+            }
+
+            let mut quarantined = QuarantinedPreimages::<T>::get();
+            let mut overflowed = false;
+            for pending in pending {
+                PendingPreimageKeys::<T>::remove(PreimageKeyV1::from(pending.metadata));
+                Self::deposit_event(Event::PreimageFailed {
+                    requester: pending.metadata.requester,
+                    blob_hash: pending.metadata.blob_hash,
+                    blob_len: pending.metadata.blob_len,
+                    error_code,
+                });
+                let record = QuarantinedPreimage::<T> {
+                    submitter: pending.submitter,
+                    metadata: pending.metadata,
+                    canonical_hash: blake2_256(&pending.canonical),
+                    error_code,
+                    block_number: frame_system::Pallet::<T>::block_number(),
+                    retryable: false,
+                };
+                if quarantined.try_push(record).is_err() {
+                    overflowed = true;
+                }
+            }
+            QuarantinedPreimages::<T>::put(quarantined);
+            if overflowed {
+                PreimageImportPaused::<T>::put(true);
+            }
         }
 
         fn quarantine_pending_system_ops(outcome: ExecutionOutcome) {
@@ -1865,6 +1957,7 @@ pub mod pallet {
     enum ExecutionFailure {
         Yielded(WorkId, ExecutionOutcome),
         SystemOpsYielded(ExecutionOutcome),
+        PreimagesRejected(ExecutionErrorCode),
         Fatal,
     }
 
