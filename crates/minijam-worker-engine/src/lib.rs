@@ -92,17 +92,24 @@ pub fn verify_work_bundle<'a, D: WorkBundleDecoder>(
 #[cfg(feature = "std")]
 pub mod fetch {
     use super::{verify_content_ref, ContentRef, ContentVerificationError};
-    use alloc::{collections::BTreeMap, vec::Vec};
+    use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub enum FetchError {
+        InvalidReference,
         NotFound,
+        Transport(String),
         Verification(ContentVerificationError),
     }
 
     #[async_trait::async_trait]
     pub trait ContentFetcher: Send + Sync {
         async fn fetch(&self, reference: &ContentRef) -> Result<Vec<u8>, FetchError>;
+    }
+
+    #[async_trait::async_trait]
+    pub trait HttpBytesClient: Send + Sync {
+        async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, FetchError>;
     }
 
     pub async fn fetch_verified_content<F: ContentFetcher + ?Sized>(
@@ -113,6 +120,52 @@ pub mod fetch {
         let bytes = fetcher.fetch(reference).await?;
         verify_content_ref(reference, &bytes, max_bytes).map_err(FetchError::Verification)?;
         Ok(bytes)
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct HttpContentFetcher<C> {
+        client: C,
+    }
+
+    impl<C> HttpContentFetcher<C> {
+        pub fn new(client: C) -> Self {
+            Self { client }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl<C: HttpBytesClient> ContentFetcher for HttpContentFetcher<C> {
+        async fn fetch(&self, reference: &ContentRef) -> Result<Vec<u8>, FetchError> {
+            let url = core::str::from_utf8(reference.cid_v1.as_slice())
+                .map_err(|_| FetchError::InvalidReference)?;
+            self.client.get_bytes(url).await
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct IpfsGatewayFetcher<C> {
+        client: C,
+        gateway: String,
+    }
+
+    impl<C> IpfsGatewayFetcher<C> {
+        pub fn new(client: C, gateway: impl Into<String>) -> Self {
+            Self {
+                client,
+                gateway: gateway.into().trim_end_matches('/').into(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl<C: HttpBytesClient> ContentFetcher for IpfsGatewayFetcher<C> {
+        async fn fetch(&self, reference: &ContentRef) -> Result<Vec<u8>, FetchError> {
+            let cid = core::str::from_utf8(reference.cid_v1.as_slice())
+                .map_err(|_| FetchError::InvalidReference)?;
+            self.client
+                .get_bytes(&format!("{}/ipfs/{}", self.gateway, cid))
+                .await
+        }
     }
 
     #[derive(Clone, Debug, Default)]
@@ -397,7 +450,10 @@ pub fn equivocation_slash(stake: u128) -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fetch::{fetch_verified_content, FetchError, MemoryContentFetcher};
+    use crate::fetch::{
+        fetch_verified_content, FetchError, HttpBytesClient, HttpContentFetcher,
+        IpfsGatewayFetcher, MemoryContentFetcher,
+    };
     use futures::executor::block_on;
     use minijam_protocol::ContentRef;
     use minijam_protocol::{OpposeReason, UNIT, VOTE_WINDOW};
@@ -413,6 +469,18 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct TestHttpClient {
+        responses: BTreeMap<String, Vec<u8>>,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpBytesClient for TestHttpClient {
+        async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, FetchError> {
+            self.responses.get(url).cloned().ok_or(FetchError::NotFound)
+        }
+    }
+
     fn worker(id: WorkerId, stake: u128) -> WorkerRecord {
         WorkerRecord {
             id,
@@ -425,6 +493,14 @@ mod tests {
     fn content_ref(bytes: &[u8]) -> ContentRef {
         ContentRef {
             cid_v1: vec![1].try_into().unwrap(),
+            content_hash: blake2_256(bytes),
+            size: bytes.len() as u64,
+        }
+    }
+
+    fn content_ref_with_location(bytes: &[u8], location: &[u8]) -> ContentRef {
+        ContentRef {
+            cid_v1: location.to_vec().try_into().unwrap(),
             content_hash: blake2_256(bytes),
             size: bytes.len() as u64,
         }
@@ -521,6 +597,54 @@ mod tests {
             Err(FetchError::Verification(
                 ContentVerificationError::SizeMismatch
             ))
+        );
+    }
+
+    #[test]
+    fn http_fetcher_uses_reference_location_as_url() {
+        let bytes = b"bundle".to_vec();
+        let reference = content_ref_with_location(&bytes, b"https://example.test/bundle");
+        let fetcher = HttpContentFetcher::new(TestHttpClient {
+            responses: BTreeMap::from([("https://example.test/bundle".into(), bytes.clone())]),
+        });
+
+        assert_eq!(
+            block_on(fetch_verified_content(&fetcher, &reference, 32)).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn ipfs_fetcher_builds_gateway_url_from_cid() {
+        let bytes = b"bundle".to_vec();
+        let reference = content_ref_with_location(&bytes, b"bafy-test");
+        let fetcher = IpfsGatewayFetcher::new(
+            TestHttpClient {
+                responses: BTreeMap::from([(
+                    "http://127.0.0.1:8080/ipfs/bafy-test".into(),
+                    bytes.clone(),
+                )]),
+            },
+            "http://127.0.0.1:8080/ipfs/..",
+        );
+
+        assert_eq!(
+            block_on(fetch_verified_content(&fetcher, &reference, 32)),
+            Err(FetchError::NotFound)
+        );
+
+        let fetcher = IpfsGatewayFetcher::new(
+            TestHttpClient {
+                responses: BTreeMap::from([(
+                    "http://127.0.0.1:8080/ipfs/bafy-test".into(),
+                    bytes.clone(),
+                )]),
+            },
+            "http://127.0.0.1:8080",
+        );
+        assert_eq!(
+            block_on(fetch_verified_content(&fetcher, &reference, 32)).unwrap(),
+            bytes
         );
     }
 
