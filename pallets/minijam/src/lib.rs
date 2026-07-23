@@ -1040,6 +1040,11 @@ pub mod pallet {
             PendingPreimages::<T>::get()
         }
 
+        pub fn get_quarantined_preimages(
+        ) -> BoundedVec<QuarantinedPreimage<T>, T::MaxPendingPreimages> {
+            QuarantinedPreimages::<T>::get()
+        }
+
         pub fn has_pending_preimage(requester: u32, blob_hash: Hash, blob_len: u32) -> bool {
             PendingPreimageKeys::<T>::contains_key(PreimageKeyV1 {
                 requester,

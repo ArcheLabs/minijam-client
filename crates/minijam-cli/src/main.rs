@@ -103,6 +103,7 @@ enum Command {
         work_id: u64,
     },
     GetPendingPreimages,
+    GetQuarantinedPreimages,
     GetPreimageStatus {
         requester: u32,
         blob_hash: String,
@@ -241,6 +242,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Command::GetPendingPreimages => {
             print_rpc_result(&cli.rpc, "minijam_getPendingPreimages", json!([]))?
+        }
+        Command::GetQuarantinedPreimages => {
+            print_rpc_result(&cli.rpc, "minijam_getQuarantinedPreimages", json!([]))?
         }
         Command::GetPreimageStatus {
             requester,

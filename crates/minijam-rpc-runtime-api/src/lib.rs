@@ -20,6 +20,7 @@ decl_runtime_apis! {
         fn get_work_fuel_reservation(work_id: WorkId) -> Option<Vec<u8>>;
         fn get_work_fuel_settlement(work_id: WorkId) -> Option<Vec<u8>>;
         fn get_pending_preimages() -> Vec<u8>;
+        fn get_quarantined_preimages() -> Vec<u8>;
         fn has_pending_preimage(requester: u32, blob_hash: Hash, blob_len: u32) -> bool;
         fn get_pending_system_ops() -> Vec<u8>;
         fn get_quarantined_system_ops() -> Vec<u8>;

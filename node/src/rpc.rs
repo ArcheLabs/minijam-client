@@ -220,6 +220,17 @@ where
         }
     })?;
 
+    module.register_method("minijam_getQuarantinedPreimages", {
+        let client = client.clone();
+        move |_, _, _| -> RpcResult<String> {
+            let encoded = client
+                .runtime_api()
+                .get_quarantined_preimages(best_hash(&client))
+                .map_err(runtime_api_error)?;
+            Ok(hex_encode(&encoded))
+        }
+    })?;
+
     module.register_method("minijam_getPendingSystemOps", {
         let client = client.clone();
         move |_, _, _| -> RpcResult<String> {

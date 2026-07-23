@@ -103,6 +103,10 @@ impl_runtime_apis! {
             pallet_minijam::Pallet::<Runtime>::get_pending_preimages().encode()
         }
 
+        fn get_quarantined_preimages() -> Vec<u8> {
+            pallet_minijam::Pallet::<Runtime>::get_quarantined_preimages().encode()
+        }
+
         fn has_pending_preimage(
             requester: u32,
             blob_hash: minijam_protocol::Hash,
