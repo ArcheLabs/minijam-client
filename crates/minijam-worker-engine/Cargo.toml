@@ -5,14 +5,19 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+async-trait = { workspace = true, optional = true }
 bounded-collections.workspace = true
 minijam-protocol = { path = "../minijam-protocol", default-features = false }
 parity-scale-codec.workspace = true
 scale-info.workspace = true
 
+[dev-dependencies]
+futures.workspace = true
+
 [features]
 default = ["std"]
 std = [
+  "dep:async-trait",
   "bounded-collections/std",
   "minijam-protocol/std",
   "parity-scale-codec/std",

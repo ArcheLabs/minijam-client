@@ -5091,7 +5091,9 @@ dependencies = [
 name = "minijam-worker-engine"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bounded-collections 0.2.4",
+ "futures",
  "minijam-protocol",
  "parity-scale-codec",
  "scale-info",

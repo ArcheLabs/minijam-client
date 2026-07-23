@@ -89,6 +89,63 @@ pub fn verify_work_bundle<'a, D: WorkBundleDecoder>(
     })
 }
 
+#[cfg(feature = "std")]
+pub mod fetch {
+    use super::{verify_content_ref, ContentRef, ContentVerificationError};
+    use alloc::{collections::BTreeMap, vec::Vec};
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub enum FetchError {
+        NotFound,
+        Verification(ContentVerificationError),
+    }
+
+    #[async_trait::async_trait]
+    pub trait ContentFetcher: Send + Sync {
+        async fn fetch(&self, reference: &ContentRef) -> Result<Vec<u8>, FetchError>;
+    }
+
+    pub async fn fetch_verified_content<F: ContentFetcher + ?Sized>(
+        fetcher: &F,
+        reference: &ContentRef,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, FetchError> {
+        let bytes = fetcher.fetch(reference).await?;
+        verify_content_ref(reference, &bytes, max_bytes).map_err(FetchError::Verification)?;
+        Ok(bytes)
+    }
+
+    #[derive(Clone, Debug, Default)]
+    pub struct MemoryContentFetcher {
+        entries: BTreeMap<Vec<u8>, Vec<u8>>,
+    }
+
+    impl MemoryContentFetcher {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        pub fn insert(&mut self, reference: &ContentRef, bytes: Vec<u8>) {
+            self.entries.insert(reference.cid_v1.to_vec(), bytes);
+        }
+
+        pub fn with_content(mut self, reference: &ContentRef, bytes: Vec<u8>) -> Self {
+            self.insert(reference, bytes);
+            self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ContentFetcher for MemoryContentFetcher {
+        async fn fetch(&self, reference: &ContentRef) -> Result<Vec<u8>, FetchError> {
+            self.entries
+                .get(reference.cid_v1.as_slice())
+                .cloned()
+                .ok_or(FetchError::NotFound)
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub enum WorkerStatus {
     Active,
@@ -340,6 +397,8 @@ pub fn equivocation_slash(stake: u128) -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fetch::{fetch_verified_content, FetchError, MemoryContentFetcher};
+    use futures::executor::block_on;
     use minijam_protocol::ContentRef;
     use minijam_protocol::{OpposeReason, UNIT, VOTE_WINDOW};
 
@@ -430,6 +489,37 @@ mod tests {
             verify_work_bundle(&reference, bytes, 64, [7u8; 32], &TestBundleDecoder),
             Err(WorkBundleVerificationError::Decode(
                 WorkBundleDecodeError::InvalidEncoding
+            ))
+        );
+    }
+
+    #[test]
+    fn memory_fetcher_returns_verified_content() {
+        let bytes = b"bundle".to_vec();
+        let reference = content_ref(&bytes);
+        let fetcher = MemoryContentFetcher::new().with_content(&reference, bytes.clone());
+
+        assert_eq!(
+            block_on(fetch_verified_content(&fetcher, &reference, 32)).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn memory_fetcher_reports_missing_and_invalid_content() {
+        let bytes = b"bundle".to_vec();
+        let reference = content_ref(&bytes);
+        let fetcher = MemoryContentFetcher::new();
+        assert_eq!(
+            block_on(fetch_verified_content(&fetcher, &reference, 32)),
+            Err(FetchError::NotFound)
+        );
+
+        let fetcher = MemoryContentFetcher::new().with_content(&reference, b"wrong".to_vec());
+        assert_eq!(
+            block_on(fetch_verified_content(&fetcher, &reference, 32)),
+            Err(FetchError::Verification(
+                ContentVerificationError::SizeMismatch
             ))
         );
     }
