@@ -7,17 +7,23 @@ use std::{
     net::TcpStream,
 };
 
-use clap::{Parser, Subcommand};
-use minijam_protocol::{ContentRef, Hash, SystemCommandV1};
-use parity_scale_codec::Encode;
+use clap::{Parser, Subcommand, ValueEnum};
+use minijam_protocol::{
+    ContentRef, Hash, OpposeReason, ReportEnvelopeV1, SystemCommandV1, Verdict, WorkerVoteV1,
+    PROTOCOL_VERSION_V1,
+};
+use parity_scale_codec::{Decode, Encode};
 use serde_json::{json, Value};
 
+const MINIJAM_WORKERS_PALLET_INDEX: u8 = 7;
 const MINIJAM_PALLET_INDEX: u8 = 8;
 const CALL_SUBMIT_WORK: u8 = 0;
+const CALL_SUBMIT_CANDIDATE: u8 = 1;
 const CALL_SUBMIT_PREIMAGE: u8 = 4;
 const CALL_SUBMIT_SYSTEM_OP: u8 = 5;
 const CALL_FUND_SERVICE: u8 = 6;
 const CALL_CLAIM_FAUCET: u8 = 10;
+const CALL_SUBMIT_VOTE: u8 = 2;
 
 #[derive(Parser)]
 #[command(name = "minijam-cli")]
@@ -49,6 +55,34 @@ enum Command {
         service_id: u32,
         #[arg(long)]
         amount: u128,
+    },
+    SubmitCandidate {
+        #[arg(long)]
+        envelope: String,
+    },
+    SubmitVote {
+        #[arg(long)]
+        worker_id: u64,
+        #[arg(long)]
+        work_id: u64,
+        #[arg(long)]
+        round: u8,
+        #[arg(long)]
+        assignment_epoch: u32,
+        #[arg(long)]
+        candidate_report_hash: String,
+        #[arg(long)]
+        verdict: VoteVerdictArg,
+        #[arg(long)]
+        oppose_hash: Option<String>,
+        #[arg(long)]
+        deadline: u32,
+        #[arg(long)]
+        chain_id: String,
+        #[arg(long, default_value_t = PROTOCOL_VERSION_V1)]
+        protocol_version: u16,
+        #[arg(long)]
+        signature: String,
     },
     SubmitPreimage {
         #[arg(long)]
@@ -124,6 +158,16 @@ enum Command {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum VoteVerdictArg {
+    Support,
+    InvalidRefine,
+    MissingData,
+    ContextMismatch,
+    MalformedOutput,
+    Other,
+}
+
 #[derive(Debug)]
 struct CliError(String);
 
@@ -166,6 +210,47 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "MiniJam",
                 "fund_service",
                 call_data(CALL_FUND_SERVICE, &(service_id, amount)),
+            );
+        }
+        Command::SubmitCandidate { envelope } => {
+            let envelope = decode_envelope_file(&envelope)?;
+            print_call_data(
+                "MiniJam",
+                "submit_candidate",
+                call_data(CALL_SUBMIT_CANDIDATE, &envelope),
+            );
+        }
+        Command::SubmitVote {
+            worker_id,
+            work_id,
+            round,
+            assignment_epoch,
+            candidate_report_hash,
+            verdict,
+            oppose_hash,
+            deadline,
+            chain_id,
+            protocol_version,
+            signature,
+        } => {
+            let vote = WorkerVoteV1 {
+                work_id,
+                round,
+                assignment_epoch,
+                candidate_report_hash: parse_hash(&candidate_report_hash)?,
+                verdict: build_verdict(verdict, oppose_hash.as_deref())?,
+                deadline,
+                chain_id: parse_hash(&chain_id)?,
+                protocol_version,
+            };
+            print_call_data(
+                "MiniJamWorkers",
+                "submit_vote",
+                call_data_for_pallet(
+                    MINIJAM_WORKERS_PALLET_INDEX,
+                    CALL_SUBMIT_VOTE,
+                    &(worker_id, vote, parse_hex_array::<64>(&signature)?),
+                ),
             );
         }
         Command::SubmitPreimage { preimage } => {
@@ -291,11 +376,45 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn call_data<T: Encode>(call_index: u8, args: &T) -> Vec<u8> {
+    call_data_for_pallet(MINIJAM_PALLET_INDEX, call_index, args)
+}
+
+fn call_data_for_pallet<T: Encode>(pallet_index: u8, call_index: u8, args: &T) -> Vec<u8> {
     let mut encoded = Vec::with_capacity(2);
-    encoded.push(MINIJAM_PALLET_INDEX);
+    encoded.push(pallet_index);
     encoded.push(call_index);
     args.encode_to(&mut encoded);
     encoded
+}
+
+fn decode_envelope_file(path: &str) -> Result<ReportEnvelopeV1, Box<dyn Error>> {
+    let bytes = fs::read(path)?;
+    let mut input = bytes.as_slice();
+    let envelope = ReportEnvelopeV1::decode(&mut input)
+        .map_err(|error| CliError(format!("invalid ReportEnvelopeV1 SCALE file: {error}")))?;
+    if !input.is_empty() {
+        return Err(Box::new(CliError(
+            "ReportEnvelopeV1 SCALE file contains trailing bytes".into(),
+        )));
+    }
+    Ok(envelope)
+}
+
+fn build_verdict(
+    verdict: VoteVerdictArg,
+    oppose_hash: Option<&str>,
+) -> Result<Verdict, Box<dyn Error>> {
+    let verdict = match verdict {
+        VoteVerdictArg::Support => Verdict::Support,
+        VoteVerdictArg::InvalidRefine => Verdict::Oppose(OpposeReason::InvalidRefine),
+        VoteVerdictArg::MissingData => Verdict::Oppose(OpposeReason::MissingData),
+        VoteVerdictArg::ContextMismatch => Verdict::Oppose(OpposeReason::ContextMismatch),
+        VoteVerdictArg::MalformedOutput => Verdict::Oppose(OpposeReason::MalformedOutput),
+        VoteVerdictArg::Other => Verdict::Oppose(OpposeReason::Other(parse_hash(
+            oppose_hash.ok_or_else(|| CliError("--oppose-hash is required for Other".into()))?,
+        )?)),
+    };
+    Ok(verdict)
 }
 
 fn print_call_data(pallet: &str, call: &str, call_data: Vec<u8>) {
@@ -502,5 +621,29 @@ mod tests {
         assert_eq!(&encoded[..2], &[MINIJAM_PALLET_INDEX, CALL_FUND_SERVICE]);
         assert_eq!(&encoded[2..6], &7u32.to_le_bytes());
         assert_eq!(&encoded[6..22], &25u128.to_le_bytes());
+    }
+
+    #[test]
+    fn submit_vote_call_data_uses_workers_pallet_prefix() {
+        let vote = WorkerVoteV1 {
+            work_id: 42,
+            round: 1,
+            assignment_epoch: 7,
+            candidate_report_hash: [9u8; 32],
+            verdict: Verdict::Support,
+            deadline: 100,
+            chain_id: [42u8; 32],
+            protocol_version: PROTOCOL_VERSION_V1,
+        };
+        let encoded = call_data_for_pallet(
+            MINIJAM_WORKERS_PALLET_INDEX,
+            CALL_SUBMIT_VOTE,
+            &(3u64, vote, [5u8; 64]),
+        );
+        assert_eq!(
+            &encoded[..2],
+            &[MINIJAM_WORKERS_PALLET_INDEX, CALL_SUBMIT_VOTE]
+        );
+        assert_eq!(&encoded[2..10], &3u64.to_le_bytes());
     }
 }
