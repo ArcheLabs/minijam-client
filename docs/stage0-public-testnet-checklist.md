@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `0510ff68201174b92ff00dc6d73d416545b23aa2`
+- minijam-client current implementation commit: `4bb0eaf38ee4c9c7fc78ff2ee2e9906431b50ee5`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -143,6 +143,7 @@ Current environment limits:
 
 - Docker is not installed in this WSL distro, so `docker compose config` could not be executed here.
 - `systemd-analyze verify` reached the template command paths, but `/usr/local/bin/minijam-node` and `/usr/local/bin/minijam-worker` are not installed on this machine.
+- `promtool` is not installed, so Prometheus rule semantic checks could not be executed here.
 
 ## M7: Cross-Process E2E
 
@@ -153,11 +154,15 @@ Current environment limits:
 ## M8: Canary and Release
 
 - [ ] Node, worker, and economic metrics.
-- [ ] Alerting rules.
+- [x] Alerting rules.
 - [ ] Backup and restore procedures.
 - [ ] Runtime upgrade rehearsal.
 - [ ] 48-hour Canary soak.
 - [ ] Final `STAGE0-RELEASE-CHECKLIST.md` with evidence links.
+
+Evidence:
+
+- `ruby -e 'require "yaml"; YAML.load_file("deploy/stage0/alerts.yml"); YAML.load_file("deploy/stage0/prometheus.yml"); puts "yaml ok"'`
 
 ## Current Known Risks
 
