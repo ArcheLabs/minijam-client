@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `c71085b1bc488f6fb4b313302c7d3ee1eebec162`
+- minijam-client current implementation commit: `ada01cac8af0b09470e41bf6c654806b04b6ed52`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -63,7 +63,7 @@ Evidence:
 - [x] Real Auditable Work Bundle decoder validates version, SCALE encoding, trailing bytes, and package hash.
 - [ ] Jambda Is-Authorized and Refine execution.
 - [ ] Candidate submission and independent Support/Oppose voting.
-- [ ] Prometheus metrics.
+- [x] Prometheus metrics endpoint exposes worker poll, task, bundle-ready, and bundle-rejected counters.
 
 Evidence:
 
@@ -75,6 +75,7 @@ Evidence:
 - `cargo test -p minijam-worker-engine`
 - `cargo check -p minijam-protocol -p minijam-worker-engine --no-default-features --target wasm32-unknown-unknown`
 - `cargo run -p minijam-worker -- --config deploy/stage0/worker-1.toml --state-db /tmp/minijam-worker-state-check.toml --once`
+- `cargo run -p minijam-worker -- --config deploy/stage0/worker-1.toml --state-db /tmp/minijam-worker-state-check.toml --metrics-bind 127.0.0.1:0 --once`
 
 ## M4: Real Service 0
 
