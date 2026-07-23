@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 
 pub mod apis;
-mod genesis_config_presets;
+pub mod genesis_config_presets;
 
 use frame_support::{
     derive_impl, parameter_types,

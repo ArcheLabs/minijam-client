@@ -7,6 +7,7 @@ use jambda_minijam_executive::{system_service_genesis_state, SystemServiceGenesi
 use serde_json::Value;
 use sp_consensus_aura::sr25519::AuthorityId as AuraId;
 use sp_consensus_grandpa::AuthorityId as GrandpaId;
+use sp_core::{ed25519, sr25519};
 use sp_genesis_builder::{self, PresetId};
 use sp_keyring::Sr25519Keyring;
 
@@ -19,11 +20,22 @@ const DEV_BALANCE: Balance = 1_000_000 * UNIT;
 const REWARD_POOL_BALANCE: Balance = 1_000_000 * UNIT;
 const SYSTEM_SERVICE_FUEL: Balance = 1_000 * UNIT;
 const SYSTEM_SERVICE_BLOB: &[u8] = include_bytes!("../../artifacts/system-service.blob");
+pub const STAGE0_RUNTIME_PRESET: &str = "stage0";
+
+const STAGE0_AURA_AUTHORITIES: [[u8; 32]; 3] = [[0x41; 32], [0x42; 32], [0x43; 32]];
+const STAGE0_GRANDPA_AUTHORITIES: [[u8; 32]; 3] = [[0x51; 32], [0x52; 32], [0x53; 32]];
+const STAGE0_WORKER_ACCOUNTS: [[u8; 32]; 5] =
+    [[0x61; 32], [0x62; 32], [0x63; 32], [0x64; 32], [0x65; 32]];
+const STAGE0_WORKER_SESSION_KEYS: [[u8; 32]; 5] =
+    [[0x71; 32], [0x72; 32], [0x73; 32], [0x74; 32], [0x75; 32]];
+const STAGE0_SUDO_ACCOUNT: [u8; 32] = [0x81; 32];
+const STAGE0_FAUCET_ACCOUNT: [u8; 32] = [0x91; 32];
 
 fn testnet_genesis(
     initial_authorities: Vec<(AuraId, GrandpaId)>,
     mut endowed_accounts: Vec<AccountId>,
     root: AccountId,
+    workers: Vec<(AccountId, [u8; 32], Balance)>,
 ) -> Value {
     let reward_pool = AccountId::new([9; 32]);
     let fuel_escrow = AccountId::new([7; 32]);
@@ -76,13 +88,13 @@ fn testnet_genesis(
             _phantom: Default::default(),
         },
         mini_jam_workers: MiniJamWorkersConfig {
-            workers: genesis_workers(),
+            workers,
             _phantom: Default::default(),
         },
     })
 }
 
-fn genesis_workers() -> Vec<(AccountId, [u8; 32], Balance)> {
+fn development_workers() -> Vec<(AccountId, [u8; 32], Balance)> {
     vec![
         (
             Sr25519Keyring::Alice.to_account_id(),
@@ -100,6 +112,38 @@ fn genesis_workers() -> Vec<(AccountId, [u8; 32], Balance)> {
             1_000 * UNIT,
         ),
     ]
+}
+
+fn stage0_authorities() -> Vec<(AuraId, GrandpaId)> {
+    STAGE0_AURA_AUTHORITIES
+        .iter()
+        .copied()
+        .zip(STAGE0_GRANDPA_AUTHORITIES.iter().copied())
+        .map(|(aura, grandpa)| {
+            (
+                AuraId::from(sr25519::Public::from_raw(aura)),
+                GrandpaId::from(ed25519::Public::from_raw(grandpa)),
+            )
+        })
+        .collect()
+}
+
+fn stage0_workers() -> Vec<(AccountId, [u8; 32], Balance)> {
+    STAGE0_WORKER_ACCOUNTS
+        .iter()
+        .copied()
+        .zip(STAGE0_WORKER_SESSION_KEYS.iter().copied())
+        .map(|(account, session_key)| (AccountId::new(account), session_key, 1_000 * UNIT))
+        .collect()
+}
+
+fn stage0_endowed_accounts() -> Vec<AccountId> {
+    STAGE0_WORKER_ACCOUNTS
+        .iter()
+        .copied()
+        .chain([STAGE0_SUDO_ACCOUNT, STAGE0_FAUCET_ACCOUNT])
+        .map(AccountId::new)
+        .collect()
 }
 
 fn system_service_zero_protocol_state() -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -135,6 +179,7 @@ pub fn development_config_genesis() -> Value {
             Sr25519Keyring::BobStash.to_account_id(),
         ],
         Sr25519Keyring::Alice.to_account_id(),
+        development_workers(),
     )
 }
 
@@ -155,6 +200,16 @@ pub fn local_config_genesis() -> Value {
             .map(|key| key.to_account_id())
             .collect::<Vec<_>>(),
         Sr25519Keyring::Alice.to_account_id(),
+        development_workers(),
+    )
+}
+
+pub fn stage0_config_genesis() -> Value {
+    testnet_genesis(
+        stage0_authorities(),
+        stage0_endowed_accounts(),
+        AccountId::new(STAGE0_SUDO_ACCOUNT),
+        stage0_workers(),
     )
 }
 
@@ -162,6 +217,7 @@ pub fn get_preset(id: &PresetId) -> Option<Vec<u8>> {
     let patch = match id.as_ref() {
         sp_genesis_builder::DEV_RUNTIME_PRESET => development_config_genesis(),
         sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET => local_config_genesis(),
+        STAGE0_RUNTIME_PRESET => stage0_config_genesis(),
         _ => return None,
     };
 
@@ -176,6 +232,7 @@ pub fn preset_names() -> Vec<PresetId> {
     vec![
         PresetId::from(sp_genesis_builder::DEV_RUNTIME_PRESET),
         PresetId::from(sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET),
+        PresetId::from(STAGE0_RUNTIME_PRESET),
     ]
 }
 
@@ -275,5 +332,63 @@ mod tests {
             Some(&Value::from(SYSTEM_SERVICE_BLOB.len() as u64))
         );
         assert!(!SYSTEM_SERVICE_BLOB.is_empty());
+    }
+
+    #[test]
+    fn stage0_genesis_uses_fixed_non_development_network_accounts() {
+        let patch = stage0_config_genesis();
+        let aura = field(
+            section(&patch, "aura", "aura"),
+            "authorities",
+            "authorities",
+        )
+        .as_array()
+        .expect("aura authorities must be a JSON array");
+        let grandpa = field(
+            section(&patch, "grandpa", "grandpa"),
+            "authorities",
+            "authorities",
+        )
+        .as_array()
+        .expect("grandpa authorities must be a JSON array");
+        let workers = field(
+            section(&patch, "mini_jam_workers", "miniJamWorkers"),
+            "workers",
+            "workers",
+        )
+        .as_array()
+        .expect("workers must be a JSON array");
+
+        assert_eq!(aura.len(), 3);
+        assert_eq!(grandpa.len(), 3);
+        assert_eq!(workers.len(), 5);
+
+        let development_accounts = [
+            Sr25519Keyring::Alice.to_account_id(),
+            Sr25519Keyring::Bob.to_account_id(),
+            Sr25519Keyring::Charlie.to_account_id(),
+        ]
+        .into_iter()
+        .map(|account| serde_json::to_value(account).unwrap())
+        .collect::<Vec<_>>();
+
+        for worker in workers {
+            let account = worker
+                .as_array()
+                .and_then(|entry| entry.first())
+                .expect("worker account must be present");
+            assert!(
+                !development_accounts.contains(account),
+                "stage0 worker accounts must not use development keyring accounts"
+            );
+        }
+    }
+
+    #[test]
+    fn stage0_preset_is_registered() {
+        assert!(preset_names()
+            .iter()
+            .any(|preset| preset.as_str() == STAGE0_RUNTIME_PRESET));
+        assert!(get_preset(&PresetId::from(STAGE0_RUNTIME_PRESET)).is_some());
     }
 }
