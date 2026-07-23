@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `45d3dca5ad1ade9f2aeddb486f7ddef06ef1d14a`
+- minijam-client current implementation commit: `b4fb4e12586c51e7f44ad9a567e01aec35806f24`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -59,7 +59,7 @@ Evidence:
 - [x] Worker has config validation and documented TOML loading.
 - [x] Worker runner verifies ContentRef size and hash and records per-task status.
 - [x] Persistent file-backed recovery database stores worker task statuses and resumes ready bundles after restart.
-- [ ] Worker chain RPC via finalized state.
+- [x] Worker chain RPC reads pending task inputs through `minijam_getPendingWorkTasks`, which executes against the finalized block hash.
 - [ ] Real Auditable Work Bundle decoder.
 - [ ] Jambda Is-Authorized and Refine execution.
 - [ ] Candidate submission and independent Support/Oppose voting.
@@ -69,6 +69,9 @@ Evidence:
 
 - `cargo test -p minijam-worker`
 - `cargo check -p minijam-worker`
+- `cargo check -p minijam-protocol -p minijam-rpc-runtime-api`
+- `cargo test -p pallet-minijam pending_worker_tasks_project_finalized_worker_inputs`
+- `cargo check -p minijam-runtime -p minijam-node -p minijam-worker`
 - `cargo run -p minijam-worker -- --config deploy/stage0/worker-1.toml --state-db /tmp/minijam-worker-state-check.toml --once`
 
 ## M4: Real Service 0
@@ -138,6 +141,6 @@ Current environment limits:
 ## Current Known Risks
 
 - Service 0 is still a placeholder artifact and cannot satisfy the public testnet CreateService requirement.
-- Worker binary is not yet connected to chain RPC or transaction submission.
+- Worker binary can read finalized pending task inputs through RPC, but is not yet connected to transaction submission.
 - No faucet or `minijam-cli` command suite exists yet.
 - Cross-process E2E and Canary evidence are missing.
