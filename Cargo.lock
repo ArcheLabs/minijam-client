@@ -5245,6 +5245,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "clap",
+ "frame-system",
  "futures",
  "jam-codec",
  "jambda-minijam-executive",
@@ -5257,11 +5258,14 @@ dependencies = [
  "minijam-protocol",
  "minijam-runtime",
  "minijam-worker-engine",
+ "pallet-minijam",
  "pallet-minijam-workers",
+ "pallet-transaction-payment",
  "parity-scale-codec",
  "serde",
  "serde_json",
  "sp-core",
+ "sp-runtime",
  "tempfile",
  "toml 0.8.23",
 ]

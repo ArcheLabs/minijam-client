@@ -27,6 +27,12 @@ struct Cli {
     worker_id: Option<u64>,
 
     #[arg(long)]
+    core_index: Option<u16>,
+
+    #[arg(long)]
+    submit_candidates: bool,
+
+    #[arg(long)]
     submit_support_votes: bool,
 
     #[arg(long)]
@@ -69,6 +75,12 @@ fn build_config(cli: &Cli) -> Result<WorkerConfig, String> {
     }
     if let Some(worker_id) = cli.worker_id {
         config.worker_id = Some(worker_id);
+    }
+    if let Some(core_index) = cli.core_index {
+        config.core_index = core_index;
+    }
+    if cli.submit_candidates {
+        config.submit_candidates = true;
     }
     if cli.submit_support_votes {
         config.submit_support_votes = true;
@@ -122,11 +134,15 @@ fn main() {
             .unwrap_or_else(|| "disabled".into()),
         config.metrics_bind.as_deref().unwrap_or("disabled")
     );
+    if config.submit_candidates && config.key.is_none() {
+        eprintln!("--submit-candidates requires --key");
+        std::process::exit(2);
+    }
     if config.submit_support_votes && (config.worker_id.is_none() || config.key.is_none()) {
         eprintln!("--submit-support-votes requires --worker-id and --key");
         std::process::exit(2);
     }
-    let vote_pair = if config.submit_support_votes {
+    let signing_pair = if config.submit_candidates || config.submit_support_votes {
         match sr25519_pair_from_uri(config.key.as_deref().unwrap()) {
             Ok(pair) => Some(pair),
             Err(error) => {
@@ -187,7 +203,7 @@ fn main() {
             &metrics,
             recovery_db.as_ref(),
             &config,
-            vote_pair.as_ref(),
+            signing_pair.as_ref(),
         ) {
             eprintln!("minijam worker poll failed: {error:?}");
             std::process::exit(1);
@@ -202,7 +218,7 @@ fn main() {
             &metrics,
             recovery_db.as_ref(),
             &config,
-            vote_pair.as_ref(),
+            signing_pair.as_ref(),
         ) {
             eprintln!("minijam worker poll failed: {error:?}");
         }
@@ -214,18 +230,36 @@ fn poll_and_persist<C, F, D>(
     metrics: &WorkerMetrics,
     recovery_db: Option<&WorkerRecoveryDb>,
     config: &WorkerConfig,
-    vote_pair: Option<&sp_core::sr25519::Pair>,
+    signing_pair: Option<&sp_core::sr25519::Pair>,
 ) -> Result<(), minijam_worker::WorkerError>
 where
-    C: minijam_worker::WorkerChainSource + minijam_worker::WorkerTxSubmitter,
+    C: minijam_worker::WorkerChainSource
+        + minijam_worker::WorkerTxSubmitter
+        + minijam_worker::ProtocolStateSource
+        + minijam_worker::WorkerSignedTxContext,
     F: minijam_worker_engine::fetch::ContentFetcher,
     D: minijam_worker_engine::WorkBundleDecoder,
 {
-    let processed = block_on(runner.poll_once_with_metrics(metrics))?;
+    let submitted_candidates = if config.submit_candidates {
+        block_on(runner.submit_candidate_reports(
+            signing_pair.expect("signing pair is checked before polling"),
+            config.chain_id,
+            config.core_index,
+            Some(metrics),
+        ))?
+        .len()
+    } else {
+        0
+    };
+    let processed = if config.submit_candidates {
+        0
+    } else {
+        block_on(runner.poll_once_with_metrics(metrics))?
+    };
     let submitted_votes = if config.submit_support_votes {
         block_on(runner.submit_support_votes(
             config.worker_id.unwrap(),
-            vote_pair.expect("vote pair is checked before polling"),
+            signing_pair.expect("signing pair is checked before polling"),
             config.chain_id,
             Some(metrics),
         ))?
@@ -238,8 +272,8 @@ where
             .map_err(|error| minijam_worker::WorkerError::Chain(error.to_string()))?;
     }
     eprintln!(
-        "minijam worker poll completed processed={} vote_tasks_or_submitted={}",
-        processed, submitted_votes
+        "minijam worker poll completed processed={} submitted_candidates={} vote_tasks_or_submitted={}",
+        processed, submitted_candidates, submitted_votes
     );
     Ok(())
 }

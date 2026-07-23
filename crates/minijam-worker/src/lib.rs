@@ -38,7 +38,8 @@ use minijam_worker_engine::{
 use parity_scale_codec::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sp_core::{sr25519, Pair};
+use sp_core::{sr25519, Pair, H256};
+use sp_runtime::{generic::Era, traits::IdentifyAccount, MultiSigner};
 use std::sync::Mutex;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +48,8 @@ pub struct WorkerConfig {
     pub key: Option<String>,
     pub worker_id: Option<WorkerId>,
     pub chain_id: Hash,
+    pub core_index: u16,
+    pub submit_candidates: bool,
     pub submit_support_votes: bool,
     pub poll_interval: Duration,
     pub recovery_db_path: Option<PathBuf>,
@@ -63,6 +66,8 @@ impl Default for WorkerConfig {
             key: None,
             worker_id: None,
             chain_id: [77; 32],
+            core_index: 0,
+            submit_candidates: false,
             submit_support_votes: false,
             poll_interval: Duration::from_millis(1_000),
             recovery_db_path: None,
@@ -152,6 +157,12 @@ impl WorkerConfigFile {
             if let Some(worker_id) = worker.worker_id {
                 config.worker_id = Some(worker_id);
             }
+            if let Some(core_index) = worker.core_index {
+                config.core_index = core_index;
+            }
+            if let Some(submit_candidates) = worker.submit_candidates {
+                config.submit_candidates = submit_candidates;
+            }
             if let Some(submit_support_votes) = worker.submit_support_votes {
                 config.submit_support_votes = submit_support_votes;
             }
@@ -190,6 +201,8 @@ struct NodeConfigFile {
 struct WorkerSectionConfigFile {
     key: Option<String>,
     worker_id: Option<WorkerId>,
+    core_index: Option<u16>,
+    submit_candidates: Option<bool>,
     submit_support_votes: Option<bool>,
     poll_interval_ms: Option<u64>,
     recovery_db_path: Option<PathBuf>,
@@ -239,6 +252,13 @@ pub struct PreparedVoteSubmission {
 pub struct PreparedCandidateSubmission {
     pub envelope: ReportEnvelopeV1,
     pub exported_segment_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedSignedCandidateSubmission {
+    pub envelope: ReportEnvelopeV1,
+    pub nonce: minijam_runtime::Nonce,
+    pub extrinsic_hex: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -418,6 +438,12 @@ pub trait ProtocolStateSource {
     fn protocol_state_value(&self, key: [u8; 31]) -> Result<Option<Vec<u8>>, WorkerError>;
 }
 
+pub trait WorkerSignedTxContext {
+    fn account_nonce(&self, account: [u8; 32]) -> Result<minijam_runtime::Nonce, WorkerError>;
+
+    fn genesis_hash(&self) -> Result<Hash, WorkerError>;
+}
+
 impl ProtocolStateSource for BlockingHttpWorkerChainSource {
     fn protocol_state_value(&self, key: [u8; 31]) -> Result<Option<Vec<u8>>, WorkerError> {
         let response = http_post_json(
@@ -440,6 +466,42 @@ impl ProtocolStateSource for BlockingHttpWorkerChainSource {
                 WorkerError::Chain(format!("invalid protocol state value: {error}"))
             })?;
         Ok(Some(value.into_inner()))
+    }
+}
+
+impl WorkerSignedTxContext for BlockingHttpWorkerChainSource {
+    fn account_nonce(&self, account: [u8; 32]) -> Result<minijam_runtime::Nonce, WorkerError> {
+        let response = http_post_json(
+            &self.rpc_url,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "system_accountNextIndex",
+                "params": [hex_encode(&account)],
+            })
+            .to_string(),
+        )
+        .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        json_rpc_u32_result(&response)
+    }
+
+    fn genesis_hash(&self) -> Result<Hash, WorkerError> {
+        let response = http_post_json(
+            &self.rpc_url,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "chain_getBlockHash",
+                "params": [0],
+            })
+            .to_string(),
+        )
+        .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        let encoded = json_rpc_string_result(&response)?;
+        let bytes = decode_hex(&encoded)?;
+        bytes.try_into().map_err(|_| {
+            WorkerError::Chain("chain_getBlockHash(0) returned a non-32-byte hash".into())
+        })
     }
 }
 
@@ -766,6 +828,63 @@ where
     })
 }
 
+pub fn prepare_signed_candidate_submission(
+    pair: &sr25519::Pair,
+    nonce: minijam_runtime::Nonce,
+    genesis_hash: Hash,
+    envelope: ReportEnvelopeV1,
+) -> PreparedSignedCandidateSubmission {
+    let call = minijam_runtime::RuntimeCall::MiniJam(pallet_minijam::Call::submit_candidate {
+        envelope: Box::new(envelope.clone()),
+    });
+    let tx_ext = signed_tx_extension(nonce);
+    let genesis_hash = H256::from(genesis_hash);
+    let raw_payload = minijam_runtime::SignedPayload::from_raw(
+        call.clone(),
+        tx_ext.clone(),
+        (
+            (),
+            (),
+            minijam_runtime::VERSION.spec_version,
+            minijam_runtime::VERSION.transaction_version,
+            genesis_hash,
+            genesis_hash,
+            (),
+            (),
+            (),
+            (),
+        ),
+    );
+    let signature = raw_payload.using_encoded(|payload| pair.sign(payload));
+    let signer = MultiSigner::Sr25519(pair.public()).into_account();
+    let extrinsic = minijam_runtime::UncheckedExtrinsic::new_signed(
+        call,
+        minijam_runtime::Address::Id(signer),
+        minijam_runtime::Signature::Sr25519(signature),
+        tx_ext,
+    );
+    PreparedSignedCandidateSubmission {
+        envelope,
+        nonce,
+        extrinsic_hex: hex_encode(&extrinsic.encode()),
+    }
+}
+
+fn signed_tx_extension(nonce: minijam_runtime::Nonce) -> minijam_runtime::TxExtension {
+    (
+        frame_system::AuthorizeCall::<minijam_runtime::Runtime>::new(),
+        frame_system::CheckNonZeroSender::<minijam_runtime::Runtime>::new(),
+        frame_system::CheckSpecVersion::<minijam_runtime::Runtime>::new(),
+        frame_system::CheckTxVersion::<minijam_runtime::Runtime>::new(),
+        frame_system::CheckGenesis::<minijam_runtime::Runtime>::new(),
+        frame_system::CheckEra::<minijam_runtime::Runtime>::from(Era::Immortal),
+        frame_system::CheckNonce::<minijam_runtime::Runtime>::from(nonce),
+        frame_system::CheckWeight::<minijam_runtime::Runtime>::new(),
+        pallet_transaction_payment::ChargeTransactionPayment::<minijam_runtime::Runtime>::from(0),
+        frame_system::WeightReclaim::<minijam_runtime::Runtime>::new(),
+    )
+}
+
 fn json_rpc_string_result(response: &str) -> Result<String, WorkerError> {
     let value: Value = serde_json::from_str(response)
         .map_err(|error| WorkerError::Chain(format!("invalid JSON-RPC response: {error}")))?;
@@ -779,6 +898,27 @@ fn json_rpc_string_result(response: &str) -> Result<String, WorkerError> {
         .ok_or_else(|| {
             WorkerError::Chain("JSON-RPC response did not contain a string result".into())
         })
+}
+
+fn json_rpc_u32_result(response: &str) -> Result<u32, WorkerError> {
+    let value: Value = serde_json::from_str(response)
+        .map_err(|error| WorkerError::Chain(format!("invalid JSON-RPC response: {error}")))?;
+    if let Some(error) = value.get("error") {
+        return Err(WorkerError::Chain(format!("JSON-RPC error: {error}")));
+    }
+    if let Some(number) = value.get("result").and_then(Value::as_u64) {
+        return number
+            .try_into()
+            .map_err(|_| WorkerError::Chain("JSON-RPC u32 result is out of range".into()));
+    }
+    if let Some(text) = value.get("result").and_then(Value::as_str) {
+        return text
+            .parse::<u32>()
+            .map_err(|error| WorkerError::Chain(format!("invalid JSON-RPC u32 result: {error}")));
+    }
+    Err(WorkerError::Chain(
+        "JSON-RPC response did not contain a u32 result".into(),
+    ))
 }
 
 fn json_rpc_optional_string_result(response: &str) -> Result<Option<String>, WorkerError> {
@@ -1253,6 +1393,54 @@ where
     }
 }
 
+impl<C, F, D> WorkerRunner<C, F, D>
+where
+    C: WorkerChainSource + WorkerTxSubmitter + ProtocolStateSource + WorkerSignedTxContext,
+    F: ContentFetcher,
+    D: WorkBundleDecoder,
+{
+    pub async fn submit_candidate_reports(
+        &self,
+        pair: &sr25519::Pair,
+        chain_id: Hash,
+        core_index: u16,
+        metrics: Option<&WorkerMetrics>,
+    ) -> Result<Vec<Hash>, WorkerError> {
+        let tasks = self.chain.pending_work_tasks().await?;
+        let mut nonce = self.chain.account_nonce(pair.public().0)?;
+        let genesis_hash = self.chain.genesis_hash()?;
+        let mut tx_hashes = Vec::new();
+        for task in tasks {
+            let bundle =
+                fetch_verified_content(&self.fetcher, &task.bundle_ref, self.max_bundle_bytes)
+                    .await
+                    .map_err(WorkerError::Fetch)?;
+            verify_work_bundle(
+                &task.bundle_ref,
+                &bundle,
+                self.max_bundle_bytes,
+                task.package_hash,
+                &self.decoder,
+            )
+            .map_err(WorkerError::Bundle)?;
+            let candidate =
+                prepare_candidate_envelope(&self.chain, chain_id, core_index, &task, &bundle)?;
+            let submission =
+                prepare_signed_candidate_submission(pair, nonce, genesis_hash, candidate.envelope);
+            tx_hashes.push(
+                self.chain
+                    .submit_raw_extrinsic(&submission.extrinsic_hex)
+                    .await?,
+            );
+            if let Some(metrics) = metrics {
+                metrics.record_bundle_ready();
+            }
+            nonce = nonce.saturating_add(1);
+        }
+        Ok(tx_hashes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1296,6 +1484,8 @@ mod tests {
             [worker]
             key = "//Alice"
             worker_id = 7
+            core_index = 2
+            submit_candidates = true
             submit_support_votes = true
             poll_interval_ms = 250
             recovery_db_path = "/var/lib/minijam/worker-state.toml"
@@ -1314,6 +1504,8 @@ mod tests {
         assert_eq!(config.rpc_url, "ws://node.example:9944");
         assert_eq!(config.key, Some("//Alice".into()));
         assert_eq!(config.worker_id, Some(7));
+        assert_eq!(config.core_index, 2);
+        assert!(config.submit_candidates);
         assert!(config.submit_support_votes);
         assert_eq!(config.poll_interval, Duration::from_millis(250));
         assert_eq!(
@@ -1385,6 +1577,12 @@ mod tests {
         submitted: Arc<Mutex<Vec<String>>>,
     }
 
+    #[derive(Clone)]
+    struct TestCandidateSubmitChainSource {
+        tasks: Vec<WorkTask>,
+        submitted: Arc<Mutex<Vec<String>>>,
+    }
+
     #[async_trait::async_trait]
     impl WorkerChainSource for TestVoteSubmitChainSource {
         async fn pending_work_tasks(&self) -> Result<Vec<WorkTask>, WorkerError> {
@@ -1404,6 +1602,40 @@ mod tests {
                 .unwrap()
                 .push(extrinsic_hex.to_string());
             Ok([7u8; 32])
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkerChainSource for TestCandidateSubmitChainSource {
+        async fn pending_work_tasks(&self) -> Result<Vec<WorkTask>, WorkerError> {
+            Ok(self.tasks.clone())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkerTxSubmitter for TestCandidateSubmitChainSource {
+        async fn submit_raw_extrinsic(&self, extrinsic_hex: &str) -> Result<Hash, WorkerError> {
+            self.submitted
+                .lock()
+                .unwrap()
+                .push(extrinsic_hex.to_string());
+            Ok([8u8; 32])
+        }
+    }
+
+    impl ProtocolStateSource for TestCandidateSubmitChainSource {
+        fn protocol_state_value(&self, _key: [u8; 31]) -> Result<Option<Vec<u8>>, WorkerError> {
+            Ok(None)
+        }
+    }
+
+    impl WorkerSignedTxContext for TestCandidateSubmitChainSource {
+        fn account_nonce(&self, _account: [u8; 32]) -> Result<minijam_runtime::Nonce, WorkerError> {
+            Ok(3)
+        }
+
+        fn genesis_hash(&self) -> Result<Hash, WorkerError> {
+            Ok([9u8; 32])
         }
     }
 
@@ -1747,6 +1979,49 @@ mod tests {
             package_hash
         );
         assert_eq!(prepared.exported_segment_count, 0);
+    }
+
+    #[test]
+    fn prepares_signed_candidate_submission() {
+        let (bundle, package_hash) = refine_bundle(9);
+        let task = refine_task(77, 2, package_hash, &bundle);
+        let prepared =
+            prepare_candidate_envelope(&EmptyProtocolStateSource, [42u8; 32], 0, &task, &bundle)
+                .unwrap();
+        let pair = sr25519::Pair::from_seed(&[1u8; 32]);
+
+        let signed =
+            prepare_signed_candidate_submission(&pair, 3, [9u8; 32], prepared.envelope.clone());
+
+        assert_eq!(signed.envelope, prepared.envelope);
+        assert_eq!(signed.nonce, 3);
+        assert!(signed.extrinsic_hex.starts_with("0x"));
+        assert!(signed.extrinsic_hex.len() > prepared.envelope.canonical_report.len() * 2);
+    }
+
+    #[test]
+    fn runner_submits_candidate_reports_from_jambda_refine() {
+        let (bundle, package_hash) = refine_bundle(10);
+        let task = refine_task(88, 0, package_hash, &bundle);
+        let submitted = Arc::new(Mutex::new(Vec::new()));
+        let chain = TestCandidateSubmitChainSource {
+            tasks: vec![task.clone()],
+            submitted: Arc::clone(&submitted),
+        };
+        let fetcher = MemoryContentFetcher::new().with_content(&task.bundle_ref, bundle);
+        let runner = WorkerRunner::stage0(chain, fetcher, 1024);
+        let metrics = WorkerMetrics::new();
+        let pair = sr25519::Pair::from_seed(&[1u8; 32]);
+
+        let hashes =
+            block_on(runner.submit_candidate_reports(&pair, [42u8; 32], 0, Some(&metrics)))
+                .unwrap();
+
+        assert_eq!(hashes, vec![[8u8; 32]]);
+        assert_eq!(submitted.lock().unwrap().len(), 1);
+        assert!(metrics
+            .render_prometheus()
+            .contains("minijam_worker_bundle_ready_total 1"));
     }
 
     fn hex_encode_for_test(bytes: &[u8]) -> String {
