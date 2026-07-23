@@ -158,6 +158,34 @@ pub mod pallet {
         pub op: SystemOpV1,
     }
 
+    #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    pub enum ExecutionErrorCode {
+        OutOfGas,
+        Trap,
+        ServiceFailure,
+    }
+
+    impl From<ExecutionOutcome> for ExecutionErrorCode {
+        fn from(outcome: ExecutionOutcome) -> Self {
+            match outcome {
+                ExecutionOutcome::OutOfGas => Self::OutOfGas,
+                ExecutionOutcome::Trap => Self::Trap,
+                ExecutionOutcome::ServiceFailure => Self::ServiceFailure,
+            }
+        }
+    }
+
+    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    #[scale_info(skip_type_params(T))]
+    pub struct QuarantinedSystemOp<T: Config> {
+        pub submitter: T::AccountId,
+        pub op: SystemOpV1,
+        pub canonical_hash: Hash,
+        pub error_code: ExecutionErrorCode,
+        pub block_number: BlockNumberFor<T>,
+        pub retryable: bool,
+    }
+
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct BlockStfSummary {
         report_count: u32,
@@ -318,7 +346,7 @@ pub mod pallet {
 
     #[pallet::storage]
     pub type QuarantinedSystemOps<T: Config> =
-        StorageValue<_, BoundedVec<PendingSystemOp<T>, T::MaxPendingSystemOps>, ValueQuery>;
+        StorageValue<_, BoundedVec<QuarantinedSystemOp<T>, T::MaxPendingSystemOps>, ValueQuery>;
 
     #[pallet::storage]
     pub type PendingSystemOpKeys<T: Config> =
@@ -862,6 +890,10 @@ pub mod pallet {
                 }
             });
             let retry = retry.ok_or(Error::<T>::QuarantinedSystemOpNotFound)?;
+            let retry = PendingSystemOp::<T> {
+                submitter: retry.submitter,
+                op: retry.op,
+            };
 
             PendingSystemOps::<T>::try_mutate(|pending| {
                 pending
@@ -943,8 +975,8 @@ pub mod pallet {
             PendingSystemOps::<T>::get()
         }
 
-        pub fn get_quarantined_system_ops() -> BoundedVec<PendingSystemOp<T>, T::MaxPendingSystemOps>
-        {
+        pub fn get_quarantined_system_ops(
+        ) -> BoundedVec<QuarantinedSystemOp<T>, T::MaxPendingSystemOps> {
             QuarantinedSystemOps::<T>::get()
         }
 
@@ -1372,7 +1404,16 @@ pub mod pallet {
                     request_id: pending.op.request_id,
                     outcome: outcome.clone(),
                 });
-                if quarantined.try_push(pending).is_err() {
+                let canonical_hash = blake2_256(&pending.op.encode());
+                let record = QuarantinedSystemOp::<T> {
+                    submitter: pending.submitter,
+                    op: pending.op,
+                    canonical_hash,
+                    error_code: outcome.clone().into(),
+                    block_number: frame_system::Pallet::<T>::block_number(),
+                    retryable: true,
+                };
+                if quarantined.try_push(record).is_err() {
                     overflowed = true;
                 }
             }

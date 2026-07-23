@@ -1168,6 +1168,16 @@ fn system_op_execution_failure_is_quarantined_without_panic() {
         let quarantined = pallet_minijam::QuarantinedSystemOps::<Test>::get();
         assert_eq!(quarantined.len(), 1);
         assert_eq!(quarantined[0].op.request_id, request_id);
+        assert_eq!(
+            quarantined[0].canonical_hash,
+            blake2_256(&quarantined[0].op.encode())
+        );
+        assert_eq!(
+            quarantined[0].error_code,
+            pallet_minijam::ExecutionErrorCode::ServiceFailure
+        );
+        assert_eq!(quarantined[0].block_number, 100);
+        assert!(quarantined[0].retryable);
         assert!(pallet_minijam::LastExecutionReceipt::<Test>::get().is_none());
 
         <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(101);
