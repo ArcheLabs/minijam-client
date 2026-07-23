@@ -212,6 +212,7 @@ pub enum WorkerError {
 pub struct WorkerMetrics {
     polls_total: AtomicU64,
     tasks_processed_total: AtomicU64,
+    vote_tasks_seen_total: AtomicU64,
     bundle_ready_total: AtomicU64,
     bundle_rejected_total: AtomicU64,
 }
@@ -231,6 +232,11 @@ impl WorkerMetrics {
         self.bundle_ready_total.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn record_vote_tasks_seen(&self, count: usize) {
+        self.vote_tasks_seen_total
+            .fetch_add(count as u64, Ordering::Relaxed);
+    }
+
     pub fn record_bundle_rejected(&self) {
         self.bundle_rejected_total.fetch_add(1, Ordering::Relaxed);
     }
@@ -244,6 +250,9 @@ impl WorkerMetrics {
                 "# HELP minijam_worker_tasks_processed_total Worker tasks processed by polling.\n",
                 "# TYPE minijam_worker_tasks_processed_total counter\n",
                 "minijam_worker_tasks_processed_total {}\n",
+                "# HELP minijam_worker_vote_tasks_seen_total Open vote tasks observed by polling.\n",
+                "# TYPE minijam_worker_vote_tasks_seen_total counter\n",
+                "minijam_worker_vote_tasks_seen_total {}\n",
                 "# HELP minijam_worker_bundle_ready_total Bundles fetched and verified successfully.\n",
                 "# TYPE minijam_worker_bundle_ready_total counter\n",
                 "minijam_worker_bundle_ready_total {}\n",
@@ -253,6 +262,7 @@ impl WorkerMetrics {
             ),
             self.polls_total.load(Ordering::Relaxed),
             self.tasks_processed_total.load(Ordering::Relaxed),
+            self.vote_tasks_seen_total.load(Ordering::Relaxed),
             self.bundle_ready_total.load(Ordering::Relaxed),
             self.bundle_rejected_total.load(Ordering::Relaxed)
         )
@@ -808,6 +818,15 @@ where
         Ok(processed)
     }
 
+    pub async fn poll_open_vote_tasks_with_metrics(
+        &self,
+        metrics: &WorkerMetrics,
+    ) -> Result<Vec<VoteTask>, WorkerError> {
+        let tasks = self.chain.open_vote_tasks().await?;
+        metrics.record_vote_tasks_seen(tasks.len());
+        Ok(tasks)
+    }
+
     async fn prepare_bundle(&self, task: &WorkTask) -> Result<usize, WorkerError> {
         let bundle = fetch_verified_content(&self.fetcher, &task.bundle_ref, self.max_bundle_bytes)
             .await
@@ -915,6 +934,21 @@ mod tests {
         }
     }
 
+    struct TestVoteChainSource {
+        vote_tasks: Vec<VoteTask>,
+    }
+
+    #[async_trait::async_trait]
+    impl WorkerChainSource for TestVoteChainSource {
+        async fn pending_work_tasks(&self) -> Result<Vec<WorkTask>, WorkerError> {
+            Ok(Vec::new())
+        }
+
+        async fn open_vote_tasks(&self) -> Result<Vec<VoteTask>, WorkerError> {
+            Ok(self.vote_tasks.clone())
+        }
+    }
+
     fn task(work_id: WorkId, round: u8, package_hash: Hash, bundle: &[u8]) -> WorkTask {
         WorkTask {
             work_id,
@@ -1000,6 +1034,33 @@ mod tests {
         assert!(rendered.contains("minijam_worker_tasks_processed_total 2"));
         assert!(rendered.contains("minijam_worker_bundle_ready_total 1"));
         assert!(rendered.contains("minijam_worker_bundle_rejected_total 1"));
+    }
+
+    #[test]
+    fn runner_records_open_vote_task_metrics() {
+        let runner = WorkerRunner::stage0(
+            TestVoteChainSource {
+                vote_tasks: vec![VoteTask {
+                    work_id: 42,
+                    round: 1,
+                    assignment_epoch: 7,
+                    candidate_report_hash: [9u8; 32],
+                    deadline: 100,
+                    assigned_workers: vec![0, 1, 2],
+                    submitted_votes: vec![1],
+                }],
+            },
+            MemoryContentFetcher::new(),
+            64,
+        );
+        let metrics = WorkerMetrics::new();
+
+        let tasks = block_on(runner.poll_open_vote_tasks_with_metrics(&metrics)).unwrap();
+
+        assert_eq!(tasks.len(), 1);
+        assert!(metrics
+            .render_prometheus()
+            .contains("minijam_worker_vote_tasks_seen_total 1"));
     }
 
     #[test]

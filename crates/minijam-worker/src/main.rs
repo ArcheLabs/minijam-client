@@ -181,10 +181,15 @@ where
     D: minijam_worker_engine::WorkBundleDecoder,
 {
     let processed = block_on(runner.poll_once_with_metrics(metrics))?;
+    let vote_tasks = block_on(runner.poll_open_vote_tasks_with_metrics(metrics))?;
     if let Some(db) = recovery_db {
         db.save_statuses(runner.statuses())
             .map_err(|error| minijam_worker::WorkerError::Chain(error.to_string()))?;
     }
-    eprintln!("minijam worker poll completed processed={processed}");
+    eprintln!(
+        "minijam worker poll completed processed={} open_vote_tasks={}",
+        processed,
+        vote_tasks.len()
+    );
     Ok(())
 }
