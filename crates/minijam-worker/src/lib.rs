@@ -3,7 +3,14 @@
 use core::time::Duration;
 use std::{
     collections::BTreeMap,
+    io::{Read, Write},
+    net::TcpListener,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    thread,
 };
 
 use minijam_protocol::{ContentRef, Hash, WorkId};
@@ -20,6 +27,7 @@ pub struct WorkerConfig {
     pub key: Option<String>,
     pub poll_interval: Duration,
     pub recovery_db_path: Option<PathBuf>,
+    pub metrics_bind: Option<String>,
     pub ipfs_gateway: String,
     pub request_timeout: Duration,
     pub max_bundle_bytes: u64,
@@ -32,6 +40,7 @@ impl Default for WorkerConfig {
             key: None,
             poll_interval: Duration::from_millis(1_000),
             recovery_db_path: None,
+            metrics_bind: None,
             ipfs_gateway: "http://127.0.0.1:8080".into(),
             request_timeout: Duration::from_secs(30),
             max_bundle_bytes: 16_777_216,
@@ -95,6 +104,7 @@ impl std::error::Error for ConfigFileError {}
 struct WorkerConfigFile {
     node: Option<NodeConfigFile>,
     worker: Option<WorkerSectionConfigFile>,
+    metrics: Option<MetricsConfigFile>,
     content: Option<ContentConfigFile>,
 }
 
@@ -118,6 +128,11 @@ impl WorkerConfigFile {
             }
             if let Some(recovery_db_path) = worker.recovery_db_path {
                 config.recovery_db_path = Some(recovery_db_path);
+            }
+        }
+        if let Some(metrics) = self.metrics {
+            if let Some(bind) = metrics.bind {
+                config.metrics_bind = Some(bind);
             }
         }
         if let Some(content) = self.content {
@@ -147,6 +162,11 @@ struct WorkerSectionConfigFile {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+struct MetricsConfigFile {
+    bind: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 struct ContentConfigFile {
     ipfs_gateway: Option<String>,
     request_timeout_secs: Option<u64>,
@@ -173,6 +193,81 @@ pub enum WorkerError {
     Chain(String),
     Fetch(FetchError),
     Bundle(WorkBundleVerificationError),
+}
+
+#[derive(Debug, Default)]
+pub struct WorkerMetrics {
+    polls_total: AtomicU64,
+    tasks_processed_total: AtomicU64,
+    bundle_ready_total: AtomicU64,
+    bundle_rejected_total: AtomicU64,
+}
+
+impl WorkerMetrics {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record_poll(&self, processed: usize) {
+        self.polls_total.fetch_add(1, Ordering::Relaxed);
+        self.tasks_processed_total
+            .fetch_add(processed as u64, Ordering::Relaxed);
+    }
+
+    pub fn record_bundle_ready(&self) {
+        self.bundle_ready_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_bundle_rejected(&self) {
+        self.bundle_rejected_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn render_prometheus(&self) -> String {
+        format!(
+            concat!(
+                "# HELP minijam_worker_polls_total Worker poll iterations completed.\n",
+                "# TYPE minijam_worker_polls_total counter\n",
+                "minijam_worker_polls_total {}\n",
+                "# HELP minijam_worker_tasks_processed_total Worker tasks processed by polling.\n",
+                "# TYPE minijam_worker_tasks_processed_total counter\n",
+                "minijam_worker_tasks_processed_total {}\n",
+                "# HELP minijam_worker_bundle_ready_total Bundles fetched and verified successfully.\n",
+                "# TYPE minijam_worker_bundle_ready_total counter\n",
+                "minijam_worker_bundle_ready_total {}\n",
+                "# HELP minijam_worker_bundle_rejected_total Bundles rejected during fetch or verification.\n",
+                "# TYPE minijam_worker_bundle_rejected_total counter\n",
+                "minijam_worker_bundle_rejected_total {}\n"
+            ),
+            self.polls_total.load(Ordering::Relaxed),
+            self.tasks_processed_total.load(Ordering::Relaxed),
+            self.bundle_ready_total.load(Ordering::Relaxed),
+            self.bundle_rejected_total.load(Ordering::Relaxed)
+        )
+    }
+}
+
+pub fn spawn_prometheus_metrics_server(
+    bind: &str,
+    metrics: Arc<WorkerMetrics>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    let listener = TcpListener::bind(bind)?;
+    let handle = thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            let body = metrics.render_prometheus();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/plain; version=0.0.4\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    Ok(handle)
 }
 
 #[derive(Debug)]
@@ -447,6 +542,20 @@ where
     D: WorkBundleDecoder,
 {
     pub async fn poll_once(&mut self) -> Result<usize, WorkerError> {
+        self.poll_once_inner(None).await
+    }
+
+    pub async fn poll_once_with_metrics(
+        &mut self,
+        metrics: &WorkerMetrics,
+    ) -> Result<usize, WorkerError> {
+        self.poll_once_inner(Some(metrics)).await
+    }
+
+    async fn poll_once_inner(
+        &mut self,
+        metrics: Option<&WorkerMetrics>,
+    ) -> Result<usize, WorkerError> {
         let tasks = self.chain.pending_work_tasks().await?;
         let mut processed = 0usize;
         for task in tasks {
@@ -459,11 +568,24 @@ where
             }
 
             let status = match self.prepare_bundle(&task).await {
-                Ok(bundle_len) => WorkerTaskStatus::BundleReady { bundle_len },
-                Err(error) => WorkerTaskStatus::BundleRejected { reason: error },
+                Ok(bundle_len) => {
+                    if let Some(metrics) = metrics {
+                        metrics.record_bundle_ready();
+                    }
+                    WorkerTaskStatus::BundleReady { bundle_len }
+                }
+                Err(error) => {
+                    if let Some(metrics) = metrics {
+                        metrics.record_bundle_rejected();
+                    }
+                    WorkerTaskStatus::BundleRejected { reason: error }
+                }
             };
             self.statuses.insert(key, status);
             processed = processed.saturating_add(1);
+        }
+        if let Some(metrics) = metrics {
+            metrics.record_poll(processed);
         }
         Ok(processed)
     }
@@ -532,6 +654,9 @@ mod tests {
             poll_interval_ms = 250
             recovery_db_path = "/var/lib/minijam/worker-state.toml"
 
+            [metrics]
+            bind = "127.0.0.1:9616"
+
             [content]
             ipfs_gateway = "http://127.0.0.1:8080/ipfs"
             request_timeout_secs = 15
@@ -547,6 +672,7 @@ mod tests {
             config.recovery_db_path,
             Some(PathBuf::from("/var/lib/minijam/worker-state.toml"))
         );
+        assert_eq!(config.metrics_bind, Some("127.0.0.1:9616".into()));
         assert_eq!(config.ipfs_gateway, "http://127.0.0.1:8080/ipfs");
         assert_eq!(config.request_timeout, Duration::from_secs(15));
         assert_eq!(config.max_bundle_bytes, 4096);
@@ -621,6 +747,52 @@ mod tests {
             })
         );
         assert_eq!(block_on(runner.poll_once()).unwrap(), 0);
+    }
+
+    #[test]
+    fn metrics_render_prometheus_counters() {
+        let metrics = WorkerMetrics::new();
+        metrics.record_poll(2);
+        metrics.record_bundle_ready();
+        metrics.record_bundle_rejected();
+
+        let rendered = metrics.render_prometheus();
+
+        assert!(rendered.contains("minijam_worker_polls_total 1"));
+        assert!(rendered.contains("minijam_worker_tasks_processed_total 2"));
+        assert!(rendered.contains("minijam_worker_bundle_ready_total 1"));
+        assert!(rendered.contains("minijam_worker_bundle_rejected_total 1"));
+    }
+
+    #[test]
+    fn runner_records_metrics_for_bundle_outcomes() {
+        let package_hash = [7u8; 32];
+        let good_bundle = MiniJamWorkBundleV1::new(package_hash).encode();
+        let bad_bundle = MiniJamWorkBundleV1::new([8u8; 32]).encode();
+        let good_task = task(10, 0, package_hash, &good_bundle);
+        let bad_task = task(11, 0, package_hash, &bad_bundle);
+        let fetcher = MemoryContentFetcher::new()
+            .with_content(&good_task.bundle_ref, good_bundle)
+            .with_content(&bad_task.bundle_ref, bad_bundle);
+        let mut runner = WorkerRunner::stage0(
+            TestChainSource {
+                tasks: vec![good_task, bad_task],
+            },
+            fetcher,
+            64,
+        );
+        let metrics = WorkerMetrics::new();
+
+        assert_eq!(
+            block_on(runner.poll_once_with_metrics(&metrics)).unwrap(),
+            2
+        );
+
+        let rendered = metrics.render_prometheus();
+        assert!(rendered.contains("minijam_worker_polls_total 1"));
+        assert!(rendered.contains("minijam_worker_tasks_processed_total 2"));
+        assert!(rendered.contains("minijam_worker_bundle_ready_total 1"));
+        assert!(rendered.contains("minijam_worker_bundle_rejected_total 1"));
     }
 
     #[test]

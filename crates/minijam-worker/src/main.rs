@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{path::PathBuf, thread, time::Duration};
+use std::{path::PathBuf, sync::Arc, thread, time::Duration};
 
 use clap::Parser;
-use minijam_worker::{WorkerConfig, WorkerRecoveryDb};
+use minijam_worker::{
+    spawn_prometheus_metrics_server, WorkerConfig, WorkerMetrics, WorkerRecoveryDb,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "minijam-worker")]
@@ -23,6 +25,9 @@ struct Cli {
 
     #[arg(long)]
     state_db: Option<PathBuf>,
+
+    #[arg(long)]
+    metrics_bind: Option<String>,
 
     #[arg(long)]
     ipfs_gateway: Option<String>,
@@ -59,6 +64,9 @@ fn build_config(cli: &Cli) -> Result<WorkerConfig, String> {
     if let Some(state_db) = &cli.state_db {
         config.recovery_db_path = Some(state_db.clone());
     }
+    if let Some(metrics_bind) = &cli.metrics_bind {
+        config.metrics_bind = Some(metrics_bind.clone());
+    }
     if let Some(ipfs_gateway) = &cli.ipfs_gateway {
         config.ipfs_gateway = ipfs_gateway.clone();
     }
@@ -87,7 +95,7 @@ fn main() {
     }
 
     eprintln!(
-        "minijam worker configured rpc={} ipfs_gateway={} poll_ms={} max_bundle_bytes={} state_db={}",
+        "minijam worker configured rpc={} ipfs_gateway={} poll_ms={} max_bundle_bytes={} state_db={} metrics={}",
         config.rpc_url,
         config.ipfs_gateway,
         config.poll_interval.as_millis(),
@@ -96,8 +104,17 @@ fn main() {
             .recovery_db_path
             .as_ref()
             .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "disabled".into())
+            .unwrap_or_else(|| "disabled".into()),
+        config.metrics_bind.as_deref().unwrap_or("disabled")
     );
+    let metrics = Arc::new(WorkerMetrics::new());
+    if let Some(bind) = &config.metrics_bind {
+        if let Err(error) = spawn_prometheus_metrics_server(bind, Arc::clone(&metrics)) {
+            eprintln!("failed to start worker metrics endpoint at {bind}: {error}");
+            std::process::exit(2);
+        }
+        eprintln!("minijam worker metrics listening on {bind}");
+    }
     if let Some(path) = &config.recovery_db_path {
         match WorkerRecoveryDb::new(path).load_statuses() {
             Ok(statuses) => {
@@ -120,6 +137,7 @@ fn main() {
 
     loop {
         thread::sleep(config.poll_interval);
+        metrics.record_poll(0);
         eprintln!("minijam worker polling is ready; chain RPC integration is pending");
     }
 }

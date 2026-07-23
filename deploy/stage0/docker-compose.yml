@@ -91,6 +91,8 @@ services:
       - worker-1-data:/data
     depends_on:
       - public-rpc
+    expose:
+      - "9616"
 
   worker-2:
     image: ${MINIJAM_WORKER_IMAGE:-ghcr.io/archelabs/minijam-worker:stage0}
@@ -101,6 +103,8 @@ services:
       - worker-2-data:/data
     depends_on:
       - public-rpc
+    expose:
+      - "9616"
 
   worker-3:
     image: ${MINIJAM_WORKER_IMAGE:-ghcr.io/archelabs/minijam-worker:stage0}
@@ -111,6 +115,8 @@ services:
       - worker-3-data:/data
     depends_on:
       - public-rpc
+    expose:
+      - "9616"
 
   prometheus:
     image: prom/prometheus:v2.55.1
