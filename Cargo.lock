@@ -5110,6 +5110,7 @@ dependencies = [
  "minijam-protocol",
  "minijam-worker-engine",
  "serde",
+ "tempfile",
  "toml 0.8.23",
 ]
 

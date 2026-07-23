@@ -3,6 +3,7 @@ rpc_url = "ws://public-rpc:9944"
 
 [worker]
 poll_interval_ms = 1000
+recovery_db_path = "/data/minijam-worker-1-state.toml"
 
 [content]
 ipfs_gateway = "http://ipfs-gateway:8080"

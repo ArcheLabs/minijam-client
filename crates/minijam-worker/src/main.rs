@@ -3,7 +3,7 @@
 use std::{path::PathBuf, thread, time::Duration};
 
 use clap::Parser;
-use minijam_worker::WorkerConfig;
+use minijam_worker::{WorkerConfig, WorkerRecoveryDb};
 
 #[derive(Debug, Parser)]
 #[command(name = "minijam-worker")]
@@ -20,6 +20,9 @@ struct Cli {
 
     #[arg(long)]
     poll_interval_ms: Option<u64>,
+
+    #[arg(long)]
+    state_db: Option<PathBuf>,
 
     #[arg(long)]
     ipfs_gateway: Option<String>,
@@ -53,6 +56,9 @@ fn build_config(cli: &Cli) -> Result<WorkerConfig, String> {
     if let Some(poll_interval_ms) = cli.poll_interval_ms {
         config.poll_interval = Duration::from_millis(poll_interval_ms);
     }
+    if let Some(state_db) = &cli.state_db {
+        config.recovery_db_path = Some(state_db.clone());
+    }
     if let Some(ipfs_gateway) = &cli.ipfs_gateway {
         config.ipfs_gateway = ipfs_gateway.clone();
     }
@@ -81,12 +87,32 @@ fn main() {
     }
 
     eprintln!(
-        "minijam worker configured rpc={} ipfs_gateway={} poll_ms={} max_bundle_bytes={}",
+        "minijam worker configured rpc={} ipfs_gateway={} poll_ms={} max_bundle_bytes={} state_db={}",
         config.rpc_url,
         config.ipfs_gateway,
         config.poll_interval.as_millis(),
-        config.max_bundle_bytes
+        config.max_bundle_bytes,
+        config
+            .recovery_db_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "disabled".into())
     );
+    if let Some(path) = &config.recovery_db_path {
+        match WorkerRecoveryDb::new(path).load_statuses() {
+            Ok(statuses) => {
+                eprintln!(
+                    "minijam worker recovery db loaded path={} statuses={}",
+                    path.display(),
+                    statuses.len()
+                );
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        }
+    }
 
     if once {
         return;

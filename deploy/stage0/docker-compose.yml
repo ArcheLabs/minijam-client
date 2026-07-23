@@ -88,6 +88,7 @@ services:
       - --config=/config/worker.toml
     volumes:
       - ./worker-1.toml:/config/worker.toml:ro
+      - worker-1-data:/data
     depends_on:
       - public-rpc
 
@@ -97,6 +98,7 @@ services:
       - --config=/config/worker.toml
     volumes:
       - ./worker-2.toml:/config/worker.toml:ro
+      - worker-2-data:/data
     depends_on:
       - public-rpc
 
@@ -106,6 +108,7 @@ services:
       - --config=/config/worker.toml
     volumes:
       - ./worker-3.toml:/config/worker.toml:ro
+      - worker-3-data:/data
     depends_on:
       - public-rpc
 
@@ -125,4 +128,7 @@ volumes:
   authority-2-data:
   authority-3-data:
   public-rpc-data:
+  worker-1-data:
+  worker-2-data:
+  worker-3-data:
   prometheus-data:
