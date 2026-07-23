@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `51f68504e8137dd86de07b8ee786f0982bd21455`
+- minijam-client current implementation commit: `954914420e7a555d70028cf709a7b7779864fbc7`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -77,9 +77,16 @@ Evidence:
 ## M5: Public Interfaces, CLI, Faucet
 
 - [x] Pallet view functions expose core work, fuel, preimage, system op, receipt, and protocol-state queries.
-- [ ] Stable Runtime API and custom read-only RPC methods.
+- [x] Stable `minijam-rpc-runtime-api` and node `minijam_*` read-only RPC methods expose work, candidate, fuel, preimage, system op, receipt, and protocol-state queries.
 - [ ] `minijam-cli` command suite.
 - [ ] Rate-limited test MINI faucet.
+
+Evidence:
+
+- `cargo check -p minijam-rpc-runtime-api`
+- `cargo check -p minijam-rpc-runtime-api --no-default-features`
+- `cargo check -p minijam-runtime`
+- `cargo check -p minijam-node`
 
 ## M6: Fixed Public Network Configuration
 
