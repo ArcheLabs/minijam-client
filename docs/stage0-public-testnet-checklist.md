@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `7168ea8add2a8477d1b6bcaa71c73a85588d98e5`
+- minijam-client current implementation commit: `51f68504e8137dd86de07b8ee786f0982bd21455`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -24,6 +24,7 @@ Evidence:
 - `cargo fmt --all -- --check`
 - `cargo check -p minijam-protocol -p minijam-jamcore-api -p minijam-worker-engine --no-default-features --target wasm32-unknown-unknown`
 - `cargo check -p minijam-runtime --no-default-features --target wasm32v1-none`
+- `bash -n scripts/export-stage0-chain-specs.sh`
 
 ## M1: Recoverable Runtime Execution
 
@@ -82,11 +83,18 @@ Evidence:
 
 ## M6: Fixed Public Network Configuration
 
-- [ ] `chain-specs/stage0.json`
-- [ ] `chain-specs/stage0-raw.json`
-- [ ] Non-development authority, worker, sudo, faucet, reward, and escrow public accounts.
+- [x] Runtime and node expose a `stage0` chain spec preset with fixed non-development authority, worker, sudo, faucet, reward, and escrow public accounts.
+- [x] Release artifact CI exports `stage0.json` and `stage0-raw.json` through `scripts/export-stage0-chain-specs.sh`.
+- [ ] Committed or published `chain-specs/stage0.json`
+- [ ] Committed or published `chain-specs/stage0-raw.json`
 - [ ] Deployment topology, Docker, systemd, compose, monitoring stack.
 - [ ] Public RPC safety profile and authority RPC isolation.
+
+Evidence:
+
+- `cargo test -p minijam-runtime genesis_config_presets`
+- `cargo check -p minijam-node`
+- `bash -n scripts/export-stage0-chain-specs.sh`
 
 ## M7: Cross-Process E2E
 
@@ -107,6 +115,6 @@ Evidence:
 
 - Service 0 is still a placeholder artifact and cannot satisfy the public testnet CreateService requirement.
 - Worker binary is not yet connected to chain RPC or transaction submission.
-- No fixed non-development public chain spec exists yet.
+- Fixed non-development stage0 preset exists, but generated chain-spec JSON files are not yet committed or published.
 - No faucet or custom public RPC exists yet.
 - Cross-process E2E and Canary evidence are missing.
