@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `37912d375d97eb189b4185e772cf1a4ad1cb8998`
+- minijam-client current implementation commit: `73824fcc087a23b377d0ff6a9c502e636bcc1c45`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -82,6 +82,9 @@ Evidence:
 - `cargo run -p minijam-worker -- --config deploy/stage0/worker-1.toml --state-db /tmp/minijam-worker-state-check.toml --once`
 - `cargo run -p minijam-worker -- --config deploy/stage0/worker-1.toml --state-db /tmp/minijam-worker-state-check.toml --metrics-bind 127.0.0.1:0 --once`
 - `cargo run -p minijam-worker -- --rpc-url http://127.0.0.1:19944 --state-db /tmp/minijam-worker-main-once.toml --ipfs-gateway http://127.0.0.1:18080 --once` with a local JSON-RPC stub returning no pending work
+- Open vote task discovery: `cargo test -p pallet-minijam-workers open_vote_tasks_project_assignment_and_submitted_votes`
+- Open vote task worker decoding: `cargo test -p minijam-worker decodes_open_vote_tasks_rpc_response`
+- `cargo check -p minijam-runtime -p minijam-node -p minijam-worker`
 
 ## M4: Real Service 0
 
