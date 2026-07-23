@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `98c579f750c06407a21f81cbde4ca34258ad2e7a`
+- minijam-client current implementation commit: `2f7c56ee73aa1e8ea3f4f490be901782baf88c8f`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -76,6 +76,7 @@ Evidence:
 - `cargo check -p minijam-protocol -p minijam-worker-engine --no-default-features --target wasm32-unknown-unknown`
 - `cargo run -p minijam-worker -- --config deploy/stage0/worker-1.toml --state-db /tmp/minijam-worker-state-check.toml --once`
 - `cargo run -p minijam-worker -- --config deploy/stage0/worker-1.toml --state-db /tmp/minijam-worker-state-check.toml --metrics-bind 127.0.0.1:0 --once`
+- `cargo run -p minijam-worker -- --rpc-url http://127.0.0.1:19944 --state-db /tmp/minijam-worker-main-once.toml --ipfs-gateway http://127.0.0.1:18080 --once` with a local JSON-RPC stub returning no pending work
 
 ## M4: Real Service 0
 
@@ -156,5 +157,5 @@ Current environment limits:
 ## Current Known Risks
 
 - Service 0 is still a placeholder artifact and cannot satisfy the public testnet CreateService requirement.
-- Worker binary can read finalized pending task inputs through RPC, but is not yet connected to transaction submission.
+- Worker binary can poll finalized pending task inputs and fetch verified bundles, but candidate and vote transaction submission is still pending.
 - Cross-process E2E and Canary evidence are missing.
