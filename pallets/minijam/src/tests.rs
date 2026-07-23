@@ -148,17 +148,19 @@ impl MiniJamExecutor for TestExecutor {
             .unwrap();
         output.header_hash = [1; 32];
         output.accumulate_root = [2; 32];
-        let mut key = [0u8; 31];
-        key[0] = NS_SERVICE_STORAGE;
-        key[30] = 7;
-        output
-            .ordered_changes
-            .try_push(ProtocolStateChange {
-                key,
-                operation: StateOperation::Upsert,
-                value: Some(StateValue::try_from(vec![input.reports.len() as u8]).unwrap()),
-            })
-            .unwrap();
+        if !input.reports.is_empty() {
+            let mut key = [0u8; 31];
+            key[0] = NS_SERVICE_STORAGE;
+            key[30] = 7;
+            output
+                .ordered_changes
+                .try_push(ProtocolStateChange {
+                    key,
+                    operation: StateOperation::Upsert,
+                    value: Some(StateValue::try_from(vec![input.reports.len() as u8]).unwrap()),
+                })
+                .unwrap();
+        }
         output.gas_used = 10;
         output.receipt_hash = output.compute_receipt_hash();
         Ok(output)
@@ -385,7 +387,19 @@ fn queued_preimages_are_imported_with_next_virtual_block() {
 }
 
 #[test]
-fn root_pause_skips_execution_until_resumed() {
+fn empty_block_executes_stf() {
+    new_test_ext().execute_with(|| {
+        assert!(pallet_minijam::LastExecutionReceipt::<Test>::get().is_none());
+
+        System::set_block_number(42);
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(42);
+
+        assert!(pallet_minijam::LastExecutionReceipt::<Test>::get().is_some());
+    });
+}
+
+#[test]
+fn root_pause_delays_imports_but_still_executes_empty_stf() {
     new_test_ext().execute_with(|| {
         let pairs = activate_workers();
         assert_ok!(MiniJam::submit_work(RuntimeOrigin::signed(5)));
@@ -419,6 +433,7 @@ fn root_pause_skips_execution_until_resumed() {
             pallet_minijam::WorkStatus::Accepted
         );
         assert_eq!(pallet_minijam::ExecutionQueue::<Test>::get().len(), 1);
+        assert!(pallet_minijam::LastExecutionReceipt::<Test>::get().is_some());
 
         assert_ok!(MiniJam::pause_execution(RuntimeOrigin::root(), false));
         <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(101);

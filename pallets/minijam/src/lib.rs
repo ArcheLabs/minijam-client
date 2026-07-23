@@ -105,6 +105,13 @@ pub mod pallet {
         pub metadata: PreimageMetadataV1,
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct BlockStfSummary {
+        report_count: u32,
+        preimage_count: u32,
+        receipt_hash: Hash,
+    }
+
     #[pallet::composite_enum]
     pub enum HoldReason {
         WorkDeposit,
@@ -210,7 +217,13 @@ pub mod pallet {
     pub type LastExecutionReceipt<T: Config> = StorageValue<_, Hash, OptionQuery>;
 
     #[pallet::storage]
-    pub type ExecutionPaused<T: Config> = StorageValue<_, bool, ValueQuery>;
+    pub type ReportImportPaused<T: Config> = StorageValue<_, bool, ValueQuery>;
+
+    #[pallet::storage]
+    pub type PreimageImportPaused<T: Config> = StorageValue<_, bool, ValueQuery>;
+
+    #[pallet::storage]
+    pub type SystemOpsPaused<T: Config> = StorageValue<_, bool, ValueQuery>;
 
     #[pallet::storage]
     pub type PendingPreimages<T: Config> =
@@ -263,8 +276,15 @@ pub mod pallet {
             work_id: WorkId,
             outcome: ExecutionOutcome,
         },
-        ExecutionPaused {
+        ImportPaused {
             paused: bool,
+        },
+        BlockStfExecuted {
+            slot: u32,
+            report_count: u32,
+            preimage_count: u32,
+            system_op_count: u32,
+            receipt_hash: Hash,
         },
         ExecutionQueueQuarantined {
             count: u32,
@@ -284,7 +304,6 @@ pub mod pallet {
         VotingSetupFailed,
         InconsistentState,
         ExecutionQueueFull,
-        ExecutionPaused,
         InvalidPreimage,
         DuplicatePendingPreimage,
         TooManyPendingPreimages,
@@ -327,10 +346,7 @@ pub mod pallet {
         }
 
         fn on_finalize(block: BlockNumberFor<T>) {
-            if ExecutionPaused::<T>::get() {
-                return;
-            }
-            Self::execute_due_reports(block);
+            Self::execute_block_stf(block);
         }
     }
 
@@ -441,11 +457,13 @@ pub mod pallet {
         }
 
         #[pallet::call_index(2)]
-        #[pallet::weight(T::DbWeight::get().writes(1))]
+        #[pallet::weight(T::DbWeight::get().writes(3))]
         pub fn pause_execution(origin: OriginFor<T>, paused: bool) -> DispatchResult {
             ensure_root(origin)?;
-            ExecutionPaused::<T>::put(paused);
-            Self::deposit_event(Event::ExecutionPaused { paused });
+            ReportImportPaused::<T>::put(paused);
+            PreimageImportPaused::<T>::put(paused);
+            SystemOpsPaused::<T>::put(paused);
+            Self::deposit_event(Event::ImportPaused { paused });
             Ok(())
         }
 
@@ -649,28 +667,19 @@ pub mod pallet {
             });
         }
 
-        fn execute_due_reports(block: BlockNumberFor<T>) {
+        fn execute_block_stf(block: BlockNumberFor<T>) {
             let mut queue = ExecutionQueue::<T>::get();
-            let pending_preimages = PendingPreimages::<T>::get();
             let max_reports = T::MaxExecutionReports::get() as usize;
+            let reports_paused = ReportImportPaused::<T>::get();
             let mut due: Vec<ExecutionItem<T>> = Vec::new();
             let mut retained: Vec<ExecutionItem<T>> = Vec::new();
 
             for item in queue.drain(..) {
-                if item.execute_at <= block && due.len() < max_reports {
+                if !reports_paused && item.execute_at <= block && due.len() < max_reports {
                     due.push(item);
                 } else {
                     retained.push(item);
                 }
-            }
-
-            if due.is_empty() && pending_preimages.is_empty() {
-                if let Ok(retained) =
-                    BoundedVec::<ExecutionItem<T>, T::MaxPendingWorks>::try_from(retained)
-                {
-                    ExecutionQueue::<T>::put(retained);
-                }
-                return;
             }
 
             due.sort_by_key(|item| {
@@ -680,8 +689,8 @@ pub mod pallet {
                 (item.work_id, report_hash)
             });
 
-            let result = with_transaction(|| match Self::execute_due_reports_inner(block, &due) {
-                Ok(()) => {
+            let result = with_transaction(|| match Self::execute_block_stf_inner(block, &due) {
+                Ok(output) => {
                     let bounded = BoundedVec::<ExecutionItem<T>, T::MaxPendingWorks>::try_from(
                         retained.clone(),
                     )
@@ -689,13 +698,21 @@ pub mod pallet {
                         panic!("retained execution queue exceeded its original bound")
                     });
                     ExecutionQueue::<T>::put(bounded);
-                    TransactionOutcome::Commit(Ok(()))
+                    TransactionOutcome::Commit(Ok(output))
                 }
                 Err(error) => TransactionOutcome::Rollback(Err(error)),
             });
 
             match result {
-                Ok(()) => {}
+                Ok(summary) => {
+                    Self::deposit_event(Event::BlockStfExecuted {
+                        slot: block.saturated_into(),
+                        report_count: summary.report_count,
+                        preimage_count: summary.preimage_count,
+                        system_op_count: 0,
+                        receipt_hash: summary.receipt_hash,
+                    });
+                }
                 Err(ExecutionFailure::Yielded(work_id, outcome)) => {
                     Self::deposit_event(Event::ExecutionYielded { work_id, outcome });
                 }
@@ -705,10 +722,10 @@ pub mod pallet {
             }
         }
 
-        fn execute_due_reports_inner(
+        fn execute_block_stf_inner(
             block: BlockNumberFor<T>,
             due: &[ExecutionItem<T>],
-        ) -> Result<(), ExecutionFailure> {
+        ) -> Result<BlockStfSummary, ExecutionFailure> {
             let mut reports = Vec::<CanonicalReportBytes>::new();
             let mut work_ids = Vec::<WorkId>::new();
             for item in due {
@@ -725,8 +742,15 @@ pub mod pallet {
                 work_ids.push(item.work_id);
             }
 
-            let reports = reports.try_into().map_err(|_| ExecutionFailure::Fatal)?;
-            let preimages = Self::pending_preimage_batch()?;
+            let reports: minijam_protocol::ReportBatch =
+                reports.try_into().map_err(|_| ExecutionFailure::Fatal)?;
+            let preimages = if PreimageImportPaused::<T>::get() {
+                PreimageBatch::default()
+            } else {
+                Self::pending_preimage_batch()?
+            };
+            let report_count = reports.len() as u32;
+            let preimage_count = preimages.len() as u32;
             let input = MiniJamExecutionInputV1 {
                 protocol_version: PROTOCOL_VERSION_V1,
                 slot: block.saturated_into(),
@@ -742,8 +766,11 @@ pub mod pallet {
             let output = match executor.execute(input.clone(), &state) {
                 Ok(output) => output,
                 Err(MiniJamError::Execution(outcome)) => {
-                    let work_id = work_ids.first().copied().ok_or(ExecutionFailure::Fatal)?;
-                    return Err(ExecutionFailure::Yielded(work_id, outcome));
+                    return if let Some(work_id) = work_ids.first().copied() {
+                        Err(ExecutionFailure::Yielded(work_id, outcome))
+                    } else {
+                        Err(ExecutionFailure::Fatal)
+                    };
                 }
                 Err(MiniJamError::State(_)) | Err(MiniJamError::Invariant(_)) => {
                     return Err(ExecutionFailure::Fatal);
@@ -774,7 +801,11 @@ pub mod pallet {
                 });
             }
             LastExecutionReceipt::<T>::put(output.receipt_hash);
-            Ok(())
+            Ok(BlockStfSummary {
+                report_count,
+                preimage_count,
+                receipt_hash: output.receipt_hash,
+            })
         }
 
         fn map_validation_error(error: ValidationError) -> ExecutionFailure {
