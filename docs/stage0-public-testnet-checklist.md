@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `b4fb4e12586c51e7f44ad9a567e01aec35806f24`
+- minijam-client current implementation commit: `c71085b1bc488f6fb4b313302c7d3ee1eebec162`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -60,7 +60,7 @@ Evidence:
 - [x] Worker runner verifies ContentRef size and hash and records per-task status.
 - [x] Persistent file-backed recovery database stores worker task statuses and resumes ready bundles after restart.
 - [x] Worker chain RPC reads pending task inputs through `minijam_getPendingWorkTasks`, which executes against the finalized block hash.
-- [ ] Real Auditable Work Bundle decoder.
+- [x] Real Auditable Work Bundle decoder validates version, SCALE encoding, trailing bytes, and package hash.
 - [ ] Jambda Is-Authorized and Refine execution.
 - [ ] Candidate submission and independent Support/Oppose voting.
 - [ ] Prometheus metrics.
@@ -72,6 +72,8 @@ Evidence:
 - `cargo check -p minijam-protocol -p minijam-rpc-runtime-api`
 - `cargo test -p pallet-minijam pending_worker_tasks_project_finalized_worker_inputs`
 - `cargo check -p minijam-runtime -p minijam-node -p minijam-worker`
+- `cargo test -p minijam-worker-engine`
+- `cargo check -p minijam-protocol -p minijam-worker-engine --no-default-features --target wasm32-unknown-unknown`
 - `cargo run -p minijam-worker -- --config deploy/stage0/worker-1.toml --state-db /tmp/minijam-worker-state-check.toml --once`
 
 ## M4: Real Service 0
