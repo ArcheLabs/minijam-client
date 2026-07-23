@@ -106,6 +106,62 @@ fn new_test_ext() -> sp_io::TestExternalities {
     storage.into()
 }
 
+fn test_ext_with_genesis_workers(workers: Vec<(u64, [u8; 32], u128)>) -> sp_io::TestExternalities {
+    let mut storage = frame_system::GenesisConfig::<Test>::default()
+        .build_storage()
+        .unwrap();
+    pallet_balances::GenesisConfig::<Test> {
+        balances: vec![
+            (1, 10_001),
+            (2, 10_001),
+            (3, 10_001),
+            (4, 10_001),
+            (100, 1_000_001),
+        ],
+        dev_accounts: None,
+    }
+    .assimilate_storage(&mut storage)
+    .unwrap();
+    pallet_minijam_workers::GenesisConfig::<Test> {
+        workers,
+        _phantom: Default::default(),
+    }
+    .assimilate_storage(&mut storage)
+    .unwrap();
+    storage.into()
+}
+
+#[test]
+fn genesis_config_seeds_active_workers_and_holds_stake() {
+    test_ext_with_genesis_workers(vec![
+        (1, [1; 32], 2_000),
+        (2, [2; 32], 3_000),
+        (3, [3; 32], 3_000),
+        (4, [4; 32], 4_000),
+    ])
+    .execute_with(|| {
+        let reason: RuntimeHoldReason = pallet_minijam_workers::HoldReason::WorkerStake.into();
+
+        assert_eq!(pallet_minijam_workers::WorkerCount::<Test>::get(), 4);
+        assert_eq!(pallet_minijam_workers::NextWorkerId::<Test>::get(), 4);
+        assert_eq!(
+            pallet_minijam_workers::WorkerByAccount::<Test>::get(1),
+            Some(0)
+        );
+        let worker = pallet_minijam_workers::Workers::<Test>::get(0).unwrap();
+        assert_eq!(worker.owner, 1);
+        assert_eq!(worker.session_key, [1; 32]);
+        assert_eq!(worker.active_stake, 2_000);
+        assert_eq!(worker.effective_epoch, 0);
+
+        assert_eq!(Workers::active_workers().as_slice(), &[3, 1, 2]);
+        assert_eq!(Balances::balance_on_hold(&reason, &1), 2_000);
+        assert_eq!(Balances::balance_on_hold(&reason, &2), 3_000);
+        assert_eq!(Balances::balance_on_hold(&reason, &3), 3_000);
+        assert_eq!(Balances::balance_on_hold(&reason, &4), 4_000);
+    });
+}
+
 #[test]
 fn registration_holds_stake_and_is_delayed_until_next_epoch() {
     new_test_ext().execute_with(|| {

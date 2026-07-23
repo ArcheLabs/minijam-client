@@ -12,7 +12,7 @@ use sp_keyring::Sr25519Keyring;
 
 use crate::{
     AccountId, AuraConfig, Balance, BalancesConfig, GrandpaConfig, MiniJamConfig,
-    RuntimeGenesisConfig, SudoConfig, UNIT,
+    MiniJamWorkersConfig, RuntimeGenesisConfig, SudoConfig, UNIT,
 };
 
 const DEV_BALANCE: Balance = 1_000_000 * UNIT;
@@ -75,7 +75,31 @@ fn testnet_genesis(
             service_fuel: vec![(0, SYSTEM_SERVICE_FUEL)],
             _phantom: Default::default(),
         },
+        mini_jam_workers: MiniJamWorkersConfig {
+            workers: genesis_workers(),
+            _phantom: Default::default(),
+        },
     })
+}
+
+fn genesis_workers() -> Vec<(AccountId, [u8; 32], Balance)> {
+    vec![
+        (
+            Sr25519Keyring::Alice.to_account_id(),
+            Sr25519Keyring::Alice.public().0,
+            1_000 * UNIT,
+        ),
+        (
+            Sr25519Keyring::Bob.to_account_id(),
+            Sr25519Keyring::Bob.public().0,
+            1_000 * UNIT,
+        ),
+        (
+            Sr25519Keyring::Charlie.to_account_id(),
+            Sr25519Keyring::Charlie.public().0,
+            1_000 * UNIT,
+        ),
+    ]
 }
 
 fn system_service_zero_protocol_state() -> Vec<(Vec<u8>, Vec<u8>)> {

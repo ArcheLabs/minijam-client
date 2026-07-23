@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 #![cfg_attr(not(feature = "std"), no_std)]
 
+extern crate alloc;
+
 pub use pallet::*;
 
 #[frame_support::pallet]
 pub mod pallet {
+    use alloc::vec::Vec;
     use frame_support::{
         pallet_prelude::*,
         storage::{with_transaction, TransactionOutcome},
@@ -234,6 +237,65 @@ pub mod pallet {
     #[pallet::storage]
     pub type Equivocations<T> =
         StorageMap<_, Blake2_128Concat, (u64, u8, WorkerId), (), OptionQuery>;
+
+    #[pallet::genesis_config]
+    #[derive(frame_support::DefaultNoBound)]
+    pub struct GenesisConfig<T: Config> {
+        pub workers: Vec<(T::AccountId, [u8; 32], BalanceOf<T>)>,
+        #[serde(skip)]
+        pub _phantom: core::marker::PhantomData<T>,
+    }
+
+    #[pallet::genesis_build]
+    impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
+        fn build(&self) {
+            assert!(
+                self.workers.len() <= T::MaxCandidates::get() as usize,
+                "MiniJAM worker genesis exceeds MaxCandidates"
+            );
+
+            let reason = T::RuntimeHoldReason::from(HoldReason::WorkerStake);
+            let mut active = Vec::<(WorkerId, BalanceOf<T>)>::new();
+            for (worker_id, (owner, session_key, stake)) in self.workers.iter().enumerate() {
+                assert!(
+                    *stake >= T::MinimumStake::get(),
+                    "MiniJAM genesis worker stake is below minimum"
+                );
+                assert!(
+                    !WorkerByAccount::<T>::contains_key(owner),
+                    "duplicate MiniJAM genesis worker account"
+                );
+                T::Currency::hold(&reason, owner, *stake)
+                    .expect("MiniJAM genesis worker stake must be holdable");
+                let worker_id = worker_id as WorkerId;
+                Workers::<T>::insert(
+                    worker_id,
+                    WorkerRecord::<T> {
+                        owner: owner.clone(),
+                        session_key: *session_key,
+                        active_stake: *stake,
+                        effective_epoch: 0,
+                        suspended_until: 0,
+                    },
+                );
+                WorkerByAccount::<T>::insert(owner, worker_id);
+                active.push((worker_id, *stake));
+            }
+
+            active.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let top_workers = active
+                .into_iter()
+                .take(T::TopWorkers::get() as usize)
+                .map(|(worker_id, _)| worker_id)
+                .collect::<Vec<_>>();
+            let top_workers: BoundedVec<WorkerId, T::TopWorkers> = top_workers
+                .try_into()
+                .expect("take is bounded by TopWorkers");
+            ActiveWorkers::<T>::put(top_workers);
+            WorkerCount::<T>::put(self.workers.len() as u32);
+            NextWorkerId::<T>::put(self.workers.len() as WorkerId);
+        }
+    }
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -838,8 +900,6 @@ pub mod pallet {
         }
     }
 }
-
-extern crate alloc;
 
 #[cfg(test)]
 mod tests;
