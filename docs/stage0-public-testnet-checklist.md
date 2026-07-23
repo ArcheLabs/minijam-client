@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `498bcd3af8dd41ee116ce9396d61d4ed3a3c0267`
+- minijam-client current implementation commit: `66d722516f54cb2c3efb983ca36ddc9c6bcd0033`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -94,8 +94,8 @@ Evidence:
 - [x] Release artifact CI exports `stage0.json` and `stage0-raw.json` through `scripts/export-stage0-chain-specs.sh`.
 - [x] Committed or published `chain-specs/stage0.json`
 - [x] Committed or published `chain-specs/stage0-raw.json`
-- [ ] Deployment topology, Docker, systemd, compose, monitoring stack.
-- [ ] Public RPC safety profile and authority RPC isolation.
+- [x] Deployment topology, Docker, systemd, compose, monitoring stack.
+- [x] Public RPC safety profile and authority RPC isolation.
 
 Evidence:
 
@@ -106,6 +106,13 @@ Evidence:
 - `./scripts/export-stage0-chain-specs.sh ./target/debug/minijam-node chain-specs`
 - `python3 -m json.tool chain-specs/stage0.json >/dev/null`
 - `python3 -m json.tool chain-specs/stage0-raw.json >/dev/null`
+- `cargo run -p minijam-worker -- --config deploy/stage0/worker-1.toml --once`
+- `rg -n -- '--unsafe-rpc|rpc-methods|rpc-external|worker|AUTHORITY_1_PEER_ID|ipfs_gateway' deploy/stage0`
+
+Current environment limits:
+
+- Docker is not installed in this WSL distro, so `docker compose config` could not be executed here.
+- `systemd-analyze verify` reached the template command paths, but `/usr/local/bin/minijam-node` and `/usr/local/bin/minijam-worker` are not installed on this machine.
 
 ## M7: Cross-Process E2E
 
@@ -126,6 +133,5 @@ Evidence:
 
 - Service 0 is still a placeholder artifact and cannot satisfy the public testnet CreateService requirement.
 - Worker binary is not yet connected to chain RPC or transaction submission.
-- Stage0 chain-spec JSON files exist, but deployment topology and public RPC safety profile are not yet defined.
-- No faucet or custom public RPC exists yet.
+- No faucet or `minijam-cli` command suite exists yet.
 - Cross-process E2E and Canary evidence are missing.
