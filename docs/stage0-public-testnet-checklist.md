@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `07715a1715cba635364f68092ec9ecff72c6bcde`
+- minijam-client current implementation commit: `00593766892aee2985f3fcc1385390de5d09451e`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -85,6 +85,8 @@ Evidence:
 - Open vote task discovery: `cargo test -p pallet-minijam-workers open_vote_tasks_project_assignment_and_submitted_votes`
 - Open vote task worker decoding: `cargo test -p minijam-worker decodes_open_vote_tasks_rpc_response`
 - `cargo check -p minijam-runtime -p minijam-node -p minijam-worker`
+- Worker vote-task polling: `cargo test -p minijam-worker runner_records_open_vote_task_metrics`
+- `cargo run -p minijam-worker -- --rpc-url http://127.0.0.1:19944 --state-db /tmp/minijam-worker-vote-task-once.toml --ipfs-gateway http://127.0.0.1:18080 --once` with a local JSON-RPC stub returning no pending work or open vote tasks
 
 ## M4: Real Service 0
 
@@ -174,5 +176,5 @@ Evidence:
 ## Current Known Risks
 
 - Service 0 is still a placeholder artifact and cannot satisfy the public testnet CreateService requirement.
-- Worker binary can poll finalized pending task inputs and fetch verified bundles, but candidate and vote transaction submission is still pending.
+- Worker binary can poll finalized pending task inputs, fetch verified bundles, and observe open vote tasks, but automatic candidate/vote generation, signing, and transaction submission are still pending.
 - Cross-process E2E and Canary evidence are missing.
