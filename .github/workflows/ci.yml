@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Rust toolchain
+        run: rustup show
+      - name: Check submodule pin
+        run: ./scripts/check-submodule.sh
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  test:
+    name: Workspace Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Rust toolchain
+        run: rustup show
+      - name: Check submodule pin
+        run: ./scripts/check-submodule.sh
+      - name: Test workspace
+        run: cargo test --workspace
+
+  wasm-check:
+    name: Wasm Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Rust toolchain
+        run: rustup show
+      - name: Check no_std public crates
+        run: >
+          cargo check
+          -p minijam-protocol
+          -p minijam-jamcore-api
+          -p minijam-worker-engine
+          --no-default-features
+          --target wasm32-unknown-unknown
+      - name: Check runtime Wasm
+        run: cargo check -p minijam-runtime --no-default-features --target wasm32v1-none
+
+  release-artifacts:
+    name: Release Artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Rust toolchain
+        run: rustup show
+      - name: Build node
+        run: cargo build --release -p minijam-node
+      - name: Build worker
+        run: cargo build --release -p minijam-worker
+      - name: Export raw chain spec
+        run: |
+          mkdir -p stage0-artifacts
+          ./target/release/minijam-node export-chain-spec --chain local --raw > stage0-artifacts/stage0-raw.json
+      - name: Collect artifacts
+        run: |
+          cp target/release/minijam-node stage0-artifacts/
+          cp target/release/minijam-worker stage0-artifacts/
+          cp target/release/wbuild/minijam-runtime/minijam_runtime*.wasm stage0-artifacts/
+          cat > stage0-artifacts/build-info.json <<EOF
+          {
+            "minijam_client_commit": "$(git rev-parse HEAD)",
+            "jambda_commit": "$(git -C external/jambda rev-parse HEAD)",
+            "rust_toolchain": "$(rustc --version)",
+            "polkadot_sdk_commit": "2e4dd0bc22366a5af820492528869a493b5a5208",
+            "runtime_spec_version": 1,
+            "runtime_wasm_blake2_256": "$(b2sum -l 256 target/release/wbuild/minijam-runtime/minijam_runtime.compact.compressed.wasm | awk '{print $1}')"
+          }
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minijam-stage0
+          path: stage0-artifacts/
