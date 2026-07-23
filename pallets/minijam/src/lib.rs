@@ -234,6 +234,15 @@ pub mod pallet {
         type FuelEscrowAccount: Get<Self::AccountId>;
 
         #[pallet::constant]
+        type FaucetAccount: Get<Self::AccountId>;
+
+        #[pallet::constant]
+        type FaucetDripAmount: Get<BalanceOf<Self>>;
+
+        #[pallet::constant]
+        type FaucetCooldownBlocks: Get<BlockNumberFor<Self>>;
+
+        #[pallet::constant]
         type RefineGasPrice: Get<BalanceOf<Self>>;
 
         #[pallet::constant]
@@ -368,6 +377,10 @@ pub mod pallet {
     pub type WorkFuelSettlements<T: Config> =
         StorageMap<_, Blake2_128Concat, WorkId, WorkFuelSettlement<BalanceOf<T>>, OptionQuery>;
 
+    #[pallet::storage]
+    pub type LastFaucetClaims<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, BlockNumberFor<T>, OptionQuery>;
+
     #[pallet::genesis_config]
     #[derive(frame_support::DefaultNoBound)]
     pub struct GenesisConfig<T: Config> {
@@ -483,6 +496,11 @@ pub mod pallet {
             amount: BalanceOf<T>,
             new_available: BalanceOf<T>,
         },
+        FaucetDripped {
+            recipient: T::AccountId,
+            amount: BalanceOf<T>,
+            next_claim_at: BlockNumberFor<T>,
+        },
         ExecutionYielded {
             work_id: WorkId,
             outcome: ExecutionOutcome,
@@ -532,6 +550,8 @@ pub mod pallet {
         ZeroFuelAmount,
         FuelEscrowInvariant,
         FuelSettlementInvariant,
+        FaucetOnCooldown,
+        ZeroFaucetAmount,
     }
 
     #[pallet::hooks]
@@ -912,6 +932,35 @@ pub mod pallet {
             ensure_root(origin)?;
             let count = QuarantinedSystemOps::<T>::take().len() as u32;
             Self::deposit_event(Event::SystemOpQuarantineCleared { count });
+            Ok(())
+        }
+
+        #[pallet::call_index(10)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(2, 1))]
+        pub fn claim_faucet(origin: OriginFor<T>) -> DispatchResult {
+            let recipient = ensure_signed(origin)?;
+            let amount = T::FaucetDripAmount::get();
+            ensure!(!amount.is_zero(), Error::<T>::ZeroFaucetAmount);
+            let now = frame_system::Pallet::<T>::block_number();
+            if let Some(last_claim) = LastFaucetClaims::<T>::get(&recipient) {
+                ensure!(
+                    now >= last_claim.saturating_add(T::FaucetCooldownBlocks::get()),
+                    Error::<T>::FaucetOnCooldown
+                );
+            }
+
+            <T as Config>::Currency::transfer(
+                &T::FaucetAccount::get(),
+                &recipient,
+                amount,
+                Preservation::Expendable,
+            )?;
+            LastFaucetClaims::<T>::insert(&recipient, now);
+            Self::deposit_event(Event::FaucetDripped {
+                recipient,
+                amount,
+                next_claim_at: now.saturating_add(T::FaucetCooldownBlocks::get()),
+            });
             Ok(())
         }
     }
