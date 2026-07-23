@@ -5075,6 +5075,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "minijam-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "minijam-protocol",
+ "parity-scale-codec",
+ "serde_json",
+]
+
+[[package]]
 name = "minijam-jamcore-api"
 version = "0.1.0"
 dependencies = [

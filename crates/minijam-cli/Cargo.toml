@@ -1,0 +1,15 @@
+[package]
+name = "minijam-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "minijam-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+minijam-protocol = { path = "../minijam-protocol", default-features = true }
+parity-scale-codec = { workspace = true, default-features = true }
+serde_json = { workspace = true, features = ["std"] }
