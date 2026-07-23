@@ -507,6 +507,13 @@ fn submit_work_stores_package_hash_and_bundle_ref() {
             pallet_minijam::WorkByPackageHash::<Test>::get(package_hash),
             Some(0)
         );
+        let queried = MiniJam::get_work(0).unwrap();
+        assert_eq!(queried.owner, work.owner);
+        assert_eq!(queried.package_hash, work.package_hash);
+        let queried_by_hash = MiniJam::get_work_by_package_hash(package_hash).unwrap();
+        assert_eq!(queried_by_hash.owner, work.owner);
+        assert_eq!(queried_by_hash.package_hash, work.package_hash);
+        assert_eq!(MiniJam::get_work_bundle_ref(0), Some(bundle));
     });
 }
 
@@ -896,6 +903,7 @@ fn imported_report_settles_reserved_service_fuel() {
         assert_eq!(fuel.reserved, 0);
         assert_eq!(pallet_minijam::TotalServiceFuel::<Test>::get(), 90);
         assert_eq!(Balances::total_balance(&101), 90);
+        assert_eq!(MiniJam::get_service_fuel(7), fuel);
         assert_eq!(
             MiniJam::work(0).unwrap().status,
             pallet_minijam::WorkStatus::Imported
@@ -907,6 +915,19 @@ fn imported_report_settles_reserved_service_fuel() {
                 charged: 10,
                 refunded: 20
             }
+        );
+        assert_eq!(
+            MiniJam::get_work_fuel_reservation(0).unwrap(),
+            MiniJam::work(0).unwrap().fuel_reservation
+        );
+        assert_eq!(
+            MiniJam::get_work_fuel_settlement(0),
+            MiniJam::work_fuel_settlement(0)
+        );
+        assert_eq!(MiniJam::get_candidate(0, 0).unwrap().envelope.work_id, 0);
+        assert_eq!(
+            MiniJam::get_execution_receipt(0),
+            pallet_minijam::ExecutionReceipts::<Test>::get(0)
         );
     });
 }

@@ -777,6 +777,47 @@ pub mod pallet {
         }
     }
 
+    #[pallet::view_functions]
+    impl<T: Config> Pallet<T> {
+        pub fn get_work(work_id: WorkId) -> Option<WorkRecord<T>> {
+            Works::<T>::get(work_id)
+        }
+
+        pub fn get_work_by_package_hash(package_hash: Hash) -> Option<WorkRecord<T>> {
+            let work_id = WorkByPackageHash::<T>::get(package_hash)?;
+            Works::<T>::get(work_id)
+        }
+
+        pub fn get_work_bundle_ref(work_id: WorkId) -> Option<ContentRef> {
+            Works::<T>::get(work_id).map(|work| work.bundle_ref)
+        }
+
+        pub fn get_candidate(work_id: WorkId, round: u8) -> Option<CandidateRecord<T>> {
+            Candidates::<T>::get(work_id, round)
+        }
+
+        pub fn get_execution_receipt(work_id: WorkId) -> Option<Hash> {
+            ExecutionReceipts::<T>::get(work_id)
+        }
+
+        pub fn get_service_fuel(service_id: u32) -> ServiceFuelAccount<BalanceOf<T>> {
+            ServiceFuelAccounts::<T>::get(service_id)
+        }
+
+        pub fn get_work_fuel_reservation(
+            work_id: WorkId,
+        ) -> Option<BoundedVec<ServiceFuelReservation<BalanceOf<T>>, T::MaxServicesPerWork>>
+        {
+            Works::<T>::get(work_id).map(|work| work.fuel_reservation)
+        }
+
+        pub fn get_work_fuel_settlement(
+            work_id: WorkId,
+        ) -> Option<WorkFuelSettlement<BalanceOf<T>>> {
+            WorkFuelSettlements::<T>::get(work_id)
+        }
+    }
+
     impl<T: Config> Pallet<T> {
         fn prepare_round(work_id: WorkId) -> DispatchResult {
             let mut work = Works::<T>::get(work_id).ok_or(Error::<T>::WorkNotFound)?;
