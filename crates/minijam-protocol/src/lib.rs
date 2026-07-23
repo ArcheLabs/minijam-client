@@ -3,12 +3,15 @@
 
 extern crate alloc;
 
+use alloc::vec::Vec;
 use bounded_collections::{BoundedVec, ConstU32};
 use parity_scale_codec::DecodeWithMemTracking;
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 
 pub const PROTOCOL_VERSION_V1: u16 = 1;
+pub const PROTOCOL_VERSION_V2: u16 = 2;
+pub const SYSTEM_OP_REQUEST_DOMAIN_V1: &[u8] = b"minijam/system-op/v1";
 pub const UNIT: u128 = 1_000_000_000_000;
 
 pub const TOP_WORKERS: u32 = 8;
@@ -58,6 +61,56 @@ pub type ReportBatch = BoundedVec<CanonicalReportBytes, ConstU32<4>>;
 pub type PreimageBatch = BoundedVec<CanonicalPreimageBytes, ConstU32<64>>;
 pub type ConsumedReports = BoundedVec<Hash, ConstU32<4>>;
 pub type ConsumedPreimages = BoundedVec<Hash, ConstU32<64>>;
+pub type SystemOpBatch = BoundedVec<SystemOpV1, ConstU32<64>>;
+pub type ConsumedSystemOps = BoundedVec<Hash, ConstU32<64>>;
+
+#[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+pub struct SystemOpV1 {
+    pub request_id: Hash,
+    pub sender: [u8; 32],
+    pub nonce: u64,
+    pub command: SystemCommandV1,
+}
+
+impl DecodeWithMemTracking for SystemOpV1 {}
+
+impl SystemOpV1 {
+    pub fn new(sender: [u8; 32], nonce: u64, command: SystemCommandV1) -> Self {
+        let request_id = Self::compute_request_id(&sender, nonce, &command);
+        Self {
+            request_id,
+            sender,
+            nonce,
+            command,
+        }
+    }
+
+    pub fn compute_request_id(sender: &[u8; 32], nonce: u64, command: &SystemCommandV1) -> Hash {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(SYSTEM_OP_REQUEST_DOMAIN_V1);
+        payload.extend_from_slice(sender);
+        payload.extend_from_slice(&nonce.to_le_bytes());
+        payload.extend_from_slice(&command.encode());
+        blake2_256(&payload)
+    }
+
+    pub fn request_id_matches(&self) -> bool {
+        self.request_id == Self::compute_request_id(&self.sender, self.nonce, &self.command)
+    }
+}
+
+#[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+pub enum SystemCommandV1 {
+    CreateService {
+        code_hash: Hash,
+        code_len: u32,
+        min_item_gas: u64,
+        min_memo_gas: u64,
+        initial_balance: u64,
+    },
+}
+
+impl DecodeWithMemTracking for SystemCommandV1 {}
 
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub enum HashingAlgorithm {
@@ -258,4 +311,31 @@ pub fn blake2_256(bytes: &[u8]) -> Hash {
     let mut output = [0u8; 32];
     output.copy_from_slice(hash.as_bytes());
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_op_request_id_commits_sender_nonce_and_command() {
+        let command = SystemCommandV1::CreateService {
+            code_hash: [9u8; 32],
+            code_len: 32,
+            min_item_gas: 1,
+            min_memo_gas: 2,
+            initial_balance: 3,
+        };
+        let op = SystemOpV1::new([1u8; 32], 7, command.clone());
+        assert!(op.request_id_matches());
+
+        let mut changed_nonce = op.clone();
+        changed_nonce.nonce = 8;
+        assert!(!changed_nonce.request_id_matches());
+
+        assert_ne!(
+            op.request_id,
+            SystemOpV1::compute_request_id(&[2u8; 32], 7, &command)
+        );
+    }
 }

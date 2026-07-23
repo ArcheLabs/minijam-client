@@ -5,8 +5,8 @@ extern crate alloc;
 
 use alloc::{borrow::ToOwned, collections::BTreeMap, vec::Vec};
 use minijam_jamcore_api::{
-    InvariantError, MiniJamExecutionInputV1, MiniJamExecutionOutputV1, ProtocolStateReader,
-    StateError,
+    InvariantError, MiniJamExecutionInputV1, MiniJamExecutionInputV2, MiniJamExecutionOutputV1,
+    MiniJamExecutionOutputV2, ProtocolStateReader, StateError,
 };
 use minijam_protocol::{ProtocolStateChange, StateOperation, MAX_DELTA_BYTES};
 use parity_scale_codec::Encode;
@@ -35,19 +35,54 @@ pub fn validate_execution_output<R: ProtocolStateReader>(
     output: &MiniJamExecutionOutputV1,
     state: &R,
 ) -> Result<ValidatedDelta, ValidationError> {
-    if output.gas_used > input.max_gas {
+    validate_common(
+        input.max_gas,
+        output.gas_used,
+        output.compute_receipt_hash() == output.receipt_hash,
+        &output.ordered_changes,
+        state,
+    )
+}
+
+pub fn validate_execution_output_v2<R: ProtocolStateReader>(
+    input: &MiniJamExecutionInputV2,
+    output: &MiniJamExecutionOutputV2,
+    state: &R,
+) -> Result<ValidatedDelta, ValidationError> {
+    validate_common(
+        input.max_gas,
+        output.gas_used,
+        output.compute_receipt_hash() == output.receipt_hash,
+        &output.ordered_changes,
+        state,
+    )
+}
+
+fn validate_common<R: ProtocolStateReader>(
+    max_gas: u64,
+    gas_used: u64,
+    receipt_matches: bool,
+    ordered_changes: &[ProtocolStateChange],
+    state: &R,
+) -> Result<ValidatedDelta, ValidationError> {
+    if gas_used > max_gas {
         return Err(ValidationError::GasExceeded);
     }
-    if output.compute_receipt_hash() != output.receipt_hash {
+    if !receipt_matches {
         return Err(ValidationError::Invariant(InvariantError::ReceiptMismatch));
     }
-    if output.ordered_changes.encoded_size() > MAX_DELTA_BYTES as usize {
+    if ordered_changes.encoded_size() > MAX_DELTA_BYTES as usize {
         return Err(ValidationError::DeltaTooLarge);
     }
 
-    let changes = output.ordered_changes.as_slice();
-    if changes.windows(2).any(|pair| pair[0].key >= pair[1].key) {
-        let error = if changes.windows(2).any(|pair| pair[0].key == pair[1].key) {
+    if ordered_changes
+        .windows(2)
+        .any(|pair| pair[0].key >= pair[1].key)
+    {
+        let error = if ordered_changes
+            .windows(2)
+            .any(|pair| pair[0].key == pair[1].key)
+        {
             InvariantError::DuplicateKey
         } else {
             InvariantError::UnsortedChanges
@@ -55,7 +90,7 @@ pub fn validate_execution_output<R: ProtocolStateReader>(
         return Err(ValidationError::Invariant(error));
     }
 
-    for change in changes {
+    for change in ordered_changes {
         let exists = state.get(&change.key)?.is_some();
         match (change.operation, change.value.is_some(), exists) {
             (StateOperation::Upsert, true, false)
@@ -66,7 +101,7 @@ pub fn validate_execution_output<R: ProtocolStateReader>(
     }
 
     Ok(ValidatedDelta {
-        changes: changes.to_vec(),
+        changes: ordered_changes.to_vec(),
     })
 }
 
