@@ -9,7 +9,7 @@ use std::{
 use minijam_protocol::{ContentRef, Hash, WorkId};
 use minijam_worker_engine::{
     fetch::{fetch_verified_content, ContentFetcher, FetchError},
-    verify_work_bundle, WorkBundleDecoder, WorkBundleVerificationError,
+    verify_work_bundle, MiniJamWorkBundleDecoder, WorkBundleDecoder, WorkBundleVerificationError,
 };
 use parity_scale_codec::Decode;
 use serde::{Deserialize, Serialize};
@@ -396,6 +396,8 @@ pub struct WorkerRunner<C, F, D> {
     statuses: BTreeMap<(WorkId, u8), WorkerTaskStatus>,
 }
 
+pub type Stage0WorkerRunner<C, F> = WorkerRunner<C, F, MiniJamWorkBundleDecoder>;
+
 impl<C, F, D> WorkerRunner<C, F, D> {
     pub fn new(chain: C, fetcher: F, decoder: D, max_bundle_bytes: u64) -> Self {
         Self {
@@ -429,6 +431,12 @@ impl<C, F, D> WorkerRunner<C, F, D> {
 
     pub fn statuses(&self) -> &BTreeMap<(WorkId, u8), WorkerTaskStatus> {
         &self.statuses
+    }
+}
+
+impl<C, F> WorkerRunner<C, F, MiniJamWorkBundleDecoder> {
+    pub fn stage0(chain: C, fetcher: F, max_bundle_bytes: u64) -> Self {
+        Self::new(chain, fetcher, MiniJamWorkBundleDecoder, max_bundle_bytes)
     }
 }
 
@@ -492,7 +500,8 @@ mod tests {
     use super::*;
     use futures::executor::block_on;
     use minijam_protocol::blake2_256;
-    use minijam_worker_engine::{fetch::MemoryContentFetcher, WorkBundleDecodeError};
+    use minijam_protocol::MiniJamWorkBundleV1;
+    use minijam_worker_engine::{fetch::MemoryContentFetcher, MiniJamWorkBundleDecoder};
     use parity_scale_codec::Encode;
 
     #[test]
@@ -573,18 +582,6 @@ mod tests {
         }
     }
 
-    struct TestBundleDecoder;
-
-    impl WorkBundleDecoder for TestBundleDecoder {
-        fn package_hash(&self, bytes: &[u8]) -> Result<Hash, WorkBundleDecodeError> {
-            bytes
-                .get(..32)
-                .ok_or(WorkBundleDecodeError::InvalidEncoding)?
-                .try_into()
-                .map_err(|_| WorkBundleDecodeError::InvalidEncoding)
-        }
-    }
-
     fn task(work_id: WorkId, round: u8, package_hash: Hash, bundle: &[u8]) -> WorkTask {
         WorkTask {
             work_id,
@@ -605,16 +602,14 @@ mod tests {
     #[test]
     fn runner_fetches_and_verifies_pending_work_bundles() {
         let package_hash = [7u8; 32];
-        let mut bundle = package_hash.to_vec();
-        bundle.extend_from_slice(b"bundle");
+        let bundle = MiniJamWorkBundleV1::new(package_hash).encode();
         let task = task(1, 0, package_hash, &bundle);
         let fetcher = MemoryContentFetcher::new().with_content(&task.bundle_ref, bundle.clone());
-        let mut runner = WorkerRunner::new(
+        let mut runner = WorkerRunner::stage0(
             TestChainSource {
                 tasks: vec![task.clone()],
             },
             fetcher,
-            TestBundleDecoder,
             64,
         );
 
@@ -662,8 +657,7 @@ mod tests {
     #[test]
     fn runner_records_bundle_rejection_without_stopping_poll() {
         let package_hash = [7u8; 32];
-        let mut bundle = [8u8; 32].to_vec();
-        bundle.extend_from_slice(b"bundle");
+        let bundle = MiniJamWorkBundleV1::new([8u8; 32]).encode();
         let task = task(2, 0, package_hash, &bundle);
         let fetcher = MemoryContentFetcher::new().with_content(&task.bundle_ref, bundle);
         let mut runner = WorkerRunner::new(
@@ -671,7 +665,7 @@ mod tests {
                 tasks: vec![task.clone()],
             },
             fetcher,
-            TestBundleDecoder,
+            MiniJamWorkBundleDecoder,
             64,
         );
 
@@ -725,8 +719,7 @@ mod tests {
     #[test]
     fn runner_can_resume_ready_bundle_statuses() {
         let package_hash = [7u8; 32];
-        let mut bundle = package_hash.to_vec();
-        bundle.extend_from_slice(b"bundle");
+        let bundle = MiniJamWorkBundleV1::new(package_hash).encode();
         let task = task(3, 0, package_hash, &bundle);
         let fetcher = MemoryContentFetcher::new().with_content(&task.bundle_ref, bundle.clone());
         let mut statuses = BTreeMap::new();
@@ -741,7 +734,7 @@ mod tests {
                 tasks: vec![task.clone()],
             },
             fetcher,
-            TestBundleDecoder,
+            MiniJamWorkBundleDecoder,
             64,
             statuses,
         );
@@ -760,8 +753,7 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let db = WorkerRecoveryDb::new(tempdir.path().join("worker-state.toml"));
         let package_hash = [7u8; 32];
-        let mut bundle = package_hash.to_vec();
-        bundle.extend_from_slice(b"bundle");
+        let bundle = MiniJamWorkBundleV1::new(package_hash).encode();
         let task = task(4, 0, package_hash, &bundle);
         let fetcher = MemoryContentFetcher::new().with_content(&task.bundle_ref, bundle.clone());
         let mut runner = WorkerRunner::new(
@@ -769,7 +761,7 @@ mod tests {
                 tasks: vec![task.clone()],
             },
             fetcher,
-            TestBundleDecoder,
+            MiniJamWorkBundleDecoder,
             64,
         );
 

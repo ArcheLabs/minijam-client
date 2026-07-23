@@ -6,9 +6,9 @@ extern crate alloc;
 use alloc::{collections::BTreeMap, vec::Vec};
 use bounded_collections::{BoundedVec, ConstU32};
 use minijam_protocol::{
-    blake2_256, AssignmentRound, BlockNumber, ContentRef, Hash, Verdict, WorkId, WorkerId,
-    MINIMUM_ABSENCE_SLASH, MINIMUM_WORKER_STAKE, OPPOSE_THRESHOLD, SUPPORT_THRESHOLD,
-    TIMELY_VOTE_REWARD, WORKERS_PER_WORK,
+    blake2_256, AssignmentRound, BlockNumber, ContentRef, Hash, MiniJamWorkBundleV1, Verdict,
+    WorkId, WorkerId, MINIMUM_ABSENCE_SLASH, MINIMUM_WORKER_STAKE, OPPOSE_THRESHOLD,
+    PROTOCOL_VERSION_V1, SUPPORT_THRESHOLD, TIMELY_VOTE_REWARD, WORKERS_PER_WORK,
 };
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
@@ -40,6 +40,30 @@ pub enum WorkBundleVerificationError {
 
 pub trait WorkBundleDecoder {
     fn package_hash(&self, bytes: &[u8]) -> Result<Hash, WorkBundleDecodeError>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MiniJamWorkBundleDecoder;
+
+impl MiniJamWorkBundleDecoder {
+    pub fn decode(&self, bytes: &[u8]) -> Result<MiniJamWorkBundleV1, WorkBundleDecodeError> {
+        let mut input = bytes;
+        let bundle = MiniJamWorkBundleV1::decode(&mut input)
+            .map_err(|_| WorkBundleDecodeError::InvalidEncoding)?;
+        if !input.is_empty() {
+            return Err(WorkBundleDecodeError::TrailingBytes);
+        }
+        if bundle.protocol_version != PROTOCOL_VERSION_V1 {
+            return Err(WorkBundleDecodeError::UnsupportedVersion);
+        }
+        Ok(bundle)
+    }
+}
+
+impl WorkBundleDecoder for MiniJamWorkBundleDecoder {
+    fn package_hash(&self, bytes: &[u8]) -> Result<Hash, WorkBundleDecodeError> {
+        Ok(self.decode(bytes)?.package_hash)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -455,19 +479,8 @@ mod tests {
         IpfsGatewayFetcher, MemoryContentFetcher,
     };
     use futures::executor::block_on;
-    use minijam_protocol::ContentRef;
+    use minijam_protocol::{ContentRef, MiniJamWorkBundleV1};
     use minijam_protocol::{OpposeReason, UNIT, VOTE_WINDOW};
-
-    struct TestBundleDecoder;
-
-    impl WorkBundleDecoder for TestBundleDecoder {
-        fn package_hash(&self, bytes: &[u8]) -> Result<Hash, WorkBundleDecodeError> {
-            let hash = bytes
-                .get(..32)
-                .ok_or(WorkBundleDecodeError::InvalidEncoding)?;
-            Ok(hash.try_into().unwrap())
-        }
-    }
 
     #[derive(Clone)]
     struct TestHttpClient {
@@ -529,26 +542,37 @@ mod tests {
     #[test]
     fn verifies_work_bundle_content_and_package_hash() {
         let package_hash = [7u8; 32];
-        let mut bytes = package_hash.to_vec();
-        bytes.extend_from_slice(b"bundle-body");
+        let bytes = MiniJamWorkBundleV1::new(package_hash).encode();
         let reference = content_ref(&bytes);
 
-        let verified =
-            verify_work_bundle(&reference, &bytes, 64, package_hash, &TestBundleDecoder).unwrap();
+        let verified = verify_work_bundle(
+            &reference,
+            &bytes,
+            1024,
+            package_hash,
+            &MiniJamWorkBundleDecoder,
+        )
+        .unwrap();
 
         assert_eq!(verified.bytes, bytes.as_slice());
         assert_eq!(verified.package_hash, package_hash);
         assert_eq!(
-            verify_work_bundle(&reference, &bytes, 64, [8u8; 32], &TestBundleDecoder),
+            verify_work_bundle(
+                &reference,
+                &bytes,
+                1024,
+                [8u8; 32],
+                &MiniJamWorkBundleDecoder
+            ),
             Err(WorkBundleVerificationError::PackageHashMismatch)
         );
         assert_eq!(
             verify_work_bundle(
                 &reference,
                 b"bundle-with-wrong-hash",
-                64,
+                1024,
                 package_hash,
-                &TestBundleDecoder
+                &MiniJamWorkBundleDecoder
             ),
             Err(WorkBundleVerificationError::Content(
                 ContentVerificationError::SizeMismatch
@@ -562,10 +586,30 @@ mod tests {
         let reference = content_ref(bytes);
 
         assert_eq!(
-            verify_work_bundle(&reference, bytes, 64, [7u8; 32], &TestBundleDecoder),
+            verify_work_bundle(&reference, bytes, 64, [7u8; 32], &MiniJamWorkBundleDecoder),
             Err(WorkBundleVerificationError::Decode(
                 WorkBundleDecodeError::InvalidEncoding
             ))
+        );
+    }
+
+    #[test]
+    fn real_work_bundle_decoder_rejects_trailing_bytes_and_unknown_versions() {
+        let package_hash = [7u8; 32];
+        let decoder = MiniJamWorkBundleDecoder;
+        let mut bytes = MiniJamWorkBundleV1::new(package_hash).encode();
+        bytes.push(0);
+
+        assert_eq!(
+            decoder.package_hash(&bytes),
+            Err(WorkBundleDecodeError::TrailingBytes)
+        );
+
+        let mut bundle = MiniJamWorkBundleV1::new(package_hash);
+        bundle.protocol_version = 999;
+        assert_eq!(
+            decoder.package_hash(&bundle.encode()),
+            Err(WorkBundleDecodeError::UnsupportedVersion)
         );
     }
 

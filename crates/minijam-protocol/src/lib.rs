@@ -54,6 +54,11 @@ pub type EpochIndex = u32;
 pub type CanonicalReportBytes = BoundedVec<u8, ConstU32<1_048_576>>;
 pub type CanonicalPreimageBytes = BoundedVec<u8, ConstU32<1_048_576>>;
 pub type CanonicalWorkPackageBytes = BoundedVec<u8, ConstU32<1_048_576>>;
+pub type WorkBundleBlob = BoundedVec<u8, ConstU32<1_048_576>>;
+pub type WorkBundleItemExternalData = BoundedVec<WorkBundleBlob, ConstU32<128>>;
+pub type WorkBundleExternalData = BoundedVec<WorkBundleItemExternalData, ConstU32<64>>;
+pub type WorkBundleImportSegments = BoundedVec<WorkBundleBlob, ConstU32<1_024>>;
+pub type WorkBundleImportProofs = BoundedVec<WorkBundleBlob, ConstU32<1_024>>;
 pub type BulletinProofBytes = BoundedVec<u8, ConstU32<65_536>>;
 pub type ReportSignatures = BoundedVec<WorkerSignature, ConstU32<8>>;
 pub type StateValue = BoundedVec<u8, ConstU32<1_048_576>>;
@@ -241,6 +246,29 @@ pub struct WorkerTaskV1 {
 }
 
 impl DecodeWithMemTracking for WorkerTaskV1 {}
+
+#[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+pub struct MiniJamWorkBundleV1 {
+    pub protocol_version: u16,
+    pub package_hash: Hash,
+    pub external_data: WorkBundleExternalData,
+    pub import_segments: WorkBundleImportSegments,
+    pub import_proofs: WorkBundleImportProofs,
+}
+
+impl MiniJamWorkBundleV1 {
+    pub fn new(package_hash: Hash) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION_V1,
+            package_hash,
+            external_data: Default::default(),
+            import_segments: Default::default(),
+            import_proofs: Default::default(),
+        }
+    }
+}
+
+impl DecodeWithMemTracking for MiniJamWorkBundleV1 {}
 
 #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub enum OpposeReason {
