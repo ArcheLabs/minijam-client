@@ -22,6 +22,8 @@ Evidence:
 
 - `./scripts/check-submodule.sh`
 - `cargo fmt --all -- --check`
+- `cargo check -p minijam-protocol -p minijam-jamcore-api -p minijam-worker-engine --no-default-features --target wasm32-unknown-unknown`
+- `cargo check -p minijam-runtime --no-default-features --target wasm32v1-none`
 
 ## M1: Recoverable Runtime Execution
 
