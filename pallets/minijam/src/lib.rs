@@ -800,6 +800,10 @@ pub mod pallet {
             ExecutionReceipts::<T>::get(work_id)
         }
 
+        pub fn get_last_execution_receipt() -> Option<Hash> {
+            LastExecutionReceipt::<T>::get()
+        }
+
         pub fn get_service_fuel(service_id: u32) -> ServiceFuelAccount<BalanceOf<T>> {
             ServiceFuelAccounts::<T>::get(service_id)
         }
@@ -815,6 +819,37 @@ pub mod pallet {
             work_id: WorkId,
         ) -> Option<WorkFuelSettlement<BalanceOf<T>>> {
             WorkFuelSettlements::<T>::get(work_id)
+        }
+
+        pub fn get_pending_preimages() -> BoundedVec<PendingPreimage<T>, T::MaxPendingPreimages> {
+            PendingPreimages::<T>::get()
+        }
+
+        pub fn has_pending_preimage(requester: u32, blob_hash: Hash, blob_len: u32) -> bool {
+            PendingPreimageKeys::<T>::contains_key(PreimageKeyV1 {
+                requester,
+                blob_hash,
+                blob_len,
+            })
+        }
+
+        pub fn get_pending_system_ops() -> BoundedVec<PendingSystemOp<T>, T::MaxPendingSystemOps> {
+            PendingSystemOps::<T>::get()
+        }
+
+        pub fn get_system_op(request_id: Hash) -> Option<SystemOpV1> {
+            PendingSystemOps::<T>::get()
+                .into_iter()
+                .find(|pending| pending.op.request_id == request_id)
+                .map(|pending| pending.op)
+        }
+
+        pub fn get_system_service_info() -> Option<StateValue> {
+            ProtocolState::<T>::get(Self::service_info_state_key(0))
+        }
+
+        pub fn get_protocol_state(key: [u8; 31]) -> Option<StateValue> {
+            ProtocolState::<T>::get(key)
         }
     }
 

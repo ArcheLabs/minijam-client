@@ -557,6 +557,10 @@ fn genesis_config_seeds_protocol_state() {
                 .into_inner(),
             vec![1, 2, 3]
         );
+        assert_eq!(
+            MiniJam::get_system_service_info().unwrap().into_inner(),
+            vec![1, 2, 3]
+        );
     });
 }
 
@@ -657,12 +661,20 @@ fn accepted_candidate_executes_next_block_and_commits_delta() {
             vec![1]
         );
         assert_eq!(
+            MiniJam::get_protocol_state(key).unwrap().into_inner(),
+            vec![1]
+        );
+        assert_eq!(
             MiniJam::work(0).unwrap().status,
             pallet_minijam::WorkStatus::Imported
         );
         assert!(pallet_minijam::ExecutionQueue::<Test>::get().is_empty());
         assert!(pallet_minijam::ExecutionReceipts::<Test>::get(0).is_some());
         assert!(pallet_minijam::LastExecutionReceipt::<Test>::get().is_some());
+        assert_eq!(
+            MiniJam::get_last_execution_receipt(),
+            pallet_minijam::LastExecutionReceipt::<Test>::get()
+        );
     });
 }
 
@@ -673,6 +685,8 @@ fn queued_preimages_are_imported_with_next_virtual_block() {
         let canonical_hash = blake2_256(&preimage);
         assert_ok!(MiniJam::submit_preimage(RuntimeOrigin::signed(6), preimage));
         assert_eq!(pallet_minijam::PendingPreimages::<Test>::get().len(), 1);
+        assert_eq!(MiniJam::get_pending_preimages().len(), 1);
+        assert!(MiniJam::has_pending_preimage(7, canonical_hash, 3));
 
         System::set_block_number(100);
         <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(100);
@@ -685,6 +699,7 @@ fn queued_preimages_are_imported_with_next_virtual_block() {
                 blob_len: 3
             }
         ));
+        assert!(!MiniJam::has_pending_preimage(7, canonical_hash, 3));
     });
 }
 
@@ -708,6 +723,11 @@ fn queued_system_ops_are_consumed_with_next_virtual_block() {
         assert!(pallet_minijam::PendingSystemOpKeys::<Test>::contains_key(
             request_id
         ));
+        assert_eq!(MiniJam::get_pending_system_ops().len(), 1);
+        assert_eq!(
+            MiniJam::get_system_op(request_id),
+            Some(pending[0].op.clone())
+        );
 
         System::set_block_number(100);
         <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(100);
@@ -716,6 +736,7 @@ fn queued_system_ops_are_consumed_with_next_virtual_block() {
         assert!(!pallet_minijam::PendingSystemOpKeys::<Test>::contains_key(
             request_id
         ));
+        assert!(MiniJam::get_system_op(request_id).is_none());
     });
 }
 
