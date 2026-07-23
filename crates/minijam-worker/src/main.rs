@@ -3,9 +3,12 @@
 use std::{path::PathBuf, sync::Arc, thread, time::Duration};
 
 use clap::Parser;
+use futures::executor::block_on;
 use minijam_worker::{
-    spawn_prometheus_metrics_server, WorkerConfig, WorkerMetrics, WorkerRecoveryDb,
+    spawn_prometheus_metrics_server, BlockingHttpBytesClient, BlockingHttpWorkerChainSource,
+    WorkerConfig, WorkerMetrics, WorkerRecoveryDb, WorkerRunner,
 };
+use minijam_worker_engine::{fetch::IpfsGatewayFetcher, MiniJamWorkBundleDecoder};
 
 #[derive(Debug, Parser)]
 #[command(name = "minijam-worker")]
@@ -115,29 +118,73 @@ fn main() {
         }
         eprintln!("minijam worker metrics listening on {bind}");
     }
-    if let Some(path) = &config.recovery_db_path {
-        match WorkerRecoveryDb::new(path).load_statuses() {
+    let recovery_db = config.recovery_db_path.as_ref().map(WorkerRecoveryDb::new);
+    let statuses = if let Some(db) = &recovery_db {
+        match db.load_statuses() {
             Ok(statuses) => {
                 eprintln!(
                     "minijam worker recovery db loaded path={} statuses={}",
-                    path.display(),
+                    db.path().display(),
                     statuses.len()
                 );
+                statuses
             }
             Err(error) => {
                 eprintln!("{error}");
                 std::process::exit(2);
             }
         }
-    }
+    } else {
+        Default::default()
+    };
+
+    let chain = match BlockingHttpWorkerChainSource::new(config.rpc_url.clone()) {
+        Ok(chain) => chain,
+        Err(error) => {
+            eprintln!("{error:?}");
+            std::process::exit(2);
+        }
+    };
+    let fetcher = IpfsGatewayFetcher::new(BlockingHttpBytesClient, config.ipfs_gateway.clone());
+    let mut runner = WorkerRunner::with_statuses(
+        chain,
+        fetcher,
+        MiniJamWorkBundleDecoder,
+        config.max_bundle_bytes,
+        statuses,
+    );
 
     if once {
+        if let Err(error) = poll_and_persist(&mut runner, &metrics, recovery_db.as_ref()) {
+            eprintln!("minijam worker poll failed: {error:?}");
+            std::process::exit(1);
+        }
         return;
     }
 
     loop {
         thread::sleep(config.poll_interval);
-        metrics.record_poll(0);
-        eprintln!("minijam worker polling is ready; chain RPC integration is pending");
+        if let Err(error) = poll_and_persist(&mut runner, &metrics, recovery_db.as_ref()) {
+            eprintln!("minijam worker poll failed: {error:?}");
+        }
     }
+}
+
+fn poll_and_persist<C, F, D>(
+    runner: &mut WorkerRunner<C, F, D>,
+    metrics: &WorkerMetrics,
+    recovery_db: Option<&WorkerRecoveryDb>,
+) -> Result<(), minijam_worker::WorkerError>
+where
+    C: minijam_worker::WorkerChainSource,
+    F: minijam_worker_engine::fetch::ContentFetcher,
+    D: minijam_worker_engine::WorkBundleDecoder,
+{
+    let processed = block_on(runner.poll_once_with_metrics(metrics))?;
+    if let Some(db) = recovery_db {
+        db.save_statuses(runner.statuses())
+            .map_err(|error| minijam_worker::WorkerError::Chain(error.to_string()))?;
+    }
+    eprintln!("minijam worker poll completed processed={processed}");
+    Ok(())
 }

@@ -3,8 +3,9 @@
 use core::time::Duration;
 use std::{
     collections::BTreeMap,
+    fmt,
     io::{Read, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -15,11 +16,12 @@ use std::{
 
 use minijam_protocol::{ContentRef, Hash, WorkId};
 use minijam_worker_engine::{
-    fetch::{fetch_verified_content, ContentFetcher, FetchError},
+    fetch::{fetch_verified_content, ContentFetcher, FetchError, HttpBytesClient},
     verify_work_bundle, MiniJamWorkBundleDecoder, WorkBundleDecoder, WorkBundleVerificationError,
 };
 use parity_scale_codec::Decode;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkerConfig {
@@ -36,7 +38,7 @@ pub struct WorkerConfig {
 impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
-            rpc_url: "ws://127.0.0.1:9944".into(),
+            rpc_url: "http://127.0.0.1:9944".into(),
             key: None,
             poll_interval: Duration::from_millis(1_000),
             recovery_db_path: None,
@@ -299,6 +301,48 @@ impl WorkerChainSource for WsWorkerChainSource {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct BlockingHttpWorkerChainSource {
+    rpc_url: String,
+}
+
+impl BlockingHttpWorkerChainSource {
+    pub fn new(rpc_url: impl Into<String>) -> Result<Self, WorkerError> {
+        let rpc_url = rpc_url.into();
+        HttpEndpoint::parse(&rpc_url).map_err(|error| WorkerError::Chain(error.to_string()))?;
+        Ok(Self { rpc_url })
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkerChainSource for BlockingHttpWorkerChainSource {
+    async fn pending_work_tasks(&self) -> Result<Vec<WorkTask>, WorkerError> {
+        let response = http_post_json(
+            &self.rpc_url,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "minijam_getPendingWorkTasks",
+                "params": [],
+            })
+            .to_string(),
+        )
+        .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        let encoded = json_rpc_string_result(&response)?;
+        decode_pending_work_tasks_response(&encoded)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BlockingHttpBytesClient;
+
+#[async_trait::async_trait]
+impl HttpBytesClient for BlockingHttpBytesClient {
+    async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, FetchError> {
+        http_get_bytes(url).map_err(|error| FetchError::Transport(error.to_string()))
+    }
+}
+
 pub fn decode_pending_work_tasks_response(encoded: &str) -> Result<Vec<WorkTask>, WorkerError> {
     let bytes = decode_hex(encoded)?;
     let tasks = Vec::<minijam_protocol::WorkerTaskV1>::decode(&mut bytes.as_slice())
@@ -314,6 +358,109 @@ pub fn decode_pending_work_tasks_response(encoded: &str) -> Result<Vec<WorkTask>
         })
         .collect())
 }
+
+fn json_rpc_string_result(response: &str) -> Result<String, WorkerError> {
+    let value: Value = serde_json::from_str(response)
+        .map_err(|error| WorkerError::Chain(format!("invalid JSON-RPC response: {error}")))?;
+    if let Some(error) = value.get("error") {
+        return Err(WorkerError::Chain(format!("JSON-RPC error: {error}")));
+    }
+    value
+        .get("result")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            WorkerError::Chain("JSON-RPC response did not contain a string result".into())
+        })
+}
+
+fn http_post_json(url: &str, body: &str) -> Result<String, HttpError> {
+    let endpoint = HttpEndpoint::parse(url)?;
+    let mut stream = TcpStream::connect((endpoint.host.as_str(), endpoint.port))
+        .map_err(|error| HttpError(error.to_string()))?;
+    write!(
+        stream,
+        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        endpoint.path,
+        endpoint.host,
+        body.len(),
+        body
+    )
+    .map_err(|error| HttpError(error.to_string()))?;
+    let body = read_http_body(stream)?;
+    String::from_utf8(body).map_err(|error| HttpError(error.to_string()))
+}
+
+fn http_get_bytes(url: &str) -> Result<Vec<u8>, HttpError> {
+    let endpoint = HttpEndpoint::parse(url)?;
+    let mut stream = TcpStream::connect((endpoint.host.as_str(), endpoint.port))
+        .map_err(|error| HttpError(error.to_string()))?;
+    write!(
+        stream,
+        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        endpoint.path, endpoint.host
+    )
+    .map_err(|error| HttpError(error.to_string()))?;
+    read_http_body(stream)
+}
+
+fn read_http_body(mut stream: TcpStream) -> Result<Vec<u8>, HttpError> {
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .map_err(|error| HttpError(error.to_string()))?;
+    let separator = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| HttpError("HTTP response did not contain a header/body separator".into()))?;
+    let headers = String::from_utf8_lossy(&response[..separator]);
+    if !headers.starts_with("HTTP/1.1 200") && !headers.starts_with("HTTP/1.0 200") {
+        return Err(HttpError(format!(
+            "HTTP request failed: {}",
+            headers.lines().next().unwrap_or_else(|| headers.as_ref())
+        )));
+    }
+    Ok(response[(separator + 4)..].to_vec())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HttpEndpoint {
+    host: String,
+    port: u16,
+    path: String,
+}
+
+impl HttpEndpoint {
+    fn parse(url: &str) -> Result<Self, HttpError> {
+        let stripped = url
+            .strip_prefix("http://")
+            .ok_or_else(|| HttpError("worker active polling requires an http:// RPC URL".into()))?;
+        let (authority, path) = match stripped.split_once('/') {
+            Some((authority, path)) => (authority, format!("/{path}")),
+            None => (stripped, "/".to_string()),
+        };
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((host, port)) => (
+                host.to_string(),
+                port.parse::<u16>()
+                    .map_err(|error| HttpError(error.to_string()))?,
+            ),
+            None => (authority.to_string(), 80),
+        };
+        Ok(Self { host, port, path })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HttpError(String);
+
+impl fmt::Display for HttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for HttpError {}
 
 fn decode_hex(input: &str) -> Result<Vec<u8>, WorkerError> {
     let hex = input.strip_prefix("0x").unwrap_or(input);

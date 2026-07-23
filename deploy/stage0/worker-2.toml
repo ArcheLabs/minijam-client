@@ -1,5 +1,5 @@
 [node]
-rpc_url = "ws://public-rpc:9944"
+rpc_url = "http://public-rpc:9944"
 
 [worker]
 poll_interval_ms = 1000
