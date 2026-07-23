@@ -33,9 +33,10 @@ pub mod pallet {
         ProtocolStateReader, StateError,
     };
     use minijam_protocol::{
-        blake2_256, CanonicalPreimageBytes, CanonicalReportBytes, ContentRef, Hash, PreimageBatch,
-        PreimageMetadataV1, ProtocolStateChange, ReportEnvelopeV1, StateOperation, StateValue,
-        SystemCommandV1, SystemOpBatch, SystemOpV1, PROTOCOL_VERSION_V1, PROTOCOL_VERSION_V2,
+        blake2_256, CanonicalPreimageBytes, CanonicalReportBytes, CanonicalWorkPackageBytes,
+        ContentRef, Hash, PreimageBatch, PreimageMetadataV1, ProtocolStateChange, ReportEnvelopeV1,
+        StateOperation, StateValue, SystemCommandV1, SystemOpBatch, SystemOpV1, WorkerTaskV1,
+        PROTOCOL_VERSION_V1, PROTOCOL_VERSION_V2,
     };
     use minijam_state_adapter::{validate_execution_output_v2, ValidatedDelta, ValidationError};
     use pallet_minijam_workers::RoundDecision;
@@ -1001,6 +1002,30 @@ pub mod pallet {
     }
 
     impl<T: Config> Pallet<T> {
+        pub fn pending_worker_tasks() -> Vec<WorkerTaskV1> {
+            let mut tasks = PendingWorks::<T>::get()
+                .into_iter()
+                .filter_map(|work_id| {
+                    let work = Works::<T>::get(work_id)?;
+                    if work.status != WorkStatus::AwaitingCandidate {
+                        return None;
+                    }
+                    let canonical_work_package =
+                        CanonicalWorkPackageBytes::try_from(work.canonical_work_package.to_vec())
+                            .ok()?;
+                    Some(WorkerTaskV1 {
+                        work_id,
+                        round: work.round,
+                        package_hash: work.package_hash,
+                        canonical_work_package,
+                        bundle_ref: work.bundle_ref,
+                    })
+                })
+                .collect::<Vec<_>>();
+            tasks.sort_by_key(|task| (task.work_id, task.round, task.package_hash));
+            tasks
+        }
+
         fn prepare_round(work_id: WorkId) -> DispatchResult {
             let mut work = Works::<T>::get(work_id).ok_or(Error::<T>::WorkNotFound)?;
             match pallet_minijam_workers::Pallet::<T>::assign_work(work_id, work.round) {

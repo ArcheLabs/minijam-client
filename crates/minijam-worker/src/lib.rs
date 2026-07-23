@@ -11,6 +11,7 @@ use minijam_worker_engine::{
     fetch::{fetch_verified_content, ContentFetcher, FetchError},
     verify_work_bundle, WorkBundleDecoder, WorkBundleVerificationError,
 };
+use parity_scale_codec::Decode;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -172,6 +173,76 @@ pub enum WorkerError {
     Chain(String),
     Fetch(FetchError),
     Bundle(WorkBundleVerificationError),
+}
+
+#[derive(Debug)]
+pub struct WsWorkerChainSource {
+    client: jsonrpsee::ws_client::WsClient,
+}
+
+impl WsWorkerChainSource {
+    pub async fn connect(url: &str) -> Result<Self, WorkerError> {
+        let client = jsonrpsee::ws_client::WsClientBuilder::default()
+            .build(url)
+            .await
+            .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        Ok(Self { client })
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkerChainSource for WsWorkerChainSource {
+    async fn pending_work_tasks(&self) -> Result<Vec<WorkTask>, WorkerError> {
+        use jsonrpsee::core::client::ClientT;
+
+        let encoded: String = self
+            .client
+            .request("minijam_getPendingWorkTasks", jsonrpsee::rpc_params![])
+            .await
+            .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        decode_pending_work_tasks_response(&encoded)
+    }
+}
+
+pub fn decode_pending_work_tasks_response(encoded: &str) -> Result<Vec<WorkTask>, WorkerError> {
+    let bytes = decode_hex(encoded)?;
+    let tasks = Vec::<minijam_protocol::WorkerTaskV1>::decode(&mut bytes.as_slice())
+        .map_err(|error| WorkerError::Chain(format!("invalid pending work task batch: {error}")))?;
+    Ok(tasks
+        .into_iter()
+        .map(|task| WorkTask {
+            work_id: task.work_id,
+            round: task.round,
+            package_hash: task.package_hash,
+            canonical_work_package: task.canonical_work_package.into_inner(),
+            bundle_ref: task.bundle_ref,
+        })
+        .collect())
+}
+
+fn decode_hex(input: &str) -> Result<Vec<u8>, WorkerError> {
+    let hex = input.strip_prefix("0x").unwrap_or(input);
+    if hex.len() % 2 != 0 {
+        return Err(WorkerError::Chain("hex input has odd length".into()));
+    }
+    let mut output = Vec::with_capacity(hex.len() / 2);
+    for chunk in hex.as_bytes().chunks_exact(2) {
+        let high = hex_nibble(chunk[0])?;
+        let low = hex_nibble(chunk[1])?;
+        output.push((high << 4) | low);
+    }
+    Ok(output)
+}
+
+fn hex_nibble(byte: u8) -> Result<u8, WorkerError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(WorkerError::Chain(
+            "hex input contains a non-hex character".into(),
+        )),
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -422,6 +493,7 @@ mod tests {
     use futures::executor::block_on;
     use minijam_protocol::blake2_256;
     use minijam_worker_engine::{fetch::MemoryContentFetcher, WorkBundleDecodeError};
+    use parity_scale_codec::Encode;
 
     #[test]
     fn default_worker_config_is_valid() {
@@ -557,6 +629,37 @@ mod tests {
     }
 
     #[test]
+    fn decodes_pending_work_tasks_rpc_response() {
+        let package_hash = [7u8; 32];
+        let bundle_ref = ContentRef {
+            cid_v1: b"cid-1".to_vec().try_into().unwrap(),
+            content_hash: [8u8; 32],
+            size: 32,
+        };
+        let tasks = vec![minijam_protocol::WorkerTaskV1 {
+            work_id: 42,
+            round: 1,
+            package_hash,
+            canonical_work_package: vec![1, 2, 3].try_into().unwrap(),
+            bundle_ref: bundle_ref.clone(),
+        }];
+        let encoded = hex_encode_for_test(&tasks.encode());
+
+        let decoded = decode_pending_work_tasks_response(&encoded).unwrap();
+
+        assert_eq!(
+            decoded,
+            vec![WorkTask {
+                work_id: 42,
+                round: 1,
+                package_hash,
+                canonical_work_package: vec![1, 2, 3],
+                bundle_ref,
+            }]
+        );
+    }
+
+    #[test]
     fn runner_records_bundle_rejection_without_stopping_poll() {
         let package_hash = [7u8; 32];
         let mut bundle = [8u8; 32].to_vec();
@@ -579,6 +682,16 @@ mod tests {
                 reason: WorkerError::Bundle(WorkBundleVerificationError::PackageHashMismatch)
             })
         ));
+    }
+
+    fn hex_encode_for_test(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut output = String::from("0x");
+        for byte in bytes {
+            output.push(HEX[(byte >> 4) as usize] as char);
+            output.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        output
     }
 
     #[test]

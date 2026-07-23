@@ -86,6 +86,17 @@ where
         }
     })?;
 
+    module.register_method("minijam_getPendingWorkTasks", {
+        let client = client.clone();
+        move |_, _, _| -> RpcResult<String> {
+            let tasks = client
+                .runtime_api()
+                .get_pending_work_tasks(finalized_hash(&client))
+                .map_err(runtime_api_error)?;
+            Ok(hex_encode(&parity_scale_codec::Encode::encode(&tasks)))
+        }
+    })?;
+
     module.register_method("minijam_getWorkByPackageHash", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {
@@ -286,6 +297,13 @@ where
     C: HeaderBackend<Block>,
 {
     client.info().best_hash
+}
+
+fn finalized_hash<C>(client: &Arc<C>) -> <Block as BlockT>::Hash
+where
+    C: HeaderBackend<Block>,
+{
+    client.info().finalized_hash
 }
 
 fn runtime_api_error(error: sp_api::ApiError) -> ErrorObjectOwned {

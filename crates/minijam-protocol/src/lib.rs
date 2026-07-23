@@ -232,6 +232,17 @@ impl ReportEnvelopeV1 {
 impl DecodeWithMemTracking for ReportEnvelopeV1 {}
 
 #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+pub struct WorkerTaskV1 {
+    pub work_id: WorkId,
+    pub round: AssignmentRound,
+    pub package_hash: Hash,
+    pub canonical_work_package: CanonicalWorkPackageBytes,
+    pub bundle_ref: ContentRef,
+}
+
+impl DecodeWithMemTracking for WorkerTaskV1 {}
+
+#[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub enum OpposeReason {
     InvalidRefine,
     MissingData,

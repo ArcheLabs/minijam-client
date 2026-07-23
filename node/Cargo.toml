@@ -21,6 +21,7 @@ minijam-rpc-runtime-api = { path = "../crates/minijam-rpc-runtime-api", default-
 pallet-transaction-payment = { default-features = true, workspace = true }
 pallet-transaction-payment-rpc = { default-features = true, workspace = true }
 minijam-runtime = { path = "../runtime", default-features = true }
+parity-scale-codec = { default-features = true, workspace = true }
 sc-basic-authorship = { default-features = true, workspace = true }
 sc-cli = { default-features = true, workspace = true }
 sc-client-api = { default-features = true, workspace = true }

@@ -58,6 +58,10 @@ impl_runtime_apis! {
             pallet_minijam::Pallet::<Runtime>::get_work(work_id).map(|value| value.encode())
         }
 
+        fn get_pending_work_tasks() -> Vec<minijam_protocol::WorkerTaskV1> {
+            pallet_minijam::Pallet::<Runtime>::pending_worker_tasks()
+        }
+
         fn get_work_by_package_hash(package_hash: minijam_protocol::Hash) -> Option<Vec<u8>> {
             pallet_minijam::Pallet::<Runtime>::get_work_by_package_hash(package_hash)
                 .map(|value| value.encode())

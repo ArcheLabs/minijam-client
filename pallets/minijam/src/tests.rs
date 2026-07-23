@@ -608,6 +608,34 @@ fn submit_work_stores_package_hash_and_bundle_ref() {
 }
 
 #[test]
+fn pending_worker_tasks_project_finalized_worker_inputs() {
+    new_test_ext().execute_with(|| {
+        activate_workers();
+        let package = work_package(21);
+        let bundle = bundle_ref(22);
+        let package_hash = blake2_256(&package);
+
+        assert_ok!(MiniJam::submit_work(
+            RuntimeOrigin::signed(5),
+            package.clone(),
+            bundle.clone()
+        ));
+
+        let tasks = MiniJam::pending_worker_tasks();
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].work_id, 0);
+        assert_eq!(tasks[0].round, 0);
+        assert_eq!(tasks[0].package_hash, package_hash);
+        assert_eq!(
+            tasks[0].canonical_work_package.as_slice(),
+            package.as_slice()
+        );
+        assert_eq!(tasks[0].bundle_ref, bundle);
+    });
+}
+
+#[test]
 fn submit_candidate_rejects_report_not_bound_to_work_package() {
     new_test_ext().execute_with(|| {
         let package_hash = submit_assigned_service_work();
