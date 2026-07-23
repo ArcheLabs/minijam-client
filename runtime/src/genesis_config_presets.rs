@@ -18,7 +18,7 @@ use crate::{
 const DEV_BALANCE: Balance = 1_000_000 * UNIT;
 const REWARD_POOL_BALANCE: Balance = 1_000_000 * UNIT;
 const SYSTEM_SERVICE_FUEL: Balance = 1_000 * UNIT;
-const SYSTEM_SERVICE_BLOB: &[u8] = b"minijam-stage0-system-service-placeholder-v1";
+const SYSTEM_SERVICE_BLOB: &[u8] = include_bytes!("../../artifacts/system-service.blob");
 
 fn testnet_genesis(
     initial_authorities: Vec<(AuraId, GrandpaId)>,
@@ -259,5 +259,21 @@ mod tests {
                 .is_some_and(|pair| pair.first() == Some(&fuel_escrow))),
             "fuel escrow account must be endowed"
         );
+    }
+
+    #[test]
+    fn system_service_manifest_matches_embedded_blob() {
+        let manifest: Value =
+            serde_json::from_str(include_str!("../../artifacts/system-service.manifest.json"))
+                .expect("system service manifest must be valid JSON");
+        assert_eq!(
+            manifest.get("artifact"),
+            Some(&Value::from("system-service.blob"))
+        );
+        assert_eq!(
+            manifest.get("byte_len"),
+            Some(&Value::from(SYSTEM_SERVICE_BLOB.len() as u64))
+        );
+        assert!(!SYSTEM_SERVICE_BLOB.is_empty());
     }
 }

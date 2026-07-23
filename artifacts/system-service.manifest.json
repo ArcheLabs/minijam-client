@@ -1,0 +1,8 @@
+{
+  "name": "minijam-system-service",
+  "abi_version": 1,
+  "artifact": "system-service.blob",
+  "byte_len": 45,
+  "stage": 0,
+  "note": "Stage 0 placeholder artifact until the system-service PVM compiler pipeline is wired."
+}
