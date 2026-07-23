@@ -23,7 +23,7 @@ pub mod pallet {
         ProtocolStateReader, StateError,
     };
     use minijam_protocol::{
-        blake2_256, CanonicalPreimageBytes, CanonicalReportBytes, Hash, PreimageBatch,
+        blake2_256, CanonicalPreimageBytes, CanonicalReportBytes, ContentRef, Hash, PreimageBatch,
         PreimageMetadataV1, ProtocolStateChange, ReportEnvelopeV1, StateOperation, StateValue,
         SystemCommandV1, SystemOpBatch, SystemOpV1, PROTOCOL_VERSION_V1, PROTOCOL_VERSION_V2,
     };
@@ -82,6 +82,9 @@ pub mod pallet {
     #[scale_info(skip_type_params(T))]
     pub struct WorkRecord<T: Config> {
         pub owner: T::AccountId,
+        pub package_hash: Hash,
+        pub canonical_work_package: BoundedVec<u8, T::MaxWorkPackageBytes>,
+        pub bundle_ref: ContentRef,
         pub round: u8,
         pub status: WorkStatus,
         pub candidate_deadline: BlockNumberFor<T>,
@@ -197,6 +200,9 @@ pub mod pallet {
         #[pallet::constant]
         type MaxExecutionGas: Get<u64>;
 
+        #[pallet::constant]
+        type MaxWorkPackageBytes: Get<u32>;
+
         type JamCoreExecutor: MiniJamExecutor + Default;
 
         #[pallet::constant]
@@ -215,6 +221,10 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn work)]
     pub type Works<T: Config> = StorageMap<_, Blake2_128Concat, WorkId, WorkRecord<T>, OptionQuery>;
+
+    #[pallet::storage]
+    pub type WorkByPackageHash<T: Config> =
+        StorageMap<_, Blake2_128Concat, Hash, WorkId, OptionQuery>;
 
     #[pallet::storage]
     #[pallet::getter(fn candidate)]
@@ -292,6 +302,8 @@ pub mod pallet {
         WorkSubmitted {
             work_id: WorkId,
             owner: T::AccountId,
+            package_hash: Hash,
+            bundle_ref: ContentRef,
             status: WorkStatus,
         },
         CandidateSubmitted {
@@ -361,6 +373,9 @@ pub mod pallet {
     pub enum Error<T> {
         WorkIdOverflow,
         TooManyPendingWorks,
+        InvalidWorkPackage,
+        DuplicateWorkPackage,
+        InvalidContentRef,
         WorkNotFound,
         CandidateNotExpected,
         CandidateAlreadySubmitted,
@@ -425,10 +440,24 @@ pub mod pallet {
     #[pallet::call]
     impl<T: Config> Pallet<T> {
         #[pallet::call_index(0)]
-        #[pallet::weight(T::DbWeight::get().reads_writes(5, 6))]
+        #[pallet::weight(T::DbWeight::get().reads_writes(6, 8))]
         #[transactional]
-        pub fn submit_work(origin: OriginFor<T>) -> DispatchResult {
+        pub fn submit_work(
+            origin: OriginFor<T>,
+            canonical_work_package: BoundedVec<u8, T::MaxWorkPackageBytes>,
+            bundle_ref: ContentRef,
+        ) -> DispatchResult {
             let owner = ensure_signed(origin)?;
+            ensure!(
+                !canonical_work_package.is_empty(),
+                Error::<T>::InvalidWorkPackage
+            );
+            Self::validate_content_ref(&bundle_ref)?;
+            let package_hash = blake2_256(&canonical_work_package);
+            ensure!(
+                !WorkByPackageHash::<T>::contains_key(package_hash),
+                Error::<T>::DuplicateWorkPackage
+            );
             let work_id = NextWorkId::<T>::get();
             let next = work_id.checked_add(1).ok_or(Error::<T>::WorkIdOverflow)?;
             PendingWorks::<T>::try_mutate(|pending| {
@@ -443,11 +472,15 @@ pub mod pallet {
                 work_id,
                 WorkRecord::<T> {
                     owner: owner.clone(),
+                    package_hash,
+                    canonical_work_package,
+                    bundle_ref: bundle_ref.clone(),
                     round: 0,
                     status: WorkStatus::InsufficientWorkers,
                     candidate_deadline: Zero::zero(),
                 },
             );
+            WorkByPackageHash::<T>::insert(package_hash, work_id);
             NextWorkId::<T>::put(next);
             let _ = Self::prepare_round(work_id);
             let status = Works::<T>::get(work_id)
@@ -456,6 +489,8 @@ pub mod pallet {
             Self::deposit_event(Event::WorkSubmitted {
                 work_id,
                 owner,
+                package_hash,
+                bundle_ref,
                 status,
             });
             Ok(())
@@ -1072,6 +1107,12 @@ pub mod pallet {
                     ensure!(*initial_balance > 0, Error::<T>::InvalidSystemOp);
                 }
             }
+            Ok(())
+        }
+
+        fn validate_content_ref(bundle_ref: &ContentRef) -> DispatchResult {
+            ensure!(!bundle_ref.cid_v1.is_empty(), Error::<T>::InvalidContentRef);
+            ensure!(bundle_ref.size > 0, Error::<T>::InvalidContentRef);
             Ok(())
         }
 

@@ -8,9 +8,9 @@ use minijam_jamcore_api::{
     MiniJamExecutionOutputV1, MiniJamExecutionOutputV2, MiniJamExecutor, ProtocolStateReader,
 };
 use minijam_protocol::{
-    blake2_256, BulletinEvidence, CanonicalReportBytes, PreimageMetadataV1, ProtocolStateChange,
-    ReportEnvelopeV1, ReportMetadataV1, ReportSignatures, StateOperation, StateValue,
-    SystemCommandV1, Verdict, WorkerVoteV1, NS_SERVICE_STORAGE, PROTOCOL_VERSION_V1,
+    blake2_256, BulletinEvidence, CanonicalReportBytes, ContentRef, PreimageMetadataV1,
+    ProtocolStateChange, ReportEnvelopeV1, ReportMetadataV1, ReportSignatures, StateOperation,
+    StateValue, SystemCommandV1, Verdict, WorkerVoteV1, NS_SERVICE_STORAGE, PROTOCOL_VERSION_V1,
 };
 use parity_scale_codec::Encode;
 use sp_core::{sr25519, Pair};
@@ -125,6 +125,7 @@ impl pallet_minijam::Config for Test {
     type MaxPendingWorks = frame_support::traits::ConstU32<8>;
     type MaxExecutionReports = frame_support::traits::ConstU32<4>;
     type MaxExecutionGas = frame_support::traits::ConstU64<1_000_000>;
+    type MaxWorkPackageBytes = frame_support::traits::ConstU32<64>;
     type JamCoreExecutor = TestExecutor;
     type MaxPendingPreimages = frame_support::traits::ConstU32<8>;
     type MaxPendingSystemOps = frame_support::traits::ConstU32<8>;
@@ -269,6 +270,28 @@ fn service_info_key(service_id: u32) -> [u8; 31] {
     key
 }
 
+fn work_package(
+    seed: u8,
+) -> frame_support::BoundedVec<u8, <Test as pallet_minijam::Config>::MaxWorkPackageBytes> {
+    vec![seed, seed.wrapping_add(1)].try_into().unwrap()
+}
+
+fn bundle_ref(seed: u8) -> ContentRef {
+    ContentRef {
+        cid_v1: vec![seed].try_into().unwrap(),
+        content_hash: [seed; 32],
+        size: 1,
+    }
+}
+
+fn submit_work(owner: u64) -> frame_support::dispatch::DispatchResult {
+    MiniJam::submit_work(
+        RuntimeOrigin::signed(owner),
+        work_package(owner as u8),
+        bundle_ref(owner as u8),
+    )
+}
+
 fn activate_workers() -> Vec<sr25519::Pair> {
     let pairs: Vec<_> = (1u8..=3)
         .map(|seed| sr25519::Pair::from_seed(&[seed; 32]))
@@ -326,10 +349,65 @@ fn vote(pair: &sr25519::Pair, worker_id: u64, verdict: Verdict) {
 }
 
 #[test]
+fn submit_work_stores_package_hash_and_bundle_ref() {
+    new_test_ext().execute_with(|| {
+        let package = work_package(11);
+        let bundle = bundle_ref(12);
+        let package_hash = blake2_256(&package);
+
+        assert_ok!(MiniJam::submit_work(
+            RuntimeOrigin::signed(5),
+            package.clone(),
+            bundle.clone()
+        ));
+
+        let work = MiniJam::work(0).unwrap();
+        assert_eq!(work.owner, 5);
+        assert_eq!(work.package_hash, package_hash);
+        assert_eq!(work.canonical_work_package, package);
+        assert_eq!(work.bundle_ref, bundle);
+        assert_eq!(
+            pallet_minijam::WorkByPackageHash::<Test>::get(package_hash),
+            Some(0)
+        );
+    });
+}
+
+#[test]
+fn submit_work_rejects_duplicate_package_and_invalid_bundle() {
+    new_test_ext().execute_with(|| {
+        let package = work_package(11);
+        let bundle = bundle_ref(12);
+
+        assert_ok!(MiniJam::submit_work(
+            RuntimeOrigin::signed(5),
+            package.clone(),
+            bundle.clone()
+        ));
+        assert_noop!(
+            MiniJam::submit_work(RuntimeOrigin::signed(6), package, bundle),
+            pallet_minijam::Error::<Test>::DuplicateWorkPackage
+        );
+        assert_noop!(
+            MiniJam::submit_work(
+                RuntimeOrigin::signed(6),
+                work_package(13),
+                ContentRef {
+                    cid_v1: Default::default(),
+                    content_hash: [0u8; 32],
+                    size: 1,
+                }
+            ),
+            pallet_minijam::Error::<Test>::InvalidContentRef
+        );
+    });
+}
+
+#[test]
 fn accepted_candidate_releases_bonds_and_enters_execution_queue() {
     new_test_ext().execute_with(|| {
         let pairs = activate_workers();
-        assert_ok!(MiniJam::submit_work(RuntimeOrigin::signed(5)));
+        assert_ok!(submit_work(5));
         assert_eq!(
             MiniJam::work(0).unwrap().status,
             pallet_minijam::WorkStatus::AwaitingCandidate
@@ -379,7 +457,7 @@ fn accepted_candidate_releases_bonds_and_enters_execution_queue() {
 fn accepted_candidate_executes_next_block_and_commits_delta() {
     new_test_ext().execute_with(|| {
         let pairs = activate_workers();
-        assert_ok!(MiniJam::submit_work(RuntimeOrigin::signed(5)));
+        assert_ok!(submit_work(5));
         assert_ok!(MiniJam::submit_candidate(
             RuntimeOrigin::signed(6),
             Box::new(envelope(0, 0))
@@ -557,7 +635,7 @@ fn empty_block_executes_stf() {
 fn root_pause_delays_imports_but_still_executes_empty_stf() {
     new_test_ext().execute_with(|| {
         let pairs = activate_workers();
-        assert_ok!(MiniJam::submit_work(RuntimeOrigin::signed(5)));
+        assert_ok!(submit_work(5));
         assert_ok!(MiniJam::submit_candidate(
             RuntimeOrigin::signed(6),
             Box::new(envelope(0, 0))
@@ -604,7 +682,7 @@ fn root_pause_delays_imports_but_still_executes_empty_stf() {
 fn root_quarantine_moves_execution_queue_without_executing() {
     new_test_ext().execute_with(|| {
         let pairs = activate_workers();
-        assert_ok!(MiniJam::submit_work(RuntimeOrigin::signed(5)));
+        assert_ok!(submit_work(5));
         assert_ok!(MiniJam::submit_candidate(
             RuntimeOrigin::signed(6),
             Box::new(envelope(0, 0))
@@ -650,7 +728,7 @@ fn root_quarantine_moves_execution_queue_without_executing() {
 fn rejected_candidate_is_slashed_and_advances_round() {
     new_test_ext().execute_with(|| {
         let pairs = activate_workers();
-        assert_ok!(MiniJam::submit_work(RuntimeOrigin::signed(5)));
+        assert_ok!(submit_work(5));
         assert_ok!(MiniJam::submit_candidate(
             RuntimeOrigin::signed(6),
             Box::new(envelope(0, 0))
@@ -684,7 +762,7 @@ fn rejected_candidate_is_slashed_and_advances_round() {
 fn missing_candidate_advances_without_penalizing_workers() {
     new_test_ext().execute_with(|| {
         activate_workers();
-        assert_ok!(MiniJam::submit_work(RuntimeOrigin::signed(5)));
+        assert_ok!(submit_work(5));
         System::set_block_number(121);
         <MiniJam as frame_support::traits::Hooks<u64>>::on_initialize(121);
         let work = MiniJam::work(0).unwrap();
@@ -704,7 +782,7 @@ fn missing_candidate_advances_without_penalizing_workers() {
 #[test]
 fn work_remains_insufficient_when_k_is_unavailable() {
     new_test_ext().execute_with(|| {
-        assert_ok!(MiniJam::submit_work(RuntimeOrigin::signed(5)));
+        assert_ok!(submit_work(5));
         assert_eq!(
             MiniJam::work(0).unwrap().status,
             pallet_minijam::WorkStatus::InsufficientWorkers
@@ -717,7 +795,7 @@ fn three_missing_candidate_rounds_fail_and_slash_work_deposit() {
     new_test_ext().execute_with(|| {
         activate_workers();
         let pool_before = Balances::total_balance(&100);
-        assert_ok!(MiniJam::submit_work(RuntimeOrigin::signed(5)));
+        assert_ok!(submit_work(5));
         for block in [121, 142, 163] {
             System::set_block_number(block);
             <MiniJam as frame_support::traits::Hooks<u64>>::on_initialize(block);

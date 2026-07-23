@@ -53,6 +53,7 @@ pub type EpochIndex = u32;
 
 pub type CanonicalReportBytes = BoundedVec<u8, ConstU32<1_048_576>>;
 pub type CanonicalPreimageBytes = BoundedVec<u8, ConstU32<1_048_576>>;
+pub type CanonicalWorkPackageBytes = BoundedVec<u8, ConstU32<1_048_576>>;
 pub type BulletinProofBytes = BoundedVec<u8, ConstU32<65_536>>;
 pub type ReportSignatures = BoundedVec<WorkerSignature, ConstU32<8>>;
 pub type StateValue = BoundedVec<u8, ConstU32<1_048_576>>;
@@ -140,6 +141,8 @@ pub struct ContentRef {
     pub content_hash: Hash,
     pub size: u64,
 }
+
+impl DecodeWithMemTracking for ContentRef {}
 
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub struct StorageLocation {
