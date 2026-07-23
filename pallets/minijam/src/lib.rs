@@ -296,6 +296,29 @@ pub mod pallet {
     #[pallet::storage]
     pub type TotalServiceFuel<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
+    #[pallet::genesis_config]
+    #[derive(frame_support::DefaultNoBound)]
+    pub struct GenesisConfig<T: Config> {
+        pub protocol_state: Vec<(Vec<u8>, Vec<u8>)>,
+        #[serde(skip)]
+        pub _phantom: core::marker::PhantomData<T>,
+    }
+
+    #[pallet::genesis_build]
+    impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
+        fn build(&self) {
+            for (key, value) in &self.protocol_state {
+                let key: [u8; 31] = key
+                    .as_slice()
+                    .try_into()
+                    .expect("MiniJAM genesis protocol-state keys must be 31 bytes");
+                let value = StateValue::try_from(value.clone())
+                    .expect("MiniJAM genesis protocol-state values must fit StateValue");
+                ProtocolState::<T>::insert(key, value);
+            }
+        }
+    }
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {

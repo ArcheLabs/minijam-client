@@ -3,6 +3,7 @@
 use alloc::{vec, vec::Vec};
 
 use frame_support::build_struct_json_patch;
+use jambda_minijam_executive::{system_service_genesis_state, SystemServiceGenesisConfig};
 use serde_json::Value;
 use sp_consensus_aura::sr25519::AuthorityId as AuraId;
 use sp_consensus_grandpa::AuthorityId as GrandpaId;
@@ -10,12 +11,13 @@ use sp_genesis_builder::{self, PresetId};
 use sp_keyring::Sr25519Keyring;
 
 use crate::{
-    AccountId, AuraConfig, Balance, BalancesConfig, GrandpaConfig, RuntimeGenesisConfig,
-    SudoConfig, UNIT,
+    AccountId, AuraConfig, Balance, BalancesConfig, GrandpaConfig, MiniJamConfig,
+    RuntimeGenesisConfig, SudoConfig, UNIT,
 };
 
 const DEV_BALANCE: Balance = 1_000_000 * UNIT;
 const REWARD_POOL_BALANCE: Balance = 1_000_000 * UNIT;
+const SYSTEM_SERVICE_BLOB: &[u8] = b"minijam-stage0-system-service-placeholder-v1";
 
 fn testnet_genesis(
     initial_authorities: Vec<(AuraId, GrandpaId)>,
@@ -58,7 +60,27 @@ fn testnet_genesis(
                 .collect::<Vec<_>>(),
         },
         sudo: SudoConfig { key: Some(root) },
+        mini_jam: MiniJamConfig {
+            protocol_state: system_service_zero_protocol_state(),
+            _phantom: Default::default(),
+        },
     })
+}
+
+fn system_service_zero_protocol_state() -> Vec<(Vec<u8>, Vec<u8>)> {
+    system_service_genesis_state(SystemServiceGenesisConfig {
+        code_blob: SYSTEM_SERVICE_BLOB.to_vec(),
+        initial_balance: 1_000_000_000_000,
+        min_item_gas: 1,
+        min_memo_gas: 1,
+        deposit_offset: 0,
+        genesis_slot: 0,
+        parent_service: 0,
+    })
+    .expect("system service 0 genesis state must be valid")
+    .into_iter()
+    .map(|(key, value)| (key.0.to_vec(), value))
+    .collect()
 }
 
 pub fn development_config_genesis() -> Value {

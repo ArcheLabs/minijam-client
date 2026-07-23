@@ -259,6 +259,21 @@ fn new_test_ext() -> sp_io::TestExternalities {
     storage.into()
 }
 
+fn test_ext_with_protocol_state(
+    protocol_state: Vec<(Vec<u8>, Vec<u8>)>,
+) -> sp_io::TestExternalities {
+    let mut storage = frame_system::GenesisConfig::<Test>::default()
+        .build_storage()
+        .unwrap();
+    pallet_minijam::GenesisConfig::<Test> {
+        protocol_state,
+        _phantom: Default::default(),
+    }
+    .assimilate_storage(&mut storage)
+    .unwrap();
+    storage.into()
+}
+
 fn service_info_key(service_id: u32) -> [u8; 31] {
     let service = service_id.to_le_bytes();
     let mut key = [0u8; 31];
@@ -399,6 +414,19 @@ fn submit_work_rejects_duplicate_package_and_invalid_bundle() {
                 }
             ),
             pallet_minijam::Error::<Test>::InvalidContentRef
+        );
+    });
+}
+
+#[test]
+fn genesis_config_seeds_protocol_state() {
+    let key = service_info_key(0);
+    test_ext_with_protocol_state(vec![(key.to_vec(), vec![1, 2, 3])]).execute_with(|| {
+        assert_eq!(
+            pallet_minijam::ProtocolState::<Test>::get(key)
+                .unwrap()
+                .into_inner(),
+            vec![1, 2, 3]
         );
     });
 }
