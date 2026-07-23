@@ -59,6 +59,7 @@ parameter_types! {
     pub const MinimumStake: u128 = 1_000;
     pub const ChainId: [u8; 32] = [42; 32];
     pub const RewardPool: u64 = 100;
+    pub const FuelEscrow: u64 = 101;
     pub const TimelyVoteReward: u128 = 10;
     pub const MinimumAbsenceSlash: u128 = 10;
     pub const AbsenceSlash: sp_runtime::Perbill = sp_runtime::Perbill::from_percent(1);
@@ -67,6 +68,8 @@ parameter_types! {
     pub const CandidateBond: u128 = 100;
     pub const CandidateRejectionSlash: u128 = 10;
     pub const AcceptedSubmitterReward: u128 = 10;
+    pub const RefineGasPrice: u128 = 1;
+    pub const AccumulateGasPrice: u128 = 1;
 }
 
 #[derive_impl(pallet_balances::config_preludes::TestDefaultConfig)]
@@ -113,6 +116,9 @@ impl pallet_minijam::Config for Test {
     type CandidateRejectionSlash = CandidateRejectionSlash;
     type AcceptedSubmitterReward = AcceptedSubmitterReward;
     type RewardPool = RewardPool;
+    type FuelEscrowAccount = FuelEscrow;
+    type RefineGasPrice = RefineGasPrice;
+    type AccumulateGasPrice = AccumulateGasPrice;
     type ReportSubmissionDeadline = frame_support::traits::ConstU32<20>;
     type VoteWindow = frame_support::traits::ConstU32<10>;
     type MaxCandidateRounds = frame_support::traits::ConstU8<3>;
@@ -250,6 +256,17 @@ fn new_test_ext() -> sp_io::TestExternalities {
     .assimilate_storage(&mut storage)
     .unwrap();
     storage.into()
+}
+
+fn service_info_key(service_id: u32) -> [u8; 31] {
+    let service = service_id.to_le_bytes();
+    let mut key = [0u8; 31];
+    key[0] = 0xff;
+    key[1] = service[0];
+    key[3] = service[1];
+    key[5] = service[2];
+    key[7] = service[3];
+    key
 }
 
 fn activate_workers() -> Vec<sr25519::Pair> {
@@ -464,6 +481,43 @@ fn queued_system_ops_are_consumed_with_next_virtual_block() {
         assert!(!pallet_minijam::PendingSystemOpKeys::<Test>::contains_key(
             request_id
         ));
+    });
+}
+
+#[test]
+fn fund_service_moves_balance_to_fuel_escrow() {
+    new_test_ext().execute_with(|| {
+        pallet_minijam::ProtocolState::<Test>::insert(
+            service_info_key(7),
+            StateValue::try_from(vec![1, 2, 3]).unwrap(),
+        );
+
+        assert_ok!(MiniJam::fund_service(RuntimeOrigin::signed(5), 7, 250));
+
+        let account = pallet_minijam::ServiceFuelAccounts::<Test>::get(7);
+        assert_eq!(account.available, 250);
+        assert_eq!(account.reserved, 0);
+        assert_eq!(pallet_minijam::TotalServiceFuel::<Test>::get(), 250);
+        assert_eq!(Balances::total_balance(&5), 10_001 - 250);
+        assert_eq!(Balances::total_balance(&101), 250);
+    });
+}
+
+#[test]
+fn fund_service_rejects_unknown_service_and_zero_amount() {
+    new_test_ext().execute_with(|| {
+        assert_noop!(
+            MiniJam::fund_service(RuntimeOrigin::signed(5), 7, 250),
+            pallet_minijam::Error::<Test>::UnknownService
+        );
+        pallet_minijam::ProtocolState::<Test>::insert(
+            service_info_key(7),
+            StateValue::try_from(vec![1, 2, 3]).unwrap(),
+        );
+        assert_noop!(
+            MiniJam::fund_service(RuntimeOrigin::signed(5), 7, 0),
+            pallet_minijam::Error::<Test>::ZeroFuelAmount
+        );
     });
 }
 

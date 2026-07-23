@@ -127,6 +127,7 @@ parameter_types! {
     pub FeeMultiplier: Multiplier = Multiplier::one();
     pub const MiniJamChainId: [u8; 32] = [77; 32];
     pub RewardPoolAccount: AccountId = AccountId::new([9; 32]);
+    pub FuelEscrowAccount: AccountId = AccountId::new([7; 32]);
     pub BridgeEscrowAccount: AccountId = AccountId::new([8; 32]);
     pub const MinimumWorkerStake: Balance = 1_000 * UNIT;
     pub const TimelyVoteReward: Balance = UNIT;
@@ -137,6 +138,8 @@ parameter_types! {
     pub const CandidateBond: Balance = 10 * UNIT;
     pub const CandidateRejectionSlash: Balance = UNIT;
     pub const AcceptedSubmitterReward: Balance = UNIT;
+    pub const RefineGasPrice: Balance = 1;
+    pub const AccumulateGasPrice: Balance = 1;
 }
 
 #[derive_impl(frame_system::config_preludes::SolochainDefaultConfig)]
@@ -248,6 +251,9 @@ impl pallet_minijam::Config for Runtime {
     type CandidateRejectionSlash = CandidateRejectionSlash;
     type AcceptedSubmitterReward = AcceptedSubmitterReward;
     type RewardPool = RewardPoolAccount;
+    type FuelEscrowAccount = FuelEscrowAccount;
+    type RefineGasPrice = RefineGasPrice;
+    type AccumulateGasPrice = AccumulateGasPrice;
     type ReportSubmissionDeadline = ConstU32<20>;
     type VoteWindow = ConstU32<10>;
     type MaxCandidateRounds = ConstU8<3>;

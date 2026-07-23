@@ -35,6 +35,21 @@ pub mod pallet {
     pub type BalanceOf<T> =
         <<T as Config>::Currency as Inspect<<T as frame_system::Config>::AccountId>>::Balance;
 
+    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    pub struct ServiceFuelAccount<Balance> {
+        pub available: Balance,
+        pub reserved: Balance,
+    }
+
+    impl<Balance: Default> Default for ServiceFuelAccount<Balance> {
+        fn default() -> Self {
+            Self {
+                available: Default::default(),
+                reserved: Default::default(),
+            }
+        }
+    }
+
     #[derive(
         Clone,
         Copy,
@@ -156,6 +171,15 @@ pub mod pallet {
         type RewardPool: Get<Self::AccountId>;
 
         #[pallet::constant]
+        type FuelEscrowAccount: Get<Self::AccountId>;
+
+        #[pallet::constant]
+        type RefineGasPrice: Get<BalanceOf<Self>>;
+
+        #[pallet::constant]
+        type AccumulateGasPrice: Get<BalanceOf<Self>>;
+
+        #[pallet::constant]
         type ReportSubmissionDeadline: Get<u32>;
 
         #[pallet::constant]
@@ -255,6 +279,13 @@ pub mod pallet {
     #[pallet::storage]
     pub type SystemOpNonces<T: Config> = StorageMap<_, Blake2_128Concat, [u8; 32], u64, ValueQuery>;
 
+    #[pallet::storage]
+    pub type ServiceFuelAccounts<T: Config> =
+        StorageMap<_, Blake2_128Concat, u32, ServiceFuelAccount<BalanceOf<T>>, ValueQuery>;
+
+    #[pallet::storage]
+    pub type TotalServiceFuel<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -301,6 +332,12 @@ pub mod pallet {
         SystemOpConsumed {
             request_id: Hash,
         },
+        ServiceFunded {
+            funder: T::AccountId,
+            service_id: u32,
+            amount: BalanceOf<T>,
+            new_available: BalanceOf<T>,
+        },
         ExecutionYielded {
             work_id: WorkId,
             outcome: ExecutionOutcome,
@@ -339,6 +376,9 @@ pub mod pallet {
         InvalidSystemOp,
         DuplicatePendingSystemOp,
         TooManyPendingSystemOps,
+        UnknownService,
+        ZeroFuelAmount,
+        FuelEscrowInvariant,
     }
 
     #[pallet::hooks]
@@ -576,6 +616,44 @@ pub mod pallet {
             Self::deposit_event(Event::SystemOpQueued {
                 request_id: op.request_id,
                 sender,
+            });
+            Ok(())
+        }
+
+        #[pallet::call_index(6)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(4, 3))]
+        #[transactional]
+        pub fn fund_service(
+            origin: OriginFor<T>,
+            service_id: u32,
+            amount: BalanceOf<T>,
+        ) -> DispatchResult {
+            let funder = ensure_signed(origin)?;
+            ensure!(!amount.is_zero(), Error::<T>::ZeroFuelAmount);
+            ensure!(Self::service_exists(service_id), Error::<T>::UnknownService);
+
+            <T as Config>::Currency::transfer(
+                &funder,
+                &<T as Config>::FuelEscrowAccount::get(),
+                amount,
+                Preservation::Preserve,
+            )?;
+
+            let mut account = ServiceFuelAccounts::<T>::get(service_id);
+            account.available = account.available.saturating_add(amount);
+            ServiceFuelAccounts::<T>::insert(service_id, &account);
+            let total = TotalServiceFuel::<T>::get().saturating_add(amount);
+            TotalServiceFuel::<T>::put(total);
+            ensure!(
+                <T as Config>::Currency::balance(&<T as Config>::FuelEscrowAccount::get()) >= total,
+                Error::<T>::FuelEscrowInvariant
+            );
+
+            Self::deposit_event(Event::ServiceFunded {
+                funder,
+                service_id,
+                amount,
+                new_available: account.available,
             });
             Ok(())
         }
@@ -999,6 +1077,21 @@ pub mod pallet {
 
         fn system_op_sender(account: &T::AccountId) -> [u8; 32] {
             blake2_256(&account.encode())
+        }
+
+        fn service_exists(service_id: u32) -> bool {
+            ProtocolState::<T>::contains_key(Self::service_info_state_key(service_id))
+        }
+
+        fn service_info_state_key(service_id: u32) -> [u8; 31] {
+            let service = service_id.to_le_bytes();
+            let mut key = [0u8; 31];
+            key[0] = 0xff;
+            key[1] = service[0];
+            key[3] = service[1];
+            key[5] = service[2];
+            key[7] = service[3];
+            key
         }
 
         fn host_parent_hash(block: BlockNumberFor<T>) -> Hash {
