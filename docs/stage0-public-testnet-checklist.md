@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `73824fcc087a23b377d0ff6a9c502e636bcc1c45`
+- minijam-client current implementation commit: `07715a1715cba635364f68092ec9ecff72c6bcde`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -120,6 +120,7 @@ Evidence:
 - `cargo check -p minijam-cli`
 - `cargo test -p minijam-cli`
 - `cargo run -p minijam-cli -- claim-faucet`
+- `cargo run -p minijam-cli -- submit-vote --worker-id 3 --work-id 42 --round 1 --assignment-epoch 7 --candidate-report-hash 0x0909090909090909090909090909090909090909090909090909090909090909 --verdict support --deadline 100 --chain-id 0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --signature 0x05050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505050505`
 
 ## M6: Fixed Public Network Configuration
 
