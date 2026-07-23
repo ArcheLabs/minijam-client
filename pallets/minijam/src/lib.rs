@@ -23,7 +23,7 @@ pub mod pallet {
     };
     use frame_system::pallet_prelude::*;
     use jam_codec::Decode as JamDecode;
-    use jp_core_primitives::work::WorkPackage;
+    use jp_core_primitives::work::{WorkPackage, WorkReport};
     use minijam_jamcore_api::{
         ExecutionOutcome, MiniJamError, MiniJamExecutionInputV2, MiniJamExecutor,
         ProtocolStateReader, StateError,
@@ -352,6 +352,15 @@ pub mod pallet {
             work_id: WorkId,
             total: BalanceOf<T>,
         },
+        WorkFuelReleased {
+            work_id: WorkId,
+            total: BalanceOf<T>,
+        },
+        WorkFuelSettled {
+            work_id: WorkId,
+            charged: BalanceOf<T>,
+            refunded: BalanceOf<T>,
+        },
         CandidateSubmitted {
             work_id: WorkId,
             round: u8,
@@ -442,6 +451,7 @@ pub mod pallet {
         UnknownService,
         ZeroFuelAmount,
         FuelEscrowInvariant,
+        FuelSettlementInvariant,
     }
 
     #[pallet::hooks]
@@ -884,6 +894,7 @@ pub mod pallet {
         }
 
         fn fail_work(work_id: WorkId, work: &mut WorkRecord<T>) -> DispatchResult {
+            Self::release_work_fuel(work_id, work)?;
             let reason = T::JamHoldReason::from(HoldReason::WorkDeposit);
             let (credit, remainder) =
                 <T as Config>::Currency::slash(&reason, &work.owner, T::WorkDeposit::get());
@@ -1040,6 +1051,11 @@ pub mod pallet {
                     continue;
                 }
                 let mut work = Works::<T>::get(work_id).ok_or(ExecutionFailure::Fatal)?;
+                Self::settle_imported_work_fuel(
+                    work_id,
+                    &mut work,
+                    &candidate.envelope.canonical_report,
+                )?;
                 work.status = WorkStatus::Imported;
                 Works::<T>::insert(work_id, work);
                 ExecutionReceipts::<T>::insert(work_id, output.receipt_hash);
@@ -1186,6 +1202,15 @@ pub mod pallet {
             Ok(package)
         }
 
+        fn decode_work_report(bytes: &[u8]) -> Result<WorkReport, ExecutionFailure> {
+            let mut input = bytes;
+            let report = WorkReport::decode(&mut input).map_err(|_| ExecutionFailure::Fatal)?;
+            if !input.is_empty() {
+                return Err(ExecutionFailure::Fatal);
+            }
+            Ok(report)
+        }
+
         fn reserve_work_fuel(
             package: &WorkPackage,
         ) -> Result<
@@ -1232,6 +1257,125 @@ pub mod pallet {
             reservations
                 .try_into()
                 .map_err(|_| Error::<T>::TooManyServicesPerWork.into())
+        }
+
+        fn release_work_fuel(work_id: WorkId, work: &mut WorkRecord<T>) -> DispatchResult {
+            if work.fuel_reservation.is_empty() {
+                return Ok(());
+            }
+
+            let reservations = work.fuel_reservation.clone();
+            let mut total_released = BalanceOf::<T>::zero();
+            for reservation in &reservations {
+                ServiceFuelAccounts::<T>::try_mutate(reservation.service_id, |account| {
+                    ensure!(
+                        account.reserved >= reservation.reserved,
+                        Error::<T>::FuelSettlementInvariant
+                    );
+                    account.reserved = account.reserved.saturating_sub(reservation.reserved);
+                    account.available = account.available.saturating_add(reservation.reserved);
+                    Ok::<(), DispatchError>(())
+                })?;
+                total_released = total_released.saturating_add(reservation.reserved);
+            }
+
+            work.fuel_reservation = BoundedVec::default();
+            if !total_released.is_zero() {
+                Self::deposit_event(Event::WorkFuelReleased {
+                    work_id,
+                    total: total_released,
+                });
+            }
+            Ok(())
+        }
+
+        fn settle_imported_work_fuel(
+            work_id: WorkId,
+            work: &mut WorkRecord<T>,
+            canonical_report: &[u8],
+        ) -> Result<(), ExecutionFailure> {
+            if work.fuel_reservation.is_empty() {
+                return Ok(());
+            }
+
+            let report = Self::decode_work_report(canonical_report)?;
+            if report.package_spec.hash.0 != work.package_hash {
+                return Err(ExecutionFailure::Fatal);
+            }
+
+            let mut actual_by_service = BTreeMap::<u32, (u64, u64)>::new();
+            for result in &report.results {
+                let entry = actual_by_service.entry(result.service_id).or_insert((0, 0));
+                entry.0 = entry
+                    .0
+                    .checked_add(result.refine_load.gas_used)
+                    .ok_or(ExecutionFailure::Fatal)?;
+                entry.1 = entry
+                    .1
+                    .checked_add(result.accumulate_gas)
+                    .ok_or(ExecutionFailure::Fatal)?;
+            }
+
+            let reservations = work.fuel_reservation.clone();
+            let mut charged_total = BalanceOf::<T>::zero();
+            let mut refunded_total = BalanceOf::<T>::zero();
+            for reservation in &reservations {
+                let (refine_used, accumulate_used) = actual_by_service
+                    .remove(&reservation.service_id)
+                    .unwrap_or((0, 0));
+                if refine_used > reservation.refine_limit
+                    || accumulate_used > reservation.accumulate_limit
+                {
+                    return Err(ExecutionFailure::Fatal);
+                }
+
+                let charged = Self::fuel_cost(refine_used, accumulate_used);
+                if charged > reservation.reserved {
+                    return Err(ExecutionFailure::Fatal);
+                }
+                let refunded = reservation.reserved.saturating_sub(charged);
+
+                ServiceFuelAccounts::<T>::try_mutate(reservation.service_id, |account| {
+                    ensure!(
+                        account.reserved >= reservation.reserved,
+                        Error::<T>::FuelSettlementInvariant
+                    );
+                    account.reserved = account.reserved.saturating_sub(reservation.reserved);
+                    account.available = account.available.saturating_add(refunded);
+                    Ok::<(), DispatchError>(())
+                })
+                .map_err(|_| ExecutionFailure::Fatal)?;
+
+                charged_total = charged_total.saturating_add(charged);
+                refunded_total = refunded_total.saturating_add(refunded);
+            }
+
+            if !actual_by_service.is_empty() {
+                return Err(ExecutionFailure::Fatal);
+            }
+
+            if !charged_total.is_zero() {
+                let total_fuel = TotalServiceFuel::<T>::get();
+                if total_fuel < charged_total {
+                    return Err(ExecutionFailure::Fatal);
+                }
+                <T as Config>::Currency::transfer(
+                    &<T as Config>::FuelEscrowAccount::get(),
+                    &<T as Config>::RewardPool::get(),
+                    charged_total,
+                    Preservation::Expendable,
+                )
+                .map_err(|_| ExecutionFailure::Fatal)?;
+                TotalServiceFuel::<T>::put(total_fuel.saturating_sub(charged_total));
+            }
+
+            work.fuel_reservation = BoundedVec::default();
+            Self::deposit_event(Event::WorkFuelSettled {
+                work_id,
+                charged: charged_total,
+                refunded: refunded_total,
+            });
+            Ok(())
         }
 
         fn fuel_cost(refine_gas: u64, accumulate_gas: u64) -> BalanceOf<T> {

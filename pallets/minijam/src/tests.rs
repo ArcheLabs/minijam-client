@@ -7,7 +7,10 @@ use jam_codec::Encode as JamEncode;
 use jp_core_primitives::{
     crypto::OpaqueHash,
     simple::{ByteSequence, TimeSlot},
-    work::{RefineContext, WorkItem, WorkPackage},
+    work::{
+        RefineContext, RefineLoad, WorkExecResult, WorkItem, WorkPackage, WorkPackageSpec,
+        WorkReport, WorkResult,
+    },
 };
 use minijam_jamcore_api::{
     InputError, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionInputV2,
@@ -367,6 +370,14 @@ fn activate_workers() -> Vec<sr25519::Pair> {
 
 fn envelope(work_id: u64, round: u8) -> ReportEnvelopeV1 {
     let canonical_report = CanonicalReportBytes::try_from(vec![1, 2, 3, round]).unwrap();
+    envelope_with_report(work_id, round, canonical_report)
+}
+
+fn envelope_with_report(
+    work_id: u64,
+    round: u8,
+    canonical_report: CanonicalReportBytes,
+) -> ReportEnvelopeV1 {
     ReportEnvelopeV1 {
         protocol_version: PROTOCOL_VERSION_V1,
         chain_id: [42; 32],
@@ -403,6 +414,75 @@ fn vote(pair: &sr25519::Pair, worker_id: u64, verdict: Verdict) {
         vote,
         signature
     ));
+}
+
+fn vote_for_report(
+    pair: &sr25519::Pair,
+    worker_id: u64,
+    candidate_report_hash: [u8; 32],
+    verdict: Verdict,
+) {
+    let vote = WorkerVoteV1 {
+        work_id: 0,
+        round: 0,
+        assignment_epoch: 1,
+        candidate_report_hash,
+        verdict,
+        deadline: 110,
+        chain_id: [42; 32],
+        protocol_version: PROTOCOL_VERSION_V1,
+    };
+    let signature = pair.sign(&vote.signing_hash()).0;
+    assert_ok!(Workers::submit_vote(
+        RuntimeOrigin::signed(55),
+        worker_id,
+        vote,
+        signature
+    ));
+}
+
+fn encoded_work_report(package_hash: [u8; 32], results: Vec<WorkResult>) -> CanonicalReportBytes {
+    let report = WorkReport {
+        package_spec: WorkPackageSpec {
+            hash: OpaqueHash(package_hash),
+            length: 1,
+            erasure_root: OpaqueHash([5u8; 32]),
+            exports_root: OpaqueHash([6u8; 32]),
+            exports_count: 0,
+        },
+        context: RefineContext {
+            anchor: OpaqueHash([1u8; 32]),
+            state_root: OpaqueHash([2u8; 32]),
+            beefy_root: OpaqueHash([3u8; 32]),
+            lookup_anchor: OpaqueHash([4u8; 32]),
+            lookup_anchor_slot: TimeSlot(5),
+            prerequisites: Vec::new(),
+        },
+        core_index: 0,
+        authorizer_hash: OpaqueHash([7u8; 32]),
+        auth_gas_used: 0,
+        auth_output: ByteSequence::from(Vec::new()),
+        segment_root_lookup: Vec::new(),
+        results,
+    };
+    CanonicalReportBytes::try_from(JamEncode::encode(&report)).unwrap()
+}
+
+fn work_result(service_id: u32, refine_gas_used: u64, accumulate_gas: u64) -> WorkResult {
+    WorkResult {
+        service_id,
+        code_hash: OpaqueHash([9u8; 32]),
+        payload_hash: OpaqueHash([8u8; 32]),
+        accumulate_gas,
+        result: WorkExecResult::Ok(ByteSequence::from(Vec::new())),
+        refine_load: RefineLoad {
+            gas_used: refine_gas_used,
+            imports: 0,
+            extrinsic_count: 0,
+            extrinsic_size: 0,
+            exports: 0,
+        },
+    }
 }
 
 #[test]
@@ -717,6 +797,103 @@ fn submit_work_rejects_when_service_fuel_is_insufficient() {
         let fuel = pallet_minijam::ServiceFuelAccounts::<Test>::get(7);
         assert_eq!(fuel.available, 10);
         assert_eq!(fuel.reserved, 0);
+    });
+}
+
+#[test]
+fn failed_work_releases_reserved_service_fuel() {
+    new_test_ext().execute_with(|| {
+        activate_workers();
+        pallet_minijam::ProtocolState::<Test>::insert(
+            service_info_key(7),
+            StateValue::try_from(vec![1, 2, 3]).unwrap(),
+        );
+        assert_ok!(MiniJam::fund_service(RuntimeOrigin::signed(5), 7, 100));
+
+        assert_ok!(MiniJam::submit_work(
+            RuntimeOrigin::signed(5),
+            encoded_work_package(23, vec![work_item(7, 10, 20)]),
+            bundle_ref(23)
+        ));
+        assert_eq!(
+            pallet_minijam::ServiceFuelAccounts::<Test>::get(7).reserved,
+            30
+        );
+
+        for block in [121, 142, 163] {
+            System::set_block_number(block);
+            <MiniJam as frame_support::traits::Hooks<u64>>::on_initialize(block);
+        }
+
+        let fuel = pallet_minijam::ServiceFuelAccounts::<Test>::get(7);
+        assert_eq!(fuel.available, 100);
+        assert_eq!(fuel.reserved, 0);
+        assert_eq!(
+            MiniJam::work(0).unwrap().status,
+            pallet_minijam::WorkStatus::Failed
+        );
+        assert!(MiniJam::work(0).unwrap().fuel_reservation.is_empty());
+    });
+}
+
+#[test]
+fn imported_report_settles_reserved_service_fuel() {
+    new_test_ext().execute_with(|| {
+        let pairs = activate_workers();
+        pallet_minijam::ProtocolState::<Test>::insert(
+            service_info_key(7),
+            StateValue::try_from(vec![1, 2, 3]).unwrap(),
+        );
+        assert_ok!(MiniJam::fund_service(RuntimeOrigin::signed(5), 7, 100));
+        let package = encoded_work_package(24, vec![work_item(7, 10, 20)]);
+        let package_hash = blake2_256(&package);
+        assert_ok!(MiniJam::submit_work(
+            RuntimeOrigin::signed(5),
+            package,
+            bundle_ref(24)
+        ));
+        let report = encoded_work_report(package_hash, vec![work_result(7, 4, 6)]);
+        let envelope = envelope_with_report(0, 0, report);
+        let report_hash = envelope.canonical_report_hash;
+
+        assert_ok!(MiniJam::submit_candidate(
+            RuntimeOrigin::signed(6),
+            Box::new(envelope)
+        ));
+        let assignment = Workers::assignment(0, 0).unwrap();
+        vote_for_report(
+            &pairs[assignment[0] as usize],
+            assignment[0],
+            report_hash,
+            Verdict::Support,
+        );
+        vote_for_report(
+            &pairs[assignment[1] as usize],
+            assignment[1],
+            report_hash,
+            Verdict::Support,
+        );
+        vote_for_report(
+            &pairs[assignment[2] as usize],
+            assignment[2],
+            report_hash,
+            Verdict::Oppose(minijam_protocol::OpposeReason::MissingData),
+        );
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_initialize(100);
+
+        System::set_block_number(101);
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(101);
+
+        let fuel = pallet_minijam::ServiceFuelAccounts::<Test>::get(7);
+        assert_eq!(fuel.available, 90);
+        assert_eq!(fuel.reserved, 0);
+        assert_eq!(pallet_minijam::TotalServiceFuel::<Test>::get(), 90);
+        assert_eq!(Balances::total_balance(&101), 90);
+        assert_eq!(
+            MiniJam::work(0).unwrap().status,
+            pallet_minijam::WorkStatus::Imported
+        );
+        assert!(MiniJam::work(0).unwrap().fuel_reservation.is_empty());
     });
 }
 
