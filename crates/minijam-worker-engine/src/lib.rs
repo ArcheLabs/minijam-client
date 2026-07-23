@@ -24,6 +24,30 @@ pub enum ContentVerificationError {
     HashMismatch,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkBundleDecodeError {
+    InvalidEncoding,
+    TrailingBytes,
+    UnsupportedVersion,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkBundleVerificationError {
+    Content(ContentVerificationError),
+    Decode(WorkBundleDecodeError),
+    PackageHashMismatch,
+}
+
+pub trait WorkBundleDecoder {
+    fn package_hash(&self, bytes: &[u8]) -> Result<Hash, WorkBundleDecodeError>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedWorkBundle<'a> {
+    pub bytes: &'a [u8],
+    pub package_hash: Hash,
+}
+
 pub fn verify_content_ref(
     reference: &ContentRef,
     bytes: &[u8],
@@ -42,6 +66,27 @@ pub fn verify_content_ref(
         return Err(ContentVerificationError::HashMismatch);
     }
     Ok(())
+}
+
+pub fn verify_work_bundle<'a, D: WorkBundleDecoder>(
+    reference: &ContentRef,
+    bytes: &'a [u8],
+    max_bytes: u64,
+    expected_package_hash: Hash,
+    decoder: &D,
+) -> Result<VerifiedWorkBundle<'a>, WorkBundleVerificationError> {
+    verify_content_ref(reference, bytes, max_bytes)
+        .map_err(WorkBundleVerificationError::Content)?;
+    let package_hash = decoder
+        .package_hash(bytes)
+        .map_err(WorkBundleVerificationError::Decode)?;
+    if package_hash != expected_package_hash {
+        return Err(WorkBundleVerificationError::PackageHashMismatch);
+    }
+    Ok(VerifiedWorkBundle {
+        bytes,
+        package_hash,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
@@ -298,6 +343,17 @@ mod tests {
     use minijam_protocol::ContentRef;
     use minijam_protocol::{OpposeReason, UNIT, VOTE_WINDOW};
 
+    struct TestBundleDecoder;
+
+    impl WorkBundleDecoder for TestBundleDecoder {
+        fn package_hash(&self, bytes: &[u8]) -> Result<Hash, WorkBundleDecodeError> {
+            let hash = bytes
+                .get(..32)
+                .ok_or(WorkBundleDecodeError::InvalidEncoding)?;
+            Ok(hash.try_into().unwrap())
+        }
+    }
+
     fn worker(id: WorkerId, stake: u128) -> WorkerRecord {
         WorkerRecord {
             id,
@@ -332,6 +388,49 @@ mod tests {
         assert_eq!(
             verify_content_ref(&reference, bytes, 1),
             Err(ContentVerificationError::SizeLimitExceeded)
+        );
+    }
+
+    #[test]
+    fn verifies_work_bundle_content_and_package_hash() {
+        let package_hash = [7u8; 32];
+        let mut bytes = package_hash.to_vec();
+        bytes.extend_from_slice(b"bundle-body");
+        let reference = content_ref(&bytes);
+
+        let verified =
+            verify_work_bundle(&reference, &bytes, 64, package_hash, &TestBundleDecoder).unwrap();
+
+        assert_eq!(verified.bytes, bytes.as_slice());
+        assert_eq!(verified.package_hash, package_hash);
+        assert_eq!(
+            verify_work_bundle(&reference, &bytes, 64, [8u8; 32], &TestBundleDecoder),
+            Err(WorkBundleVerificationError::PackageHashMismatch)
+        );
+        assert_eq!(
+            verify_work_bundle(
+                &reference,
+                b"bundle-with-wrong-hash",
+                64,
+                package_hash,
+                &TestBundleDecoder
+            ),
+            Err(WorkBundleVerificationError::Content(
+                ContentVerificationError::SizeMismatch
+            ))
+        );
+    }
+
+    #[test]
+    fn rejects_bundle_when_decoder_cannot_read_package_hash() {
+        let bytes = b"short";
+        let reference = content_ref(bytes);
+
+        assert_eq!(
+            verify_work_bundle(&reference, bytes, 64, [7u8; 32], &TestBundleDecoder),
+            Err(WorkBundleVerificationError::Decode(
+                WorkBundleDecodeError::InvalidEncoding
+            ))
         );
     }
 
