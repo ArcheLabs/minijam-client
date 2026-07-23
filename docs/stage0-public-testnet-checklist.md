@@ -27,7 +27,7 @@ Evidence:
 
 - [x] Empty blocks execute STF.
 - [x] System-op-only service execution failure no longer panics.
-- [x] Failed pending system ops move to `QuarantinedSystemOps`.
+- [x] Failed pending system ops move to structured `QuarantinedSystemOps` records with canonical hash, stable error code, block number, and retryability.
 - [x] Root can retry, drop, or clear quarantined system ops.
 - [ ] Report/preimage/delta validation failures have structured quarantine records with stable error codes.
 - [ ] All user-input execution failure paths are audited to ensure only true state corruption can panic.
