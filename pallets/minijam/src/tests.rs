@@ -1064,6 +1064,66 @@ fn system_op_execution_failure_is_quarantined_without_panic() {
 }
 
 #[test]
+fn root_manages_quarantined_system_ops() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(MiniJam::submit_system_op(
+            RuntimeOrigin::signed(5),
+            Box::new(SystemCommandV1::CreateService {
+                code_hash: [0xee; 32],
+                code_len: 32,
+                min_item_gas: 1,
+                min_memo_gas: 1,
+                initial_balance: 100,
+            })
+        ));
+        let first_request_id = pallet_minijam::PendingSystemOps::<Test>::get()[0]
+            .op
+            .request_id;
+
+        System::set_block_number(100);
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(100);
+        assert_eq!(MiniJam::get_quarantined_system_ops().len(), 1);
+
+        assert_ok!(MiniJam::retry_quarantined_system_op(
+            RuntimeOrigin::root(),
+            first_request_id
+        ));
+        assert!(MiniJam::get_quarantined_system_ops().is_empty());
+        assert_eq!(MiniJam::get_pending_system_ops().len(), 1);
+        assert!(pallet_minijam::PendingSystemOpKeys::<Test>::contains_key(
+            first_request_id
+        ));
+        assert_noop!(
+            MiniJam::drop_quarantined_system_op(RuntimeOrigin::root(), first_request_id),
+            pallet_minijam::Error::<Test>::QuarantinedSystemOpNotFound
+        );
+
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(101);
+        assert_eq!(MiniJam::get_quarantined_system_ops().len(), 1);
+        assert_ok!(MiniJam::drop_quarantined_system_op(
+            RuntimeOrigin::root(),
+            first_request_id
+        ));
+        assert!(MiniJam::get_quarantined_system_ops().is_empty());
+
+        assert_ok!(MiniJam::submit_system_op(
+            RuntimeOrigin::signed(5),
+            Box::new(SystemCommandV1::CreateService {
+                code_hash: [0xee; 32],
+                code_len: 32,
+                min_item_gas: 1,
+                min_memo_gas: 1,
+                initial_balance: 100,
+            })
+        ));
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(102);
+        assert_eq!(MiniJam::get_quarantined_system_ops().len(), 1);
+        assert_ok!(MiniJam::clear_quarantined_system_ops(RuntimeOrigin::root()));
+        assert!(MiniJam::get_quarantined_system_ops().is_empty());
+    });
+}
+
+#[test]
 fn empty_block_executes_stf() {
     new_test_ext().execute_with(|| {
         assert!(pallet_minijam::LastExecutionReceipt::<Test>::get().is_none());

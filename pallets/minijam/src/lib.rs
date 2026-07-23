@@ -439,6 +439,15 @@ pub mod pallet {
             request_id: Hash,
             outcome: ExecutionOutcome,
         },
+        SystemOpDropped {
+            request_id: Hash,
+        },
+        SystemOpRetried {
+            request_id: Hash,
+        },
+        SystemOpQuarantineCleared {
+            count: u32,
+        },
         ServiceFunded {
             funder: T::AccountId,
             service_id: u32,
@@ -488,6 +497,7 @@ pub mod pallet {
         InvalidSystemOp,
         DuplicatePendingSystemOp,
         TooManyPendingSystemOps,
+        QuarantinedSystemOpNotFound,
         UnknownService,
         ZeroFuelAmount,
         FuelEscrowInvariant,
@@ -804,6 +814,71 @@ pub mod pallet {
             });
             Ok(())
         }
+
+        #[pallet::call_index(7)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(2, 2))]
+        pub fn drop_quarantined_system_op(
+            origin: OriginFor<T>,
+            request_id: Hash,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            let mut removed = false;
+            QuarantinedSystemOps::<T>::mutate(|ops| {
+                if let Some(index) = ops
+                    .iter()
+                    .position(|pending| pending.op.request_id == request_id)
+                {
+                    ops.swap_remove(index);
+                    removed = true;
+                }
+            });
+            ensure!(removed, Error::<T>::QuarantinedSystemOpNotFound);
+            Self::deposit_event(Event::SystemOpDropped { request_id });
+            Ok(())
+        }
+
+        #[pallet::call_index(8)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(4, 4))]
+        #[transactional]
+        pub fn retry_quarantined_system_op(
+            origin: OriginFor<T>,
+            request_id: Hash,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            ensure!(
+                !PendingSystemOpKeys::<T>::contains_key(request_id),
+                Error::<T>::DuplicatePendingSystemOp
+            );
+
+            let mut retry = None;
+            QuarantinedSystemOps::<T>::mutate(|ops| {
+                if let Some(index) = ops
+                    .iter()
+                    .position(|pending| pending.op.request_id == request_id)
+                {
+                    retry = Some(ops.swap_remove(index));
+                }
+            });
+            let retry = retry.ok_or(Error::<T>::QuarantinedSystemOpNotFound)?;
+
+            PendingSystemOps::<T>::try_mutate(|pending| {
+                pending
+                    .try_push(retry)
+                    .map_err(|_| Error::<T>::TooManyPendingSystemOps)
+            })?;
+            PendingSystemOpKeys::<T>::insert(request_id, ());
+            Self::deposit_event(Event::SystemOpRetried { request_id });
+            Ok(())
+        }
+
+        #[pallet::call_index(9)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(1, 1))]
+        pub fn clear_quarantined_system_ops(origin: OriginFor<T>) -> DispatchResult {
+            ensure_root(origin)?;
+            let count = QuarantinedSystemOps::<T>::take().len() as u32;
+            Self::deposit_event(Event::SystemOpQuarantineCleared { count });
+            Ok(())
+        }
     }
 
     #[pallet::view_functions]
@@ -864,6 +939,11 @@ pub mod pallet {
 
         pub fn get_pending_system_ops() -> BoundedVec<PendingSystemOp<T>, T::MaxPendingSystemOps> {
             PendingSystemOps::<T>::get()
+        }
+
+        pub fn get_quarantined_system_ops() -> BoundedVec<PendingSystemOp<T>, T::MaxPendingSystemOps>
+        {
+            QuarantinedSystemOps::<T>::get()
         }
 
         pub fn get_system_op(request_id: Hash) -> Option<SystemOpV1> {
