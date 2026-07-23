@@ -332,6 +332,8 @@ mod tests {
             Some(&Value::from(SYSTEM_SERVICE_BLOB.len() as u64))
         );
         assert!(!SYSTEM_SERVICE_BLOB.is_empty());
+        jp_vm_predecode::to_af_and_c_blob(SYSTEM_SERVICE_BLOB)
+            .expect("system service blob must be a valid PVM artifact");
     }
 
     #[test]

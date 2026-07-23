@@ -2,10 +2,9 @@
 
 This directory is the source root for the Stage-0 MiniJAM system service.
 
-The current `src/system-service.placeholder` source intentionally rebuilds the
-existing placeholder artifact while the PVM compiler pipeline is still being
-wired. It is not a valid executable PVM program and must be replaced before the
-Stage-0 public testnet can satisfy the CreateService end-to-end requirement.
+The current `src/system-service.pvm.hex` source rebuilds a minimal executable
+PVM artifact. It halts successfully; Stage-0 `CreateService` state transitions
+are applied by the MiniJAM system-op adapter in `MiniJamExecutive`.
 
 Use:
 

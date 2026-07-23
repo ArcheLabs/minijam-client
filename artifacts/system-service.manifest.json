@@ -2,9 +2,9 @@
   "name": "minijam-system-service",
   "abi_version": 1,
   "artifact": "system-service.blob",
-  "byte_len": 45,
-  "sha256": "dec07de6687abc2591fb74d72bcaf50f7c41d0366a03c974b06d5449a39c61e3",
-  "source": "services/system-service/src/system-service.placeholder",
+  "byte_len": 27,
+  "sha256": "9fe3fa7da4ed696c85971a821ededf9b71d044571d554fca1556c1df18e5a904",
+  "source": "services/system-service/src/system-service.pvm.hex",
   "stage": 0,
-  "note": "Stage 0 placeholder artifact until the system-service PVM compiler pipeline is wired."
+  "note": "Stage 0 minimal executable PVM artifact; MiniJAM system-op adapter applies CreateService state transitions."
 }

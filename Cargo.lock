@@ -5198,6 +5198,7 @@ dependencies = [
  "frame-system",
  "frame-system-rpc-runtime-api",
  "jambda-minijam-executive",
+ "jp-vm-predecode",
  "minijam-jamcore-api",
  "minijam-protocol",
  "minijam-rpc-runtime-api",

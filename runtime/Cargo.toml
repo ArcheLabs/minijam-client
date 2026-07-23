@@ -44,6 +44,9 @@ sp-version = { workspace = true, features = ["serde"] }
 [build-dependencies]
 substrate-wasm-builder = { workspace = true, optional = true }
 
+[dev-dependencies]
+jp-vm-predecode = { path = "../external/jambda/vm/predecode" }
+
 [features]
 default = ["std"]
 std = [
