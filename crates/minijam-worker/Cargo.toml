@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
+minijam-protocol = { path = "../minijam-protocol" }
 minijam-worker-engine = { path = "../minijam-worker-engine" }
 
+[dev-dependencies]
+futures.workspace = true

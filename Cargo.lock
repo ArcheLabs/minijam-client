@@ -5091,7 +5091,10 @@ dependencies = [
 name = "minijam-worker"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
+ "futures",
+ "minijam-protocol",
  "minijam-worker-engine",
 ]
 
