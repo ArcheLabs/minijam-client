@@ -1,0 +1,128 @@
+services:
+  authority-1:
+    image: ${MINIJAM_NODE_IMAGE:-ghcr.io/archelabs/minijam-node:stage0}
+    command:
+      - --chain=/chain-specs/stage0-raw.json
+      - --validator
+      - --name=stage0-authority-1
+      - --base-path=/data
+      - --node-key-file=/secrets/node-key
+      - --rpc-methods=safe
+      - --prometheus-external
+      - --prometheus-port=9615
+    volumes:
+      - ../../chain-specs:/chain-specs:ro
+      - ./secrets/authority-1:/secrets:ro
+      - authority-1-data:/data
+    expose:
+      - "30333"
+      - "9615"
+
+  authority-2:
+    image: ${MINIJAM_NODE_IMAGE:-ghcr.io/archelabs/minijam-node:stage0}
+    command:
+      - --chain=/chain-specs/stage0-raw.json
+      - --validator
+      - --name=stage0-authority-2
+      - --base-path=/data
+      - --node-key-file=/secrets/node-key
+      - --rpc-methods=safe
+      - --prometheus-external
+      - --prometheus-port=9615
+      - --bootnodes=/dns/authority-1/tcp/30333/p2p/${AUTHORITY_1_PEER_ID}
+    volumes:
+      - ../../chain-specs:/chain-specs:ro
+      - ./secrets/authority-2:/secrets:ro
+      - authority-2-data:/data
+    expose:
+      - "30333"
+      - "9615"
+
+  authority-3:
+    image: ${MINIJAM_NODE_IMAGE:-ghcr.io/archelabs/minijam-node:stage0}
+    command:
+      - --chain=/chain-specs/stage0-raw.json
+      - --validator
+      - --name=stage0-authority-3
+      - --base-path=/data
+      - --node-key-file=/secrets/node-key
+      - --rpc-methods=safe
+      - --prometheus-external
+      - --prometheus-port=9615
+      - --bootnodes=/dns/authority-1/tcp/30333/p2p/${AUTHORITY_1_PEER_ID}
+    volumes:
+      - ../../chain-specs:/chain-specs:ro
+      - ./secrets/authority-3:/secrets:ro
+      - authority-3-data:/data
+    expose:
+      - "30333"
+      - "9615"
+
+  public-rpc:
+    image: ${MINIJAM_NODE_IMAGE:-ghcr.io/archelabs/minijam-node:stage0}
+    command:
+      - --chain=/chain-specs/stage0-raw.json
+      - --name=stage0-public-rpc-1
+      - --base-path=/data
+      - --rpc-external
+      - --rpc-methods=safe
+      - --rpc-rate-limit=600
+      - --rpc-max-request-size=8
+      - --rpc-max-response-size=64
+      - --rpc-cors=https://polkadot.js.org
+      - --prometheus-external
+      - --prometheus-port=9615
+      - --bootnodes=/dns/authority-1/tcp/30333/p2p/${AUTHORITY_1_PEER_ID}
+    volumes:
+      - ../../chain-specs:/chain-specs:ro
+      - public-rpc-data:/data
+    ports:
+      - "9944:9944"
+    expose:
+      - "30333"
+      - "9615"
+
+  worker-1:
+    image: ${MINIJAM_WORKER_IMAGE:-ghcr.io/archelabs/minijam-worker:stage0}
+    command:
+      - --config=/config/worker.toml
+    volumes:
+      - ./worker-1.toml:/config/worker.toml:ro
+    depends_on:
+      - public-rpc
+
+  worker-2:
+    image: ${MINIJAM_WORKER_IMAGE:-ghcr.io/archelabs/minijam-worker:stage0}
+    command:
+      - --config=/config/worker.toml
+    volumes:
+      - ./worker-2.toml:/config/worker.toml:ro
+    depends_on:
+      - public-rpc
+
+  worker-3:
+    image: ${MINIJAM_WORKER_IMAGE:-ghcr.io/archelabs/minijam-worker:stage0}
+    command:
+      - --config=/config/worker.toml
+    volumes:
+      - ./worker-3.toml:/config/worker.toml:ro
+    depends_on:
+      - public-rpc
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
+volumes:
+  authority-1-data:
+  authority-2-data:
+  authority-3-data:
+  public-rpc-data:
+  prometheus-data:

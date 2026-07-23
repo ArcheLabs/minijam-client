@@ -1,0 +1,22 @@
+[Unit]
+Description=MiniJAM Stage-0 Authority
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=minijam
+Group=minijam
+ExecStart=/usr/local/bin/minijam-node \
+  --chain /etc/minijam/stage0-raw.json \
+  --validator \
+  --name stage0-authority \
+  --base-path /var/lib/minijam/authority \
+  --node-key-file /etc/minijam/node-key \
+  --rpc-methods safe \
+  --prometheus-port 9615
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
