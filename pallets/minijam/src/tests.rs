@@ -833,6 +833,13 @@ fn failed_work_releases_reserved_service_fuel() {
             pallet_minijam::WorkStatus::Failed
         );
         assert!(MiniJam::work(0).unwrap().fuel_reservation.is_empty());
+        assert_eq!(
+            MiniJam::work_fuel_settlement(0).unwrap(),
+            pallet_minijam::WorkFuelSettlement {
+                charged: 0,
+                refunded: 30
+            }
+        );
     });
 }
 
@@ -894,6 +901,13 @@ fn imported_report_settles_reserved_service_fuel() {
             pallet_minijam::WorkStatus::Imported
         );
         assert!(MiniJam::work(0).unwrap().fuel_reservation.is_empty());
+        assert_eq!(
+            MiniJam::work_fuel_settlement(0).unwrap(),
+            pallet_minijam::WorkFuelSettlement {
+                charged: 10,
+                refunded: 20
+            }
+        );
     });
 }
 

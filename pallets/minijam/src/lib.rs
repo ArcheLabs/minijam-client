@@ -64,6 +64,12 @@ pub mod pallet {
         pub reserved: Balance,
     }
 
+    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    pub struct WorkFuelSettlement<Balance> {
+        pub charged: Balance,
+        pub refunded: Balance,
+    }
+
     #[derive(
         Clone,
         Copy,
@@ -314,6 +320,11 @@ pub mod pallet {
 
     #[pallet::storage]
     pub type TotalServiceFuel<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+
+    #[pallet::storage]
+    #[pallet::getter(fn work_fuel_settlement)]
+    pub type WorkFuelSettlements<T: Config> =
+        StorageMap<_, Blake2_128Concat, WorkId, WorkFuelSettlement<BalanceOf<T>>, OptionQuery>;
 
     #[pallet::genesis_config]
     #[derive(frame_support::DefaultNoBound)]
@@ -1280,6 +1291,13 @@ pub mod pallet {
             }
 
             work.fuel_reservation = BoundedVec::default();
+            WorkFuelSettlements::<T>::insert(
+                work_id,
+                WorkFuelSettlement {
+                    charged: BalanceOf::<T>::zero(),
+                    refunded: total_released,
+                },
+            );
             if !total_released.is_zero() {
                 Self::deposit_event(Event::WorkFuelReleased {
                     work_id,
@@ -1370,6 +1388,13 @@ pub mod pallet {
             }
 
             work.fuel_reservation = BoundedVec::default();
+            WorkFuelSettlements::<T>::insert(
+                work_id,
+                WorkFuelSettlement {
+                    charged: charged_total,
+                    refunded: refunded_total,
+                },
+            );
             Self::deposit_event(Event::WorkFuelSettled {
                 work_id,
                 charged: charged_total,
