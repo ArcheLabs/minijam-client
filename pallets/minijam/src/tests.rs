@@ -7,6 +7,7 @@ use jam_codec::Encode as JamEncode;
 use jp_core_primitives::{
     crypto::OpaqueHash,
     simple::{ByteSequence, TimeSlot},
+    state::StoreKey,
     work::{
         RefineContext, RefineLoad, WorkExecResult, WorkItem, WorkPackage, WorkPackageSpec,
         WorkReport, WorkResult,
@@ -294,6 +295,14 @@ fn service_info_key(service_id: u32) -> [u8; 31] {
     key[5] = service[2];
     key[7] = service[3];
     key
+}
+
+fn system_receipt_key(request_id: &[u8; 32]) -> [u8; 31] {
+    let mut storage_key = b"system/receipt/".to_vec();
+    storage_key.extend_from_slice(request_id);
+    StoreKey::new_service_storage_key(&0, &ByteSequence::from(storage_key))
+        .to_state_key()
+        .0
 }
 
 fn work_package(
@@ -750,6 +759,9 @@ fn queued_system_ops_are_consumed_with_next_virtual_block() {
             request_id
         ));
         assert!(MiniJam::get_system_op(request_id).is_none());
+        let receipt = StateValue::try_from(vec![1, 2, 3]).unwrap();
+        pallet_minijam::ProtocolState::<Test>::insert(system_receipt_key(&request_id), &receipt);
+        assert_eq!(MiniJam::get_system_receipt(request_id), Some(receipt));
     });
 }
 

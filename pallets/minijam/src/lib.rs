@@ -23,7 +23,11 @@ pub mod pallet {
     };
     use frame_system::pallet_prelude::*;
     use jam_codec::Decode as JamDecode;
-    use jp_core_primitives::work::{WorkPackage, WorkReport};
+    use jp_core_primitives::{
+        simple::ByteSequence,
+        state::StoreKey,
+        work::{WorkPackage, WorkReport},
+    };
     use minijam_jamcore_api::{
         ExecutionOutcome, MiniJamError, MiniJamExecutionInputV2, MiniJamExecutor,
         ProtocolStateReader, StateError,
@@ -40,6 +44,8 @@ pub mod pallet {
     pub type WorkId = u64;
     pub type BalanceOf<T> =
         <<T as Config>::Currency as Inspect<<T as frame_system::Config>::AccountId>>::Balance;
+    const SYSTEM_SERVICE_ID: u32 = 0;
+    const SYSTEM_STORAGE_RECEIPT_PREFIX: &[u8] = b"system/receipt/";
 
     #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
     pub struct ServiceFuelAccount<Balance> {
@@ -847,6 +853,10 @@ pub mod pallet {
                 .map(|pending| pending.op)
         }
 
+        pub fn get_system_receipt(request_id: Hash) -> Option<StateValue> {
+            ProtocolState::<T>::get(Self::system_receipt_state_key(&request_id))
+        }
+
         pub fn get_system_service_info() -> Option<StateValue> {
             ProtocolState::<T>::get(Self::service_info_state_key(0))
         }
@@ -1502,6 +1512,15 @@ pub mod pallet {
 
         fn service_exists(service_id: u32) -> bool {
             ProtocolState::<T>::contains_key(Self::service_info_state_key(service_id))
+        }
+
+        fn system_receipt_state_key(request_id: &Hash) -> [u8; 31] {
+            let mut storage_key = Vec::new();
+            storage_key.extend_from_slice(SYSTEM_STORAGE_RECEIPT_PREFIX);
+            storage_key.extend_from_slice(request_id);
+            StoreKey::new_service_storage_key(&SYSTEM_SERVICE_ID, &ByteSequence::from(storage_key))
+                .to_state_key()
+                .0
         }
 
         fn service_info_state_key(service_id: u32) -> [u8; 31] {
