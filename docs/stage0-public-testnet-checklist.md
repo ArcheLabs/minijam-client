@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `2f7c56ee73aa1e8ea3f4f490be901782baf88c8f`
+- minijam-client current implementation commit: `7e8b640bb1c06221e1540b4ae579a55c58f22a2d`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -39,6 +39,8 @@ Evidence:
 
 - `cargo test -p pallet-minijam`
 - Tests: `system_op_execution_failure_is_quarantined_without_panic`, `root_manages_quarantined_system_ops`
+- Partial preimage quarantine coverage: `cargo test -p pallet-minijam preimage_execution_input_failure_is_quarantined_without_panic`
+- `cargo check -p minijam-runtime`
 
 ## M2: Candidate and WorkPackage Binding
 
