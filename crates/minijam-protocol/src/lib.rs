@@ -10,7 +10,6 @@ use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 
 pub const PROTOCOL_VERSION_V1: u16 = 1;
-pub const PROTOCOL_VERSION_V2: u16 = 2;
 pub const SYSTEM_OP_REQUEST_DOMAIN_V1: &[u8] = b"minijam/system-op/v1";
 pub const UNIT: u128 = 1_000_000_000_000;
 

@@ -14,9 +14,8 @@ use jp_core_primitives::{
     },
 };
 use minijam_jamcore_api::{
-    ExecutionOutcome, InputError, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionInputV2,
-    MiniJamExecutionOutputV1, MiniJamExecutionOutputV2, MiniJamExecutor, ProtocolStateReader,
-    ReportProjectionV1, ServiceResultProjection,
+    ExecutionOutcome, InputError, MiniJamError, MiniJamExecutionInput, MiniJamExecutionOutput,
+    MiniJamExecutor, ProtocolStateReader, ReportProjectionV1, ServiceResultProjection,
 };
 use minijam_protocol::{
     blake2_256, BulletinEvidence, CanonicalReportBytes, ContentRef, PreimageMetadataV1,
@@ -156,49 +155,9 @@ pub struct TestExecutor;
 impl MiniJamExecutor for TestExecutor {
     fn execute<R: ProtocolStateReader>(
         &self,
-        input: MiniJamExecutionInputV1,
+        input: MiniJamExecutionInput,
         _state: &R,
-    ) -> Result<MiniJamExecutionOutputV1, MiniJamError> {
-        let mut output = MiniJamExecutionOutputV1::empty();
-        output.consumed_reports = input
-            .reports
-            .iter()
-            .map(|report| blake2_256(report))
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
-        output.consumed_preimages = input
-            .preimages
-            .iter()
-            .map(|preimage| blake2_256(preimage))
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
-        output.header_hash = [1; 32];
-        output.accumulate_root = [2; 32];
-        if !input.reports.is_empty() {
-            let mut key = [0u8; 31];
-            key[0] = NS_SERVICE_STORAGE;
-            key[30] = 7;
-            output
-                .ordered_changes
-                .try_push(ProtocolStateChange {
-                    key,
-                    operation: StateOperation::Upsert,
-                    value: Some(StateValue::try_from(vec![input.reports.len() as u8]).unwrap()),
-                })
-                .unwrap();
-        }
-        output.gas_used = 10;
-        output.receipt_hash = output.compute_receipt_hash();
-        Ok(output)
-    }
-
-    fn execute_v2<R: ProtocolStateReader>(
-        &self,
-        input: MiniJamExecutionInputV2,
-        _state: &R,
-    ) -> Result<MiniJamExecutionOutputV2, MiniJamError> {
+    ) -> Result<MiniJamExecutionOutput, MiniJamError> {
         if input
             .preimages
             .iter()
@@ -216,7 +175,7 @@ impl MiniJamExecutor for TestExecutor {
             return Err(MiniJamError::Execution(ExecutionOutcome::ServiceFailure));
         }
 
-        let mut output = MiniJamExecutionOutputV2::empty();
+        let mut output = MiniJamExecutionOutput::empty();
         output.consumed_reports = input
             .reports
             .iter()
@@ -238,7 +197,7 @@ impl MiniJamExecutor for TestExecutor {
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
-        output.input_hash = blake2_256(&input.encode());
+        output.input_hash = input.compute_input_hash();
         output.header_hash = [1; 32];
         output.accumulate_root = [2; 32];
         if !input.reports.is_empty() {

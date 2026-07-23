@@ -3,8 +3,8 @@
 
 use bounded_collections::BoundedVec;
 use minijam_jamcore_api::{
-    InvariantError, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionOutputV1,
-    MiniJamExecutor, ProtocolStateReader, StateError,
+    InvariantError, MiniJamError, MiniJamExecutionInput, MiniJamExecutionOutput, MiniJamExecutor,
+    ProtocolStateReader, StateError,
 };
 use minijam_protocol::{ProtocolStateChange, StateOperation};
 
@@ -35,13 +35,13 @@ impl Default for MockExecutor {
 impl MiniJamExecutor for MockExecutor {
     fn execute<R: ProtocolStateReader>(
         &self,
-        _input: MiniJamExecutionInputV1,
+        _input: MiniJamExecutionInput,
         _state: &R,
-    ) -> Result<MiniJamExecutionOutputV1, MiniJamError> {
+    ) -> Result<MiniJamExecutionOutput, MiniJamError> {
         match &self.mode {
-            MockMode::Empty => Ok(MiniJamExecutionOutputV1::empty()),
+            MockMode::Empty => Ok(MiniJamExecutionOutput::empty()),
             MockMode::Upsert { key, value } => {
-                let mut output = MiniJamExecutionOutputV1::empty();
+                let mut output = MiniJamExecutionOutput::empty();
                 output
                     .ordered_changes
                     .try_push(ProtocolStateChange {

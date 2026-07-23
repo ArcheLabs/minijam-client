@@ -239,6 +239,37 @@ pub fn preset_names() -> Vec<PresetId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jam_codec::Decode as JamDecode;
+    use jambda_minijam_executive::MiniJamExecutive;
+    use jp_core_primitives::{crypto::OpaqueHash, types::ServiceInfo};
+    use minijam_jamcore_api::{
+        MiniJamExecutionInput, MiniJamExecutor, ProtocolStateReader, StateError,
+    };
+    use minijam_protocol::{SystemCommandV1, SystemOpV1, PROTOCOL_VERSION_V1};
+    use std::collections::BTreeMap;
+
+    struct TestProtocolState(BTreeMap<[u8; 31], Vec<u8>>);
+
+    impl TestProtocolState {
+        fn from_pairs(pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
+            Self(
+                pairs
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let key: [u8; 31] =
+                            key.try_into().expect("protocol state key must be 31 bytes");
+                        (key, value)
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    impl ProtocolStateReader for TestProtocolState {
+        fn get(&self, key: &[u8; 31]) -> Result<Option<Vec<u8>>, StateError> {
+            Ok(self.0.get(key).cloned())
+        }
+    }
 
     fn section<'a>(patch: &'a Value, snake: &str, camel: &str) -> &'a Value {
         patch
@@ -334,6 +365,61 @@ mod tests {
         assert!(!SYSTEM_SERVICE_BLOB.is_empty());
         jp_vm_predecode::to_af_and_c_blob(SYSTEM_SERVICE_BLOB)
             .expect("system service blob must be a valid PVM artifact");
+    }
+
+    #[test]
+    fn system_ops_execute_through_real_jambda_executor() {
+        let sender = [0x5a; 32];
+        let command = SystemCommandV1::CreateService {
+            code_hash: [0x9b; 32],
+            code_len: 27,
+            min_item_gas: 2,
+            min_memo_gas: 3,
+            initial_balance: 400,
+        };
+        let op = SystemOpV1::new(sender, 0, command);
+        let input = MiniJamExecutionInput {
+            protocol_version: PROTOCOL_VERSION_V1,
+            slot: 10,
+            parent_hash: [1u8; 32],
+            parent_state_root: [2u8; 32],
+            entropy: [3u8; 32],
+            reports: Default::default(),
+            preimages: Default::default(),
+            system_ops: vec![op.clone()]
+                .try_into()
+                .expect("single system op fits batch"),
+            max_gas: 20_000_000,
+        };
+        let state = TestProtocolState::from_pairs(system_service_zero_protocol_state());
+
+        let output = <MiniJamExecutive as MiniJamExecutor>::execute(
+            &MiniJamExecutive,
+            input.clone(),
+            &state,
+        )
+        .expect("CreateService must execute through the MiniJamExecutor trait");
+
+        assert_eq!(output.consumed_system_ops.as_slice(), &[op.request_id]);
+        assert!(output.consumed_reports.is_empty());
+        assert_eq!(output.input_hash, input.compute_input_hash());
+        assert_eq!(output.receipt_hash, output.compute_receipt_hash());
+        assert!(output.ordered_changes.iter().any(|change| {
+            let Some(value) = change.value.as_ref() else {
+                return false;
+            };
+            ServiceInfo::decode(&mut value.as_slice()).is_ok_and(|info| {
+                info.code_hash == OpaqueHash([0x9b; 32])
+                    && info.parent_service == 0
+                    && info.balance == 400
+            })
+        }));
+        assert!(output.ordered_changes.iter().any(|change| {
+            change
+                .value
+                .as_ref()
+                .is_some_and(|value| value.as_slice() == sender)
+        }));
     }
 
     #[test]

@@ -3765,6 +3765,8 @@ dependencies = [
  "jp-vm-engine",
  "jp-vm-primitives",
  "log",
+ "minijam-protocol",
+ "parity-scale-codec",
 ]
 
 [[package]]
@@ -3817,6 +3819,7 @@ dependencies = [
  "jp-vm-primitives",
  "minijam-jamcore-api",
  "minijam-protocol",
+ "parity-scale-codec",
  "spin 0.10.0",
 ]
 
@@ -5197,7 +5200,9 @@ dependencies = [
  "frame-support",
  "frame-system",
  "frame-system-rpc-runtime-api",
+ "jam-codec",
  "jambda-minijam-executive",
+ "jp-core-primitives",
  "jp-vm-predecode",
  "minijam-jamcore-api",
  "minijam-protocol",

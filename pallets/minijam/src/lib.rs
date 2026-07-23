@@ -29,16 +29,16 @@ pub mod pallet {
         work::{WorkPackage, WorkReport},
     };
     use minijam_jamcore_api::{
-        ExecutionOutcome, MiniJamError, MiniJamExecutionInputV2, MiniJamExecutor,
+        ExecutionOutcome, MiniJamError, MiniJamExecutionInput, MiniJamExecutor,
         ProtocolStateReader, StateError,
     };
     use minijam_protocol::{
         blake2_256, CanonicalPreimageBytes, CanonicalReportBytes, CanonicalWorkPackageBytes,
         ContentRef, Hash, PreimageBatch, PreimageMetadataV1, ProtocolStateChange, ReportEnvelopeV1,
         StateOperation, StateValue, SystemCommandV1, SystemOpBatch, SystemOpV1, WorkerTaskV1,
-        PROTOCOL_VERSION_V1, PROTOCOL_VERSION_V2,
+        PROTOCOL_VERSION_V1,
     };
-    use minijam_state_adapter::{validate_execution_output_v2, ValidatedDelta, ValidationError};
+    use minijam_state_adapter::{validate_execution_output, ValidatedDelta, ValidationError};
     use pallet_minijam_workers::RoundDecision;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
@@ -1355,8 +1355,8 @@ pub mod pallet {
             let report_count = reports.len() as u32;
             let preimage_count = preimages.len() as u32;
             let system_op_count = system_ops.len() as u32;
-            let input = MiniJamExecutionInputV2 {
-                protocol_version: PROTOCOL_VERSION_V2,
+            let input = MiniJamExecutionInput {
+                protocol_version: PROTOCOL_VERSION_V1,
                 slot: block.saturated_into(),
                 parent_hash: Self::host_parent_hash(block),
                 parent_state_root: Self::host_parent_state_root(block),
@@ -1368,7 +1368,7 @@ pub mod pallet {
             };
             let state = FrameProtocolState::<T>(Default::default());
             let executor = T::JamCoreExecutor::default();
-            let output = match executor.execute_v2(input.clone(), &state) {
+            let output = match executor.execute(input.clone(), &state) {
                 Ok(output) => output,
                 Err(MiniJamError::Execution(outcome)) => {
                     return if let Some(work_id) = work_ids.first().copied() {
@@ -1396,7 +1396,7 @@ pub mod pallet {
                 }
             };
 
-            let delta = validate_execution_output_v2(&input, &output, &state)
+            let delta = validate_execution_output(&input, &output, &state)
                 .map_err(|error| Self::map_validation_error(&input, error))?;
             Self::apply_delta(delta)?;
             Self::consume_preimages(&output.consumed_preimages);
@@ -1434,7 +1434,7 @@ pub mod pallet {
         }
 
         fn map_validation_error(
-            input: &MiniJamExecutionInputV2,
+            input: &MiniJamExecutionInput,
             error: ValidationError,
         ) -> ExecutionFailure {
             if input.reports.is_empty()

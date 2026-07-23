@@ -45,6 +45,8 @@ sp-version = { workspace = true, features = ["serde"] }
 substrate-wasm-builder = { workspace = true, optional = true }
 
 [dev-dependencies]
+jam-codec = { version = "0.1.1", default-features = false }
+jp-core-primitives = { path = "../external/jambda/crates/core-primitives" }
 jp-vm-predecode = { path = "../external/jambda/vm/predecode" }
 
 [features]
@@ -54,6 +56,7 @@ std = [
   "frame-support/std",
   "frame-system-rpc-runtime-api/std",
   "frame-system/std",
+  "jambda-minijam-executive/std",
   "minijam-jamcore-api/std",
   "minijam-protocol/std",
   "minijam-rpc-runtime-api/std",

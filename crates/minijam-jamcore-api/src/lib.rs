@@ -7,13 +7,14 @@ use alloc::vec::Vec;
 use minijam_protocol::{
     blake2_256, ConsumedPreimages, ConsumedReports, ConsumedSystemOps, Hash, PreimageBatch,
     PreimageMetadataV1, ProtocolStateChange, ReportBatch, StateChanges, StateOperation,
-    SystemOpBatch, PROTOCOL_VERSION_V1,
+    SystemOpBatch,
 };
 use parity_scale_codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 
 pub const INTERFACE_VERSION: u16 = 1;
-pub const EXECUTION_RECEIPT_DOMAIN_V2: &[u8] = b"minijam/execution-receipt/v2";
+pub const EXECUTION_RECEIPT_DOMAIN: &[u8] = b"minijam/execution-receipt/v1";
+pub const BLOCK_INPUT_DOMAIN: &[u8] = b"minijam/block-input/v1";
 
 #[derive(Clone, Debug, Decode, Encode, Eq, PartialEq, TypeInfo)]
 pub struct ServiceResultProjection {
@@ -35,19 +36,7 @@ pub struct ReportProjectionV1 {
 }
 
 #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-pub struct MiniJamExecutionInputV1 {
-    pub protocol_version: u16,
-    pub slot: u32,
-    pub parent_hash: Hash,
-    pub parent_state_root: Hash,
-    pub entropy: Hash,
-    pub reports: ReportBatch,
-    pub preimages: PreimageBatch,
-    pub max_gas: u64,
-}
-
-#[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-pub struct MiniJamExecutionInputV2 {
+pub struct MiniJamExecutionInput {
     pub protocol_version: u16,
     pub slot: u32,
     pub parent_hash: Hash,
@@ -59,35 +48,34 @@ pub struct MiniJamExecutionInputV2 {
     pub max_gas: u64,
 }
 
-impl From<MiniJamExecutionInputV1> for MiniJamExecutionInputV2 {
-    fn from(input: MiniJamExecutionInputV1) -> Self {
-        Self {
-            protocol_version: input.protocol_version,
-            slot: input.slot,
-            parent_hash: input.parent_hash,
-            parent_state_root: input.parent_state_root,
-            entropy: input.entropy,
-            reports: input.reports,
-            preimages: input.preimages,
-            system_ops: Default::default(),
-            max_gas: input.max_gas,
+impl MiniJamExecutionInput {
+    pub fn compute_input_hash(&self) -> Hash {
+        let mut encoded = Vec::new();
+        encoded.extend_from_slice(BLOCK_INPUT_DOMAIN);
+        encoded.extend_from_slice(&self.protocol_version.to_le_bytes());
+        encoded.extend_from_slice(&self.slot.to_le_bytes());
+        encoded.extend_from_slice(&self.parent_hash);
+        encoded.extend_from_slice(&self.parent_state_root);
+        encoded.extend_from_slice(&self.entropy);
+        encoded.extend_from_slice(&(self.reports.len() as u32).to_le_bytes());
+        for report in &self.reports {
+            append_len_prefixed_bytes(&mut encoded, report);
         }
+        encoded.extend_from_slice(&(self.preimages.len() as u32).to_le_bytes());
+        for preimage in &self.preimages {
+            append_len_prefixed_bytes(&mut encoded, preimage);
+        }
+        encoded.extend_from_slice(&(self.system_ops.len() as u32).to_le_bytes());
+        for op in &self.system_ops {
+            append_len_prefixed_bytes(&mut encoded, &op.encode());
+        }
+        encoded.extend_from_slice(&self.max_gas.to_le_bytes());
+        blake2_256(&encoded)
     }
 }
 
 #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-pub struct MiniJamExecutionOutputV1 {
-    pub ordered_changes: StateChanges,
-    pub consumed_reports: ConsumedReports,
-    pub consumed_preimages: ConsumedPreimages,
-    pub header_hash: Hash,
-    pub accumulate_root: Hash,
-    pub gas_used: u64,
-    pub receipt_hash: Hash,
-}
-
-#[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-pub struct MiniJamExecutionOutputV2 {
+pub struct MiniJamExecutionOutput {
     pub ordered_changes: StateChanges,
     pub consumed_reports: ConsumedReports,
     pub consumed_preimages: ConsumedPreimages,
@@ -99,37 +87,7 @@ pub struct MiniJamExecutionOutputV2 {
     pub receipt_hash: Hash,
 }
 
-impl MiniJamExecutionOutputV1 {
-    pub fn empty() -> Self {
-        let mut output = Self {
-            ordered_changes: Default::default(),
-            consumed_reports: Default::default(),
-            consumed_preimages: Default::default(),
-            header_hash: [0u8; 32],
-            accumulate_root: [0u8; 32],
-            gas_used: 0,
-            receipt_hash: [0u8; 32],
-        };
-        output.receipt_hash = output.compute_receipt_hash();
-        output
-    }
-
-    pub fn compute_receipt_hash(&self) -> Hash {
-        blake2_256(
-            &(
-                &self.ordered_changes,
-                &self.consumed_reports,
-                &self.consumed_preimages,
-                self.header_hash,
-                self.accumulate_root,
-                self.gas_used,
-            )
-                .encode(),
-        )
-    }
-}
-
-impl MiniJamExecutionOutputV2 {
+impl MiniJamExecutionOutput {
     pub fn empty() -> Self {
         let mut output = Self {
             ordered_changes: Default::default(),
@@ -148,7 +106,7 @@ impl MiniJamExecutionOutputV2 {
 
     pub fn compute_receipt_hash(&self) -> Hash {
         let mut encoded = Vec::new();
-        encoded.extend_from_slice(EXECUTION_RECEIPT_DOMAIN_V2);
+        encoded.extend_from_slice(EXECUTION_RECEIPT_DOMAIN);
         encoded.extend_from_slice(&self.input_hash);
         append_state_changes(&mut encoded, &self.ordered_changes);
         append_hashes(&mut encoded, &self.consumed_reports);
@@ -161,50 +119,16 @@ impl MiniJamExecutionOutputV2 {
     }
 }
 
-impl TryFrom<MiniJamExecutionOutputV2> for MiniJamExecutionOutputV1 {
-    type Error = MiniJamError;
-
-    fn try_from(output: MiniJamExecutionOutputV2) -> Result<Self, Self::Error> {
-        if !output.consumed_system_ops.is_empty() {
-            return Err(MiniJamError::Input(InputError::UnsupportedVersion));
-        }
-        let mut v1 = Self {
-            ordered_changes: output.ordered_changes,
-            consumed_reports: output.consumed_reports,
-            consumed_preimages: output.consumed_preimages,
-            header_hash: output.header_hash,
-            accumulate_root: output.accumulate_root,
-            gas_used: output.gas_used,
-            receipt_hash: [0u8; 32],
-        };
-        v1.receipt_hash = v1.compute_receipt_hash();
-        Ok(v1)
-    }
-}
-
-impl From<MiniJamExecutionOutputV1> for MiniJamExecutionOutputV2 {
-    fn from(output: MiniJamExecutionOutputV1) -> Self {
-        let mut v2 = Self {
-            ordered_changes: output.ordered_changes,
-            consumed_reports: output.consumed_reports,
-            consumed_preimages: output.consumed_preimages,
-            consumed_system_ops: Default::default(),
-            input_hash: [0u8; 32],
-            header_hash: output.header_hash,
-            accumulate_root: output.accumulate_root,
-            gas_used: output.gas_used,
-            receipt_hash: [0u8; 32],
-        };
-        v2.receipt_hash = v2.compute_receipt_hash();
-        v2
-    }
-}
-
 fn append_hashes(out: &mut Vec<u8>, hashes: &[Hash]) {
     out.extend_from_slice(&(hashes.len() as u32).to_le_bytes());
     for hash in hashes {
         out.extend_from_slice(hash);
     }
+}
+
+fn append_len_prefixed_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(bytes);
 }
 
 fn append_state_changes(out: &mut Vec<u8>, changes: &[ProtocolStateChange]) {
@@ -285,30 +209,9 @@ pub trait ProtocolStateReader {
 pub trait MiniJamExecutor {
     fn execute<R: ProtocolStateReader>(
         &self,
-        input: MiniJamExecutionInputV1,
+        input: MiniJamExecutionInput,
         state: &R,
-    ) -> Result<MiniJamExecutionOutputV1, MiniJamError>;
-
-    fn execute_v2<R: ProtocolStateReader>(
-        &self,
-        input: MiniJamExecutionInputV2,
-        state: &R,
-    ) -> Result<MiniJamExecutionOutputV2, MiniJamError> {
-        if !input.system_ops.is_empty() {
-            return Err(MiniJamError::Input(InputError::UnsupportedVersion));
-        }
-        let v1 = MiniJamExecutionInputV1 {
-            protocol_version: PROTOCOL_VERSION_V1,
-            slot: input.slot,
-            parent_hash: input.parent_hash,
-            parent_state_root: input.parent_state_root,
-            entropy: input.entropy,
-            reports: input.reports,
-            preimages: input.preimages,
-            max_gas: input.max_gas,
-        };
-        self.execute(v1, state).map(Into::into)
-    }
+    ) -> Result<MiniJamExecutionOutput, MiniJamError>;
 
     fn validate_preimage_submission<R: ProtocolStateReader>(
         &self,
@@ -329,10 +232,10 @@ pub struct NoopMiniJamExecutor;
 impl MiniJamExecutor for NoopMiniJamExecutor {
     fn execute<R: ProtocolStateReader>(
         &self,
-        _input: MiniJamExecutionInputV1,
+        _input: MiniJamExecutionInput,
         _state: &R,
-    ) -> Result<MiniJamExecutionOutputV1, MiniJamError> {
-        Ok(MiniJamExecutionOutputV1::empty())
+    ) -> Result<MiniJamExecutionOutput, MiniJamError> {
+        Ok(MiniJamExecutionOutput::empty())
     }
 }
 
@@ -354,9 +257,9 @@ mod tests {
     use minijam_protocol::SystemOpV1;
 
     #[test]
-    fn v2_receipt_commits_input_hash_and_system_ops() {
-        let mut a = MiniJamExecutionOutputV2::empty();
-        let mut b = MiniJamExecutionOutputV2::empty();
+    fn receipt_commits_input_hash_and_system_ops() {
+        let mut a = MiniJamExecutionOutput::empty();
+        let mut b = MiniJamExecutionOutput::empty();
         a.input_hash = [1u8; 32];
         b.input_hash = [2u8; 32];
         assert_ne!(a.compute_receipt_hash(), b.compute_receipt_hash());
