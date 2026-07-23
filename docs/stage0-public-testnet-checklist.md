@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `28d210a56c4a737ccea6641c84be5089e3653451`
+- minijam-client current implementation commit: `98c579f750c06407a21f81cbde4ca34258ad2e7a`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -97,7 +97,7 @@ Evidence:
 
 - [x] Pallet view functions expose core work, fuel, preimage, system op, receipt, and protocol-state queries.
 - [x] Stable `minijam-rpc-runtime-api` and node `minijam_*` read-only RPC methods expose work, candidate, fuel, preimage, system op, receipt, and protocol-state queries.
-- [ ] `minijam-cli` command suite.
+- [x] `minijam-cli` command suite.
 - [x] Rate-limited test MINI faucet.
 
 Evidence:
@@ -108,6 +108,9 @@ Evidence:
 - `cargo check -p minijam-node`
 - `cargo fmt --all -- --check`
 - `cargo test -p pallet-minijam claim_faucet`
+- `cargo check -p minijam-cli`
+- `cargo test -p minijam-cli`
+- `cargo run -p minijam-cli -- claim-faucet`
 
 ## M6: Fixed Public Network Configuration
 
@@ -154,5 +157,4 @@ Current environment limits:
 
 - Service 0 is still a placeholder artifact and cannot satisfy the public testnet CreateService requirement.
 - Worker binary can read finalized pending task inputs through RPC, but is not yet connected to transaction submission.
-- No `minijam-cli` command suite exists yet.
 - Cross-process E2E and Canary evidence are missing.
