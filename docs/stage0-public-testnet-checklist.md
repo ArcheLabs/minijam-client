@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `66d722516f54cb2c3efb983ca36ddc9c6bcd0033`
+- minijam-client current implementation commit: `45d3dca5ad1ade9f2aeddb486f7ddef06ef1d14a`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -58,12 +58,18 @@ Evidence:
 
 - [x] Worker has config validation and documented TOML loading.
 - [x] Worker runner verifies ContentRef size and hash and records per-task status.
+- [x] Persistent file-backed recovery database stores worker task statuses and resumes ready bundles after restart.
 - [ ] Worker chain RPC via finalized state.
-- [ ] Persistent recovery database.
 - [ ] Real Auditable Work Bundle decoder.
 - [ ] Jambda Is-Authorized and Refine execution.
 - [ ] Candidate submission and independent Support/Oppose voting.
 - [ ] Prometheus metrics.
+
+Evidence:
+
+- `cargo test -p minijam-worker`
+- `cargo check -p minijam-worker`
+- `cargo run -p minijam-worker -- --config deploy/stage0/worker-1.toml --state-db /tmp/minijam-worker-state-check.toml --once`
 
 ## M4: Real Service 0
 
