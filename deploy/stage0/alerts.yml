@@ -1,0 +1,38 @@
+groups:
+  - name: minijam-stage0
+    rules:
+      - alert: MiniJamTargetDown
+        expr: up{job=~"minijam-authorities|minijam-public-rpc|minijam-workers"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MiniJAM target is down"
+          description: "{{ $labels.job }} target {{ $labels.instance }} has been unreachable for more than 2 minutes."
+
+      - alert: MiniJamFinalizationLag
+        expr: max(substrate_block_height{job=~"minijam-authorities|minijam-public-rpc"}) - max(substrate_finalized_height{job=~"minijam-authorities|minijam-public-rpc"}) > 30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MiniJAM finalization lag is high"
+          description: "Best block height is more than 30 blocks ahead of finalized height for 10 minutes."
+
+      - alert: MiniJamWorkerNotPolling
+        expr: increase(minijam_worker_polls_total{job="minijam-workers"}[5m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MiniJAM worker is not polling"
+          description: "Worker {{ $labels.instance }} has not completed a poll in the last 5 minutes."
+
+      - alert: MiniJamWorkerBundleRejections
+        expr: increase(minijam_worker_bundle_rejected_total{job="minijam-workers"}[10m]) > 5 and increase(minijam_worker_bundle_rejected_total{job="minijam-workers"}[10m]) > increase(minijam_worker_bundle_ready_total{job="minijam-workers"}[10m])
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MiniJAM worker is rejecting bundles"
+          description: "Worker {{ $labels.instance }} rejected more bundles than it accepted over 10 minutes."
