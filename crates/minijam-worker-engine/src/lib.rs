@@ -6,7 +6,7 @@ extern crate alloc;
 use alloc::{collections::BTreeMap, vec::Vec};
 use bounded_collections::{BoundedVec, ConstU32};
 use minijam_protocol::{
-    blake2_256, AssignmentRound, BlockNumber, Hash, Verdict, WorkId, WorkerId,
+    blake2_256, AssignmentRound, BlockNumber, ContentRef, Hash, Verdict, WorkId, WorkerId,
     MINIMUM_ABSENCE_SLASH, MINIMUM_WORKER_STAKE, OPPOSE_THRESHOLD, SUPPORT_THRESHOLD,
     TIMELY_VOTE_REWARD, WORKERS_PER_WORK,
 };
@@ -15,6 +15,34 @@ use scale_info::TypeInfo;
 
 pub type AssignedWorkers = BoundedVec<WorkerId, ConstU32<3>>;
 pub type VoteRecords = BoundedVec<VoteRecord, ConstU32<3>>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ContentVerificationError {
+    EmptyCid,
+    SizeLimitExceeded,
+    SizeMismatch,
+    HashMismatch,
+}
+
+pub fn verify_content_ref(
+    reference: &ContentRef,
+    bytes: &[u8],
+    max_bytes: u64,
+) -> Result<(), ContentVerificationError> {
+    if reference.cid_v1.is_empty() {
+        return Err(ContentVerificationError::EmptyCid);
+    }
+    if reference.size > max_bytes {
+        return Err(ContentVerificationError::SizeLimitExceeded);
+    }
+    if bytes.len() as u64 != reference.size {
+        return Err(ContentVerificationError::SizeMismatch);
+    }
+    if blake2_256(bytes) != reference.content_hash {
+        return Err(ContentVerificationError::HashMismatch);
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub enum WorkerStatus {
@@ -267,6 +295,7 @@ pub fn equivocation_slash(stake: u128) -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minijam_protocol::ContentRef;
     use minijam_protocol::{OpposeReason, UNIT, VOTE_WINDOW};
 
     fn worker(id: WorkerId, stake: u128) -> WorkerRecord {
@@ -276,6 +305,34 @@ mod tests {
             session_key: [id as u8; 32],
             status: WorkerStatus::Active,
         }
+    }
+
+    fn content_ref(bytes: &[u8]) -> ContentRef {
+        ContentRef {
+            cid_v1: vec![1].try_into().unwrap(),
+            content_hash: blake2_256(bytes),
+            size: bytes.len() as u64,
+        }
+    }
+
+    #[test]
+    fn verifies_content_ref_size_and_hash() {
+        let bytes = b"bundle";
+        let reference = content_ref(bytes);
+
+        assert_eq!(verify_content_ref(&reference, bytes, 32), Ok(()));
+        assert_eq!(
+            verify_content_ref(&reference, b"bundlx", 32),
+            Err(ContentVerificationError::HashMismatch)
+        );
+        assert_eq!(
+            verify_content_ref(&reference, b"bundle-extra", 32),
+            Err(ContentVerificationError::SizeMismatch)
+        );
+        assert_eq!(
+            verify_content_ref(&reference, bytes, 1),
+            Err(ContentVerificationError::SizeLimitExceeded)
+        );
     }
 
     #[test]
