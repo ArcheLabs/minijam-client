@@ -37,6 +37,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", default-features = false, features = ["alloc"] }
 thiserror = "2.0.18"
 tempfile = "3.23.0"
+toml = "0.8.23"
 clap = { version = "4.5.13" }
 frame-support = { git = "https://github.com/paritytech/polkadot-sdk.git", rev = "2e4dd0bc22366a5af820492528869a493b5a5208", default-features = false }
 frame-system = { git = "https://github.com/paritytech/polkadot-sdk.git", rev = "2e4dd0bc22366a5af820492528869a493b5a5208", default-features = false }

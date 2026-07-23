@@ -9,6 +9,8 @@ async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
 minijam-protocol = { path = "../minijam-protocol" }
 minijam-worker-engine = { path = "../minijam-worker-engine" }
+serde.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 futures.workspace = true

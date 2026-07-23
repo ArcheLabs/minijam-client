@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{thread, time::Duration};
+use std::{path::PathBuf, thread, time::Duration};
 
 use clap::Parser;
 use minijam_worker::WorkerConfig;
@@ -9,45 +9,72 @@ use minijam_worker::WorkerConfig;
 #[command(name = "minijam-worker")]
 #[command(about = "MiniJAM stage-0 worker daemon")]
 struct Cli {
-    #[arg(long, default_value = "ws://127.0.0.1:9944")]
-    rpc_url: String,
+    #[arg(long)]
+    config: Option<PathBuf>,
+
+    #[arg(long)]
+    rpc_url: Option<String>,
 
     #[arg(long)]
     key: Option<String>,
 
-    #[arg(long, default_value_t = 1_000)]
-    poll_interval_ms: u64,
+    #[arg(long)]
+    poll_interval_ms: Option<u64>,
 
-    #[arg(long, default_value = "http://127.0.0.1:8080")]
-    ipfs_gateway: String,
+    #[arg(long)]
+    ipfs_gateway: Option<String>,
 
-    #[arg(long, default_value_t = 30)]
-    request_timeout_secs: u64,
+    #[arg(long)]
+    request_timeout_secs: Option<u64>,
 
-    #[arg(long, default_value_t = 16_777_216)]
-    max_bundle_bytes: u64,
+    #[arg(long)]
+    max_bundle_bytes: Option<u64>,
 
     #[arg(long)]
     once: bool,
 }
 
-impl From<Cli> for WorkerConfig {
-    fn from(cli: Cli) -> Self {
-        Self {
-            rpc_url: cli.rpc_url,
-            key: cli.key,
-            poll_interval: Duration::from_millis(cli.poll_interval_ms),
-            ipfs_gateway: cli.ipfs_gateway,
-            request_timeout: Duration::from_secs(cli.request_timeout_secs),
-            max_bundle_bytes: cli.max_bundle_bytes,
-        }
+fn build_config(cli: &Cli) -> Result<WorkerConfig, String> {
+    let mut config = if let Some(path) = &cli.config {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        WorkerConfig::from_toml_str(&contents)
+            .map_err(|error| format!("failed to parse {}: {error}", path.display()))?
+    } else {
+        WorkerConfig::default()
+    };
+
+    if let Some(rpc_url) = &cli.rpc_url {
+        config.rpc_url = rpc_url.clone();
     }
+    if let Some(key) = &cli.key {
+        config.key = Some(key.clone());
+    }
+    if let Some(poll_interval_ms) = cli.poll_interval_ms {
+        config.poll_interval = Duration::from_millis(poll_interval_ms);
+    }
+    if let Some(ipfs_gateway) = &cli.ipfs_gateway {
+        config.ipfs_gateway = ipfs_gateway.clone();
+    }
+    if let Some(request_timeout_secs) = cli.request_timeout_secs {
+        config.request_timeout = Duration::from_secs(request_timeout_secs);
+    }
+    if let Some(max_bundle_bytes) = cli.max_bundle_bytes {
+        config.max_bundle_bytes = max_bundle_bytes;
+    }
+    Ok(config)
 }
 
 fn main() {
     let cli = Cli::parse();
     let once = cli.once;
-    let config = WorkerConfig::from(cli);
+    let config = match build_config(&cli) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+    };
     if let Err(error) = config.validate() {
         eprintln!("invalid worker config: {error:?}");
         std::process::exit(2);
