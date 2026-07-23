@@ -5,7 +5,7 @@ This checklist tracks implementation against
 
 ## Baseline
 
-- minijam-client current implementation commit: `4bb0eaf38ee4c9c7fc78ff2ee2e9906431b50ee5`
+- minijam-client current implementation commit: `6f3a58ad83948d7d3ee99bb6a12fbd39e470064c`
 - external/jambda pinned commit: `fce620ab070bddf832c62a18a7d530408d01f7db`
 - /home/libingjiang/jambda companion commit: `19d1bde466918a03e9229eb72d46a0eb68f47ecc`
 - Rust toolchain: `nightly-2026-05-02`
@@ -155,7 +155,7 @@ Current environment limits:
 
 - [ ] Node, worker, and economic metrics.
 - [x] Alerting rules.
-- [ ] Backup and restore procedures.
+- [x] Backup and restore procedures.
 - [ ] Runtime upgrade rehearsal.
 - [ ] 48-hour Canary soak.
 - [ ] Final `STAGE0-RELEASE-CHECKLIST.md` with evidence links.
@@ -163,6 +163,7 @@ Current environment limits:
 Evidence:
 
 - `ruby -e 'require "yaml"; YAML.load_file("deploy/stage0/alerts.yml"); YAML.load_file("deploy/stage0/prometheus.yml"); puts "yaml ok"'`
+- Backup and restore procedures in `deploy/stage0/README.md`.
 
 ## Current Known Risks
 
