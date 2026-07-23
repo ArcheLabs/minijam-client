@@ -1,17 +1,18 @@
 use crate as pallet_minijam;
 use frame_support::{
-    assert_ok, derive_impl, parameter_types,
+    assert_noop, assert_ok, derive_impl, parameter_types,
     traits::tokens::fungible::{Inspect, InspectHold},
 };
 use minijam_jamcore_api::{
-    InputError, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionOutputV1, MiniJamExecutor,
-    ProtocolStateReader,
+    InputError, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutionInputV2,
+    MiniJamExecutionOutputV1, MiniJamExecutionOutputV2, MiniJamExecutor, ProtocolStateReader,
 };
 use minijam_protocol::{
     blake2_256, BulletinEvidence, CanonicalReportBytes, PreimageMetadataV1, ProtocolStateChange,
-    ReportEnvelopeV1, ReportMetadataV1, ReportSignatures, StateOperation, StateValue, Verdict,
-    WorkerVoteV1, NS_SERVICE_STORAGE, PROTOCOL_VERSION_V1,
+    ReportEnvelopeV1, ReportMetadataV1, ReportSignatures, StateOperation, StateValue,
+    SystemCommandV1, Verdict, WorkerVoteV1, NS_SERVICE_STORAGE, PROTOCOL_VERSION_V1,
 };
+use parity_scale_codec::Encode;
 use sp_core::{sr25519, Pair};
 use sp_runtime::BuildStorage;
 
@@ -120,6 +121,7 @@ impl pallet_minijam::Config for Test {
     type MaxExecutionGas = frame_support::traits::ConstU64<1_000_000>;
     type JamCoreExecutor = TestExecutor;
     type MaxPendingPreimages = frame_support::traits::ConstU32<8>;
+    type MaxPendingSystemOps = frame_support::traits::ConstU32<8>;
 }
 
 #[derive(Default)]
@@ -146,6 +148,54 @@ impl MiniJamExecutor for TestExecutor {
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
+        output.header_hash = [1; 32];
+        output.accumulate_root = [2; 32];
+        if !input.reports.is_empty() {
+            let mut key = [0u8; 31];
+            key[0] = NS_SERVICE_STORAGE;
+            key[30] = 7;
+            output
+                .ordered_changes
+                .try_push(ProtocolStateChange {
+                    key,
+                    operation: StateOperation::Upsert,
+                    value: Some(StateValue::try_from(vec![input.reports.len() as u8]).unwrap()),
+                })
+                .unwrap();
+        }
+        output.gas_used = 10;
+        output.receipt_hash = output.compute_receipt_hash();
+        Ok(output)
+    }
+
+    fn execute_v2<R: ProtocolStateReader>(
+        &self,
+        input: MiniJamExecutionInputV2,
+        _state: &R,
+    ) -> Result<MiniJamExecutionOutputV2, MiniJamError> {
+        let mut output = MiniJamExecutionOutputV2::empty();
+        output.consumed_reports = input
+            .reports
+            .iter()
+            .map(|report| blake2_256(report))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        output.consumed_preimages = input
+            .preimages
+            .iter()
+            .map(|preimage| blake2_256(preimage))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        output.consumed_system_ops = input
+            .system_ops
+            .iter()
+            .map(|op| op.request_id)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        output.input_hash = blake2_256(&input.encode());
         output.header_hash = [1; 32];
         output.accumulate_root = [2; 32];
         if !input.reports.is_empty() {
@@ -383,6 +433,57 @@ fn queued_preimages_are_imported_with_next_virtual_block() {
                 blob_len: 3
             }
         ));
+    });
+}
+
+#[test]
+fn queued_system_ops_are_consumed_with_next_virtual_block() {
+    new_test_ext().execute_with(|| {
+        let command = SystemCommandV1::CreateService {
+            code_hash: [9u8; 32],
+            code_len: 32,
+            min_item_gas: 1,
+            min_memo_gas: 1,
+            initial_balance: 100,
+        };
+        assert_ok!(MiniJam::submit_system_op(
+            RuntimeOrigin::signed(5),
+            Box::new(command)
+        ));
+        let pending = pallet_minijam::PendingSystemOps::<Test>::get();
+        assert_eq!(pending.len(), 1);
+        let request_id = pending[0].op.request_id;
+        assert!(pallet_minijam::PendingSystemOpKeys::<Test>::contains_key(
+            request_id
+        ));
+
+        System::set_block_number(100);
+        <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(100);
+
+        assert!(pallet_minijam::PendingSystemOps::<Test>::get().is_empty());
+        assert!(!pallet_minijam::PendingSystemOpKeys::<Test>::contains_key(
+            request_id
+        ));
+    });
+}
+
+#[test]
+fn invalid_system_ops_are_rejected_before_queueing() {
+    new_test_ext().execute_with(|| {
+        assert_noop!(
+            MiniJam::submit_system_op(
+                RuntimeOrigin::signed(5),
+                Box::new(SystemCommandV1::CreateService {
+                    code_hash: [9u8; 32],
+                    code_len: 0,
+                    min_item_gas: 1,
+                    min_memo_gas: 1,
+                    initial_balance: 100,
+                })
+            ),
+            pallet_minijam::Error::<Test>::InvalidSystemOp
+        );
+        assert!(pallet_minijam::PendingSystemOps::<Test>::get().is_empty());
     });
 }
 

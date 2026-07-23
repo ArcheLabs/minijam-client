@@ -19,15 +19,15 @@ pub mod pallet {
     };
     use frame_system::pallet_prelude::*;
     use minijam_jamcore_api::{
-        ExecutionOutcome, MiniJamError, MiniJamExecutionInputV1, MiniJamExecutor,
+        ExecutionOutcome, MiniJamError, MiniJamExecutionInputV2, MiniJamExecutor,
         ProtocolStateReader, StateError,
     };
     use minijam_protocol::{
         blake2_256, CanonicalPreimageBytes, CanonicalReportBytes, Hash, PreimageBatch,
         PreimageMetadataV1, ProtocolStateChange, ReportEnvelopeV1, StateOperation, StateValue,
-        PROTOCOL_VERSION_V1,
+        SystemCommandV1, SystemOpBatch, SystemOpV1, PROTOCOL_VERSION_V1, PROTOCOL_VERSION_V2,
     };
-    use minijam_state_adapter::{validate_execution_output, ValidatedDelta, ValidationError};
+    use minijam_state_adapter::{validate_execution_output_v2, ValidatedDelta, ValidationError};
     use pallet_minijam_workers::RoundDecision;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
@@ -105,10 +105,18 @@ pub mod pallet {
         pub metadata: PreimageMetadataV1,
     }
 
+    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    #[scale_info(skip_type_params(T))]
+    pub struct PendingSystemOp<T: Config> {
+        pub submitter: T::AccountId,
+        pub op: SystemOpV1,
+    }
+
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct BlockStfSummary {
         report_count: u32,
         preimage_count: u32,
+        system_op_count: u32,
         receipt_hash: Hash,
     }
 
@@ -169,6 +177,9 @@ pub mod pallet {
 
         #[pallet::constant]
         type MaxPendingPreimages: Get<u32>;
+
+        #[pallet::constant]
+        type MaxPendingSystemOps: Get<u32>;
     }
 
     #[pallet::pallet]
@@ -233,6 +244,17 @@ pub mod pallet {
     pub type PendingPreimageKeys<T: Config> =
         StorageMap<_, Blake2_128Concat, PreimageKeyV1, (), OptionQuery>;
 
+    #[pallet::storage]
+    pub type PendingSystemOps<T: Config> =
+        StorageValue<_, BoundedVec<PendingSystemOp<T>, T::MaxPendingSystemOps>, ValueQuery>;
+
+    #[pallet::storage]
+    pub type PendingSystemOpKeys<T: Config> =
+        StorageMap<_, Blake2_128Concat, Hash, (), OptionQuery>;
+
+    #[pallet::storage]
+    pub type SystemOpNonces<T: Config> = StorageMap<_, Blake2_128Concat, [u8; 32], u64, ValueQuery>;
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -272,6 +294,13 @@ pub mod pallet {
             blob_hash: Hash,
             blob_len: u32,
         },
+        SystemOpQueued {
+            request_id: Hash,
+            sender: [u8; 32],
+        },
+        SystemOpConsumed {
+            request_id: Hash,
+        },
         ExecutionYielded {
             work_id: WorkId,
             outcome: ExecutionOutcome,
@@ -307,6 +336,9 @@ pub mod pallet {
         InvalidPreimage,
         DuplicatePendingPreimage,
         TooManyPendingPreimages,
+        InvalidSystemOp,
+        DuplicatePendingSystemOp,
+        TooManyPendingSystemOps,
     }
 
     #[pallet::hooks]
@@ -514,6 +546,39 @@ pub mod pallet {
             });
             Ok(())
         }
+
+        #[pallet::call_index(5)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(3, 4))]
+        #[transactional]
+        pub fn submit_system_op(
+            origin: OriginFor<T>,
+            command: Box<SystemCommandV1>,
+        ) -> DispatchResult {
+            let submitter = ensure_signed(origin)?;
+            Self::validate_system_command(&command)?;
+            let sender = Self::system_op_sender(&submitter);
+            let nonce = SystemOpNonces::<T>::get(sender);
+            let op = SystemOpV1::new(sender, nonce, *command);
+            ensure!(
+                !PendingSystemOpKeys::<T>::contains_key(op.request_id),
+                Error::<T>::DuplicatePendingSystemOp
+            );
+            PendingSystemOps::<T>::try_mutate(|pending| {
+                pending
+                    .try_push(PendingSystemOp::<T> {
+                        submitter,
+                        op: op.clone(),
+                    })
+                    .map_err(|_| Error::<T>::TooManyPendingSystemOps)
+            })?;
+            PendingSystemOpKeys::<T>::insert(op.request_id, ());
+            SystemOpNonces::<T>::insert(sender, nonce.saturating_add(1));
+            Self::deposit_event(Event::SystemOpQueued {
+                request_id: op.request_id,
+                sender,
+            });
+            Ok(())
+        }
     }
 
     impl<T: Config> Pallet<T> {
@@ -709,7 +774,7 @@ pub mod pallet {
                         slot: block.saturated_into(),
                         report_count: summary.report_count,
                         preimage_count: summary.preimage_count,
-                        system_op_count: 0,
+                        system_op_count: summary.system_op_count,
                         receipt_hash: summary.receipt_hash,
                     });
                 }
@@ -749,21 +814,28 @@ pub mod pallet {
             } else {
                 Self::pending_preimage_batch()?
             };
+            let system_ops = if SystemOpsPaused::<T>::get() {
+                SystemOpBatch::default()
+            } else {
+                Self::pending_system_ops_batch()?
+            };
             let report_count = reports.len() as u32;
             let preimage_count = preimages.len() as u32;
-            let input = MiniJamExecutionInputV1 {
-                protocol_version: PROTOCOL_VERSION_V1,
+            let system_op_count = system_ops.len() as u32;
+            let input = MiniJamExecutionInputV2 {
+                protocol_version: PROTOCOL_VERSION_V2,
                 slot: block.saturated_into(),
                 parent_hash: Self::host_parent_hash(block),
                 parent_state_root: Self::host_parent_state_root(block),
                 entropy: Self::host_entropy(block),
                 reports,
                 preimages,
+                system_ops,
                 max_gas: T::MaxExecutionGas::get(),
             };
             let state = FrameProtocolState::<T>(Default::default());
             let executor = T::JamCoreExecutor::default();
-            let output = match executor.execute(input.clone(), &state) {
+            let output = match executor.execute_v2(input.clone(), &state) {
                 Ok(output) => output,
                 Err(MiniJamError::Execution(outcome)) => {
                     return if let Some(work_id) = work_ids.first().copied() {
@@ -778,10 +850,11 @@ pub mod pallet {
                 Err(MiniJamError::Input(_)) => return Err(ExecutionFailure::Fatal),
             };
 
-            let delta = validate_execution_output(&input, &output, &state)
+            let delta = validate_execution_output_v2(&input, &output, &state)
                 .map_err(Self::map_validation_error)?;
             Self::apply_delta(delta)?;
             Self::consume_preimages(&output.consumed_preimages);
+            Self::consume_system_ops(&output.consumed_system_ops);
 
             let consumed_reports: BTreeSet<Hash> =
                 output.consumed_reports.iter().copied().collect();
@@ -804,6 +877,7 @@ pub mod pallet {
             Ok(BlockStfSummary {
                 report_count,
                 preimage_count,
+                system_op_count,
                 receipt_hash: output.receipt_hash,
             })
         }
@@ -855,6 +929,15 @@ pub mod pallet {
             preimages.try_into().map_err(|_| ExecutionFailure::Fatal)
         }
 
+        fn pending_system_ops_batch() -> Result<SystemOpBatch, ExecutionFailure> {
+            let mut pending = PendingSystemOps::<T>::get().into_inner();
+            pending.sort_by_key(|pending| {
+                (pending.op.sender, pending.op.nonce, pending.op.request_id)
+            });
+            let ops: Vec<SystemOpV1> = pending.into_iter().map(|pending| pending.op).collect();
+            ops.try_into().map_err(|_| ExecutionFailure::Fatal)
+        }
+
         fn consume_preimages(consumed_preimages: &[Hash]) {
             if consumed_preimages.is_empty() {
                 return;
@@ -874,6 +957,48 @@ pub mod pallet {
                     }
                 }
             });
+        }
+
+        fn consume_system_ops(consumed_system_ops: &[Hash]) {
+            if consumed_system_ops.is_empty() {
+                return;
+            }
+            let consumed: BTreeSet<Hash> = consumed_system_ops.iter().copied().collect();
+            PendingSystemOps::<T>::mutate(|pending| {
+                let mut index = 0;
+                while index < pending.len() {
+                    let request_id = pending[index].op.request_id;
+                    if consumed.contains(&request_id) {
+                        PendingSystemOpKeys::<T>::remove(request_id);
+                        pending.swap_remove(index);
+                        Self::deposit_event(Event::SystemOpConsumed { request_id });
+                    } else {
+                        index += 1;
+                    }
+                }
+            });
+        }
+
+        fn validate_system_command(command: &SystemCommandV1) -> DispatchResult {
+            match command {
+                SystemCommandV1::CreateService {
+                    code_len,
+                    min_item_gas,
+                    min_memo_gas,
+                    initial_balance,
+                    ..
+                } => {
+                    ensure!(*code_len > 0, Error::<T>::InvalidSystemOp);
+                    ensure!(*min_item_gas > 0, Error::<T>::InvalidSystemOp);
+                    ensure!(*min_memo_gas > 0, Error::<T>::InvalidSystemOp);
+                    ensure!(*initial_balance > 0, Error::<T>::InvalidSystemOp);
+                }
+            }
+            Ok(())
+        }
+
+        fn system_op_sender(account: &T::AccountId) -> [u8; 32] {
+            blake2_256(&account.encode())
         }
 
         fn host_parent_hash(block: BlockNumberFor<T>) -> Hash {

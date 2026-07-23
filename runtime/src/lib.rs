@@ -256,6 +256,7 @@ impl pallet_minijam::Config for Runtime {
     type MaxExecutionGas = ConstU64<10_000_000>;
     type JamCoreExecutor = jambda_minijam_executive::MiniJamExecutive;
     type MaxPendingPreimages = ConstU32<64>;
+    type MaxPendingSystemOps = ConstU32<64>;
 }
 
 impl pallet_minijam_bridge::Config for Runtime {
