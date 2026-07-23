@@ -995,8 +995,15 @@ where
 mod tests {
     use super::*;
     use futures::executor::block_on;
+    use jam_codec::Encode as JamEncode;
+    use jp_core_primitives::{
+        crypto::OpaqueHash,
+        simple::{ByteSequence, TimeSlot},
+        traits::JamHash,
+        work::{RefineContext, WorkPackage},
+    };
     use minijam_protocol::blake2_256;
-    use minijam_protocol::{MiniJamWorkBundleV1, WorkerVoteTaskV1};
+    use minijam_protocol::WorkerVoteTaskV1;
     use minijam_worker_engine::{fetch::MemoryContentFetcher, MiniJamWorkBundleDecoder};
     use parity_scale_codec::Encode;
     use std::sync::Mutex;
@@ -1147,10 +1154,43 @@ mod tests {
         }
     }
 
+    fn refine_package(seed: u8) -> WorkPackage {
+        WorkPackage {
+            auth_code_host: 0,
+            auth_code_hash: OpaqueHash([seed; 32]),
+            context: RefineContext {
+                anchor: OpaqueHash([2u8; 32]),
+                state_root: OpaqueHash([3u8; 32]),
+                beefy_root: OpaqueHash([4u8; 32]),
+                lookup_anchor: OpaqueHash([5u8; 32]),
+                lookup_anchor_slot: TimeSlot(6),
+                prerequisites: Vec::new(),
+            },
+            authorization: ByteSequence::from(Vec::new()),
+            authorizer_config: ByteSequence::from(Vec::new()),
+            items: Vec::new(),
+        }
+    }
+
+    fn refine_bundle(seed: u8) -> (Vec<u8>, Hash) {
+        let package = refine_package(seed);
+        let package_hash = package.jam_hash().0;
+        let input = jambda_refine::WorkReportInput {
+            core_index: 0,
+            work_package: Arc::new(package),
+            external_data: Arc::new(Vec::new()),
+            import_segments: Arc::new(Vec::new()),
+            import_proofs: Default::default(),
+        };
+        (
+            jambda_refine::MiniJamWorkBundleV1::new(&input).encode(),
+            package_hash,
+        )
+    }
+
     #[test]
     fn runner_fetches_and_verifies_pending_work_bundles() {
-        let package_hash = [7u8; 32];
-        let bundle = MiniJamWorkBundleV1::new(package_hash).encode();
+        let (bundle, package_hash) = refine_bundle(7);
         let task = task(1, 0, package_hash, &bundle);
         let fetcher = MemoryContentFetcher::new().with_content(&task.bundle_ref, bundle.clone());
         let mut runner = WorkerRunner::stage0(
@@ -1158,7 +1198,7 @@ mod tests {
                 tasks: vec![task.clone()],
             },
             fetcher,
-            64,
+            1024,
         );
 
         assert_eq!(block_on(runner.poll_once()).unwrap(), 1);
@@ -1188,9 +1228,8 @@ mod tests {
 
     #[test]
     fn runner_records_metrics_for_bundle_outcomes() {
-        let package_hash = [7u8; 32];
-        let good_bundle = MiniJamWorkBundleV1::new(package_hash).encode();
-        let bad_bundle = MiniJamWorkBundleV1::new([8u8; 32]).encode();
+        let (good_bundle, package_hash) = refine_bundle(7);
+        let (bad_bundle, _) = refine_bundle(8);
         let good_task = task(10, 0, package_hash, &good_bundle);
         let bad_task = task(11, 0, package_hash, &bad_bundle);
         let fetcher = MemoryContentFetcher::new()
@@ -1201,7 +1240,7 @@ mod tests {
                 tasks: vec![good_task, bad_task],
             },
             fetcher,
-            64,
+            1024,
         );
         let metrics = WorkerMetrics::new();
 
@@ -1375,8 +1414,8 @@ mod tests {
 
     #[test]
     fn runner_records_bundle_rejection_without_stopping_poll() {
-        let package_hash = [7u8; 32];
-        let bundle = MiniJamWorkBundleV1::new([8u8; 32]).encode();
+        let (_, package_hash) = refine_bundle(7);
+        let (bundle, _) = refine_bundle(8);
         let task = task(2, 0, package_hash, &bundle);
         let fetcher = MemoryContentFetcher::new().with_content(&task.bundle_ref, bundle);
         let mut runner = WorkerRunner::new(
@@ -1385,7 +1424,7 @@ mod tests {
             },
             fetcher,
             MiniJamWorkBundleDecoder,
-            64,
+            1024,
         );
 
         assert_eq!(block_on(runner.poll_once()).unwrap(), 1);
@@ -1437,8 +1476,7 @@ mod tests {
 
     #[test]
     fn runner_can_resume_ready_bundle_statuses() {
-        let package_hash = [7u8; 32];
-        let bundle = MiniJamWorkBundleV1::new(package_hash).encode();
+        let (bundle, package_hash) = refine_bundle(7);
         let task = task(3, 0, package_hash, &bundle);
         let fetcher = MemoryContentFetcher::new().with_content(&task.bundle_ref, bundle.clone());
         let mut statuses = BTreeMap::new();
@@ -1454,7 +1492,7 @@ mod tests {
             },
             fetcher,
             MiniJamWorkBundleDecoder,
-            64,
+            1024,
             statuses,
         );
 
@@ -1471,8 +1509,7 @@ mod tests {
     fn runner_persists_statuses_after_poll() {
         let tempdir = tempfile::tempdir().unwrap();
         let db = WorkerRecoveryDb::new(tempdir.path().join("worker-state.toml"));
-        let package_hash = [7u8; 32];
-        let bundle = MiniJamWorkBundleV1::new(package_hash).encode();
+        let (bundle, package_hash) = refine_bundle(7);
         let task = task(4, 0, package_hash, &bundle);
         let fetcher = MemoryContentFetcher::new().with_content(&task.bundle_ref, bundle.clone());
         let mut runner = WorkerRunner::new(
@@ -1481,7 +1518,7 @@ mod tests {
             },
             fetcher,
             MiniJamWorkBundleDecoder,
-            64,
+            1024,
         );
 
         assert_eq!(block_on(runner.poll_once_with_recovery(&db)).unwrap(), 1);

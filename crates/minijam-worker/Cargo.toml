@@ -20,4 +20,7 @@ sp-core = { workspace = true, default-features = true }
 toml.workspace = true
 
 [dev-dependencies]
+jam-codec = { version = "0.1.1", default-features = false }
+jambda-refine = { path = "../../external/jambda/crates/refine", default-features = false }
+jp-core-primitives = { path = "../../external/jambda/crates/core-primitives", default-features = false }
 tempfile.workspace = true

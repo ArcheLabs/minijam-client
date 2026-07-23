@@ -6,9 +6,9 @@ extern crate alloc;
 use alloc::{collections::BTreeMap, vec::Vec};
 use bounded_collections::{BoundedVec, ConstU32};
 use minijam_protocol::{
-    blake2_256, AssignmentRound, BlockNumber, ContentRef, Hash, MiniJamWorkBundleV1, Verdict,
-    WorkId, WorkerId, MINIMUM_ABSENCE_SLASH, MINIMUM_WORKER_STAKE, OPPOSE_THRESHOLD,
-    PROTOCOL_VERSION_V1, SUPPORT_THRESHOLD, TIMELY_VOTE_REWARD, WORKERS_PER_WORK,
+    blake2_256, AssignmentRound, BlockNumber, ContentRef, Hash, Verdict, WorkId, WorkerId,
+    MINIMUM_ABSENCE_SLASH, MINIMUM_WORKER_STAKE, OPPOSE_THRESHOLD, SUPPORT_THRESHOLD,
+    TIMELY_VOTE_REWARD, WORKERS_PER_WORK,
 };
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
@@ -29,6 +29,7 @@ pub enum WorkBundleDecodeError {
     InvalidEncoding,
     TrailingBytes,
     UnsupportedVersion,
+    PackageHashMismatch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -46,15 +47,24 @@ pub trait WorkBundleDecoder {
 pub struct MiniJamWorkBundleDecoder;
 
 impl MiniJamWorkBundleDecoder {
-    pub fn decode(&self, bytes: &[u8]) -> Result<MiniJamWorkBundleV1, WorkBundleDecodeError> {
+    #[cfg(feature = "std")]
+    pub fn decode(
+        &self,
+        bytes: &[u8],
+    ) -> Result<jambda_refine::MiniJamWorkBundleV1, WorkBundleDecodeError> {
+        use jam_codec::Decode;
+
         let mut input = bytes;
-        let bundle = MiniJamWorkBundleV1::decode(&mut input)
+        let bundle = jambda_refine::MiniJamWorkBundleV1::decode(&mut input)
             .map_err(|_| WorkBundleDecodeError::InvalidEncoding)?;
         if !input.is_empty() {
             return Err(WorkBundleDecodeError::TrailingBytes);
         }
-        if bundle.protocol_version != PROTOCOL_VERSION_V1 {
+        if bundle.version != jambda_refine::MINIJAM_WORK_BUNDLE_VERSION_V1 {
             return Err(WorkBundleDecodeError::UnsupportedVersion);
+        }
+        if !bundle.package_hash_matches() {
+            return Err(WorkBundleDecodeError::PackageHashMismatch);
         }
         Ok(bundle)
     }
@@ -62,7 +72,14 @@ impl MiniJamWorkBundleDecoder {
 
 impl WorkBundleDecoder for MiniJamWorkBundleDecoder {
     fn package_hash(&self, bytes: &[u8]) -> Result<Hash, WorkBundleDecodeError> {
-        Ok(self.decode(bytes)?.package_hash)
+        #[cfg(not(feature = "std"))]
+        {
+            let _ = bytes;
+            return Err(WorkBundleDecodeError::UnsupportedVersion);
+        }
+
+        #[cfg(feature = "std")]
+        Ok(self.decode(bytes)?.package_hash.0)
     }
 }
 
@@ -478,8 +495,16 @@ mod tests {
         fetch_verified_content, FetchError, HttpBytesClient, HttpContentFetcher,
         IpfsGatewayFetcher, MemoryContentFetcher,
     };
+    use alloc::sync::Arc;
     use futures::executor::block_on;
-    use minijam_protocol::{ContentRef, MiniJamWorkBundleV1};
+    use jam_codec::Encode as JamEncode;
+    use jp_core_primitives::{
+        crypto::OpaqueHash,
+        simple::{ByteSequence, TimeSlot},
+        traits::JamHash,
+        work::{RefineContext, WorkPackage},
+    };
+    use minijam_protocol::ContentRef;
     use minijam_protocol::{OpposeReason, UNIT, VOTE_WINDOW};
 
     #[derive(Clone)]
@@ -519,6 +544,40 @@ mod tests {
         }
     }
 
+    fn refine_package() -> WorkPackage {
+        WorkPackage {
+            auth_code_host: 0,
+            auth_code_hash: OpaqueHash([1u8; 32]),
+            context: RefineContext {
+                anchor: OpaqueHash([2u8; 32]),
+                state_root: OpaqueHash([3u8; 32]),
+                beefy_root: OpaqueHash([4u8; 32]),
+                lookup_anchor: OpaqueHash([5u8; 32]),
+                lookup_anchor_slot: TimeSlot(6),
+                prerequisites: Vec::new(),
+            },
+            authorization: ByteSequence::from(Vec::new()),
+            authorizer_config: ByteSequence::from(Vec::new()),
+            items: Vec::new(),
+        }
+    }
+
+    fn refine_bundle_bytes() -> (Vec<u8>, Hash) {
+        let package = refine_package();
+        let package_hash = package.jam_hash().0;
+        let input = jambda_refine::WorkReportInput {
+            core_index: 0,
+            work_package: Arc::new(package),
+            external_data: Arc::new(Vec::new()),
+            import_segments: Arc::new(Vec::new()),
+            import_proofs: Default::default(),
+        };
+        (
+            jambda_refine::MiniJamWorkBundleV1::new(&input).encode(),
+            package_hash,
+        )
+    }
+
     #[test]
     fn verifies_content_ref_size_and_hash() {
         let bytes = b"bundle";
@@ -541,8 +600,7 @@ mod tests {
 
     #[test]
     fn verifies_work_bundle_content_and_package_hash() {
-        let package_hash = [7u8; 32];
-        let bytes = MiniJamWorkBundleV1::new(package_hash).encode();
+        let (bytes, package_hash) = refine_bundle_bytes();
         let reference = content_ref(&bytes);
 
         let verified = verify_work_bundle(
@@ -595,9 +653,8 @@ mod tests {
 
     #[test]
     fn real_work_bundle_decoder_rejects_trailing_bytes_and_unknown_versions() {
-        let package_hash = [7u8; 32];
         let decoder = MiniJamWorkBundleDecoder;
-        let mut bytes = MiniJamWorkBundleV1::new(package_hash).encode();
+        let (mut bytes, _) = refine_bundle_bytes();
         bytes.push(0);
 
         assert_eq!(
@@ -605,11 +662,27 @@ mod tests {
             Err(WorkBundleDecodeError::TrailingBytes)
         );
 
-        let mut bundle = MiniJamWorkBundleV1::new(package_hash);
-        bundle.protocol_version = 999;
+        let package = refine_package();
+        let input = jambda_refine::WorkReportInput {
+            core_index: 0,
+            work_package: Arc::new(package),
+            external_data: Arc::new(Vec::new()),
+            import_segments: Arc::new(Vec::new()),
+            import_proofs: Default::default(),
+        };
+        let mut bundle = jambda_refine::MiniJamWorkBundleV1::new(&input);
+        bundle.version = 999;
         assert_eq!(
             decoder.package_hash(&bundle.encode()),
             Err(WorkBundleDecodeError::UnsupportedVersion)
+        );
+
+        let mut mismatched = bundle;
+        mismatched.version = jambda_refine::MINIJAM_WORK_BUNDLE_VERSION_V1;
+        mismatched.package_hash = OpaqueHash([9u8; 32]);
+        assert_eq!(
+            decoder.package_hash(&mismatched.encode()),
+            Err(WorkBundleDecodeError::PackageHashMismatch)
         );
     }
 

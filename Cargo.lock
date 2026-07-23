@@ -274,6 +274,7 @@ dependencies = [
  "num-bigint",
  "num-integer",
  "num-traits",
+ "rayon",
  "zeroize",
 ]
 
@@ -326,6 +327,7 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "paste",
+ "rayon",
  "zeroize",
 ]
 
@@ -401,6 +403,7 @@ dependencies = [
  "educe",
  "fnv",
  "hashbrown 0.15.5",
+ "rayon",
 ]
 
 [[package]]
@@ -426,6 +429,7 @@ dependencies = [
  "arrayvec",
  "digest 0.10.7",
  "num-bigint",
+ "rayon",
 ]
 
 [[package]]
@@ -468,6 +472,7 @@ checksum = "246a225cc6131e9ee4f24619af0f19d67761fff15d7ccc22e42b80846e69449a"
 dependencies = [
  "num-traits",
  "rand 0.8.6",
+ "rayon",
 ]
 
 [[package]]
@@ -517,6 +522,7 @@ dependencies = [
  "ark-std 0.5.0",
  "digest 0.10.7",
  "rand_chacha 0.3.1",
+ "rayon",
  "sha2 0.10.9",
  "w3f-ring-proof 0.0.6",
  "zeroize",
@@ -3783,7 +3789,15 @@ dependencies = [
 name = "jambda-logging"
 version = "0.0.1"
 dependencies = [
+ "jam-codec",
  "jp-vm-primitives",
+ "log",
+ "thiserror 2.0.18",
+ "time",
+ "tracing",
+ "tracing-appender",
+ "tracing-log",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3813,6 +3827,19 @@ dependencies = [
  "jambda-state-backend",
  "jp-core-primitives",
  "jp-crypto-primitives",
+]
+
+[[package]]
+name = "jambda-refine"
+version = "0.0.1"
+dependencies = [
+ "jam-codec",
+ "jambda-state-backend",
+ "jambda-wbmt",
+ "jp-core-primitives",
+ "jp-vm-engine",
+ "jp-vm-predecode",
+ "jp-vm-primitives",
 ]
 
 [[package]]
@@ -3936,6 +3963,7 @@ dependencies = [
  "hex",
  "jp-core-primitives",
  "log",
+ "rayon",
  "spin 0.10.0",
  "thiserror 2.0.18",
 ]
@@ -5218,6 +5246,9 @@ dependencies = [
  "async-trait",
  "clap",
  "futures",
+ "jam-codec",
+ "jambda-refine",
+ "jp-core-primitives",
  "jsonrpsee",
  "minijam-protocol",
  "minijam-runtime",
@@ -5238,6 +5269,9 @@ dependencies = [
  "async-trait",
  "bounded-collections 0.2.4",
  "futures",
+ "jam-codec",
+ "jambda-refine",
+ "jp-core-primitives",
  "minijam-protocol",
  "parity-scale-codec",
  "scale-info",
@@ -5667,6 +5701,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
 dependencies = [
  "hermit-abi",
+ "libc",
+]
+
+[[package]]
+name = "num_threads"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
+dependencies = [
  "libc",
 ]
 
@@ -9725,6 +9768,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "734676eb262c623cec13c3155096e08d1f8f29adce39ba17948b18dad1e54142"
 
 [[package]]
+name = "symlink"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7973cce6668464ea31f176d85b13c7ab3bba2cb3b77a2ed26abd7801688010a"
+
+[[package]]
 name = "syn"
 version = "1.0.109"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9926,7 +9975,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "18dfaaeddcb932337b5e7866ee7d0ce9b76d2fd092997146f187ec09b4558a50"
 dependencies = [
  "deranged",
+ "libc",
  "num-conv",
+ "num_threads",
  "powerfmt",
  "serde_core",
  "time-core",
@@ -10196,6 +10247,19 @@ dependencies = [
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-appender"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "050686193eb999b4bb3bc2acfa891a13da00f79734704c4b8b4ef1a10b368a3c"
+dependencies = [
+ "crossbeam-channel",
+ "symlink",
+ "thiserror 2.0.18",
+ "time",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -10553,6 +10617,7 @@ dependencies = [
  "ark-serialize 0.5.0",
  "ark-std 0.5.0",
  "merlin",
+ "rayon",
 ]
 
 [[package]]
@@ -10584,6 +10649,7 @@ dependencies = [
  "ark-std 0.5.0",
  "getrandom_or_panic",
  "rand_core 0.6.4",
+ "rayon",
  "w3f-pcs 0.0.5",
 ]
 
@@ -10615,6 +10681,7 @@ dependencies = [
  "ark-serialize 0.5.0",
  "ark-std 0.5.0",
  "ark-transcript",
+ "rayon",
  "w3f-pcs 0.0.5",
  "w3f-plonk-common 0.0.6",
 ]
