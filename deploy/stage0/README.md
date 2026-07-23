@@ -152,3 +152,10 @@ sudo systemctl start minijam-authority minijam-public-rpc minijam-worker
 ```
 
 Restore Compose state by stopping the stack, restoring `chain-specs/`, `deploy/stage0/`, and the Docker volumes from the matching archives, then starting the stack again. Do not mix node databases from one chain spec with a different `stage0-raw.json`.
+
+## Runtime Upgrade Rehearsal
+
+Before a public testnet runtime upgrade, run the rehearsal procedure in
+`docs/stage0-runtime-upgrade-rehearsal.md` on a private rehearsal network with
+the same topology. Copy the command transcript, artifact hashes, upgrade
+extrinsic hash, and post-upgrade checks into `docs/STAGE0-RELEASE-CHECKLIST.md`.
