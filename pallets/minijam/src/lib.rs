@@ -1097,6 +1097,10 @@ pub mod pallet {
             ProtocolState::<T>::get(Self::system_receipt_state_key(&request_id))
         }
 
+        pub fn get_system_op_nonce(sender: [u8; 32]) -> u64 {
+            SystemOpNonces::<T>::get(sender)
+        }
+
         pub fn get_system_service_info() -> Option<StateValue> {
             ProtocolState::<T>::get(Self::service_info_state_key(0))
         }

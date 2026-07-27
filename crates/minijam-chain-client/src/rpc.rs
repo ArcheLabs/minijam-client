@@ -82,6 +82,12 @@ pub async fn account_nonce(rpc: &WsClient, account: [u8; 32]) -> Result<u32, Cha
         .map_err(map_rpc)
 }
 
+pub async fn system_op_nonce(rpc: &WsClient, sender: [u8; 32]) -> Result<u64, ChainClientError> {
+    rpc.request("minijam_getSystemOpNonce", rpc_params![hex(&sender)])
+        .await
+        .map_err(map_rpc)
+}
+
 pub async fn submit_extrinsic(rpc: &WsClient, encoded: &[u8]) -> Result<Hash, ChainClientError> {
     let result: String = rpc
         .request("author_submitExtrinsic", rpc_params![hex(encoded)])

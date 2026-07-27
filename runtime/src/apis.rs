@@ -141,6 +141,10 @@ impl_runtime_apis! {
                 .map(|value| value.encode())
         }
 
+        fn get_system_op_nonce(sender: [u8; 32]) -> u64 {
+            pallet_minijam::Pallet::<Runtime>::get_system_op_nonce(sender)
+        }
+
         fn get_system_service_info() -> Option<Vec<u8>> {
             pallet_minijam::Pallet::<Runtime>::get_system_service_info()
                 .map(|value| value.encode())

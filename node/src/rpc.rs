@@ -296,6 +296,17 @@ where
         }
     })?;
 
+    module.register_method("minijam_getSystemOpNonce", {
+        let client = client.clone();
+        move |params, _, _| -> RpcResult<u64> {
+            let sender: sp_core::H256 = params.one()?;
+            client
+                .runtime_api()
+                .get_system_op_nonce(finalized_hash(&client), sender.to_fixed_bytes())
+                .map_err(runtime_api_error)
+        }
+    })?;
+
     module.register_method("minijam_getSystemServiceInfo", {
         let client = client.clone();
         move |_, _, _| -> RpcResult<Option<String>> {

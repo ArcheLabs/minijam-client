@@ -27,6 +27,7 @@ decl_runtime_apis! {
         fn get_quarantined_system_ops() -> Vec<u8>;
         fn get_system_op(request_id: Hash) -> Option<Vec<u8>>;
         fn get_system_receipt(request_id: Hash) -> Option<Vec<u8>>;
+        fn get_system_op_nonce(sender: [u8; 32]) -> u64;
         fn get_system_service_info() -> Option<Vec<u8>>;
         fn get_service_info(service_id: u32) -> Option<Vec<u8>>;
         fn get_service_storage(service_id: u32, key: Vec<u8>) -> Option<Vec<u8>>;

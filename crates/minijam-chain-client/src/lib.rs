@@ -44,6 +44,7 @@ pub struct MiniJamChainClient {
     signer: sr25519::Pair,
     next_nonce: futures::lock::Mutex<NonceCursor>,
     submit_lock: futures::lock::Mutex<()>,
+    system_op_lock: futures::lock::Mutex<()>,
 }
 
 impl MiniJamChainClient {
@@ -61,6 +62,7 @@ impl MiniJamChainClient {
             signer,
             next_nonce: futures::lock::Mutex::new(NonceCursor::default()),
             submit_lock: futures::lock::Mutex::new(()),
+            system_op_lock: futures::lock::Mutex::new(()),
         })
     }
 
@@ -221,8 +223,13 @@ impl MiniJamChainClient {
         &self,
         command: SystemCommandV1,
     ) -> Result<Submission, ChainClientError> {
+        let _system_op = self.system_op_lock.lock().await;
+        let sender = sp_runtime::MultiSigner::Sr25519(self.signer.public())
+            .into_account()
+            .into();
+        let system_nonce = rpc::system_op_nonce(&*self.rpc.lock().await, sender).await?;
         let correlation =
-            minijam_protocol::blake2_256(&parity_scale_codec::Encode::encode(&command));
+            minijam_protocol::SystemOpV1::compute_request_id(&sender, system_nonce, &command);
         self.submit_call(
             RuntimeCall::MiniJam(pallet_minijam::Call::submit_system_op {
                 command: Box::new(command),
