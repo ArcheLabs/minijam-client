@@ -13,7 +13,7 @@ OPTIMIZATION="$4"
 ROOT="$(git rev-parse --show-toplevel)"
 INCLUDE="${ROOT}/service-toolchain/sdk/include"
 SDK_SRC="${ROOT}/service-toolchain/sdk/src"
-CONVERTER="${ROOT}/service-toolchain/compiler/polkavm-to-jam/Cargo.toml"
+CONVERTER_MANIFEST="${ROOT}/service-toolchain/compiler/polkavm-to-jam/Cargo.toml"
 LLVM_CLANG="${MINIJAM_CLANG:-/usr/lib/llvm-20/bin/clang}"
 LLVM_CLANGXX="${MINIJAM_CLANGXX:-/usr/lib/llvm-20/bin/clang++}"
 
@@ -53,8 +53,13 @@ EXTRA=()
   -Wl,-e,minijam_refine -Wl,-u,minijam_accumulate \
   "${TMP}/host.o" "${TMP}/minijam.o" "${TMP}/crypto.o" "${TMP}/service.o" \
   -o "${TMP}/service.elf"
-cargo run --quiet --locked --release --manifest-path "${CONVERTER}" -- \
-  "${TMP}/service.elf" "${TMP}/service.blob" "${TMP}/service.polkavm"
+if [[ -n "${MINIJAM_CONVERTER_BIN:-}" ]]; then
+  "${MINIJAM_CONVERTER_BIN}" \
+    "${TMP}/service.elf" "${TMP}/service.blob" "${TMP}/service.polkavm"
+else
+  cargo run --quiet --locked --release --manifest-path "${CONVERTER_MANIFEST}" -- \
+    "${TMP}/service.elf" "${TMP}/service.blob" "${TMP}/service.polkavm"
+fi
 
 install -d "${OUT_DIR}"
 install -m 0644 "${TMP}/service.blob" "${OUT_DIR}/service.blob"

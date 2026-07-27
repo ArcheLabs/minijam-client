@@ -56,6 +56,18 @@ jobs:
       - name: Check runtime Wasm
         run: cargo check -p minijam-runtime --no-default-features --target wasm32v1-none
 
+  compiler-image:
+    name: Compiler Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build isolated compiler and reproduce C/C++ artifacts
+        run: ./scripts/test-compiler-image.sh
+      - name: Execute reproduced-compatible artifacts through Jambda
+        run: ./scripts/test-counter-services.sh
+
   release-artifacts:
     name: Release Artifacts
     runs-on: ubuntu-latest

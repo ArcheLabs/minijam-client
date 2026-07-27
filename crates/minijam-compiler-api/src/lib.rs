@@ -122,6 +122,8 @@ impl CompilerService {
             "--pids-limit=64",
             "--security-opt=no-new-privileges",
             "--cap-drop=ALL",
+            "--env",
+            "MINIJAM_CONVERTER_BIN=/usr/local/bin/polkavm-to-jam",
         ]);
         command.arg("--mount").arg(format!(
             "type=bind,src={},dst=/workspace,readonly",
@@ -189,6 +191,18 @@ impl CompilerService {
             .and_then(|_| std::fs::create_dir(&output))
         {
             return self.failure(&error.to_string());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(error) =
+                std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o755))
+                    .and_then(|_| {
+                        std::fs::set_permissions(&output, std::fs::Permissions::from_mode(0o777))
+                    })
+            {
+                return self.failure(&error.to_string());
+            }
         }
         let result = timeout(
             self.config.timeout,
