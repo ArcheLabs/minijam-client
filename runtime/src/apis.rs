@@ -146,6 +146,24 @@ impl_runtime_apis! {
                 .map(|value| value.encode())
         }
 
+        fn get_service_info(service_id: u32) -> Option<Vec<u8>> {
+            pallet_minijam::Pallet::<Runtime>::get_service_info(service_id)
+                .map(|value| value.encode())
+        }
+
+        fn get_service_storage(service_id: u32, key: Vec<u8>) -> Option<Vec<u8>> {
+            pallet_minijam::Pallet::<Runtime>::get_service_storage(service_id, key)
+                .map(|value| value.encode())
+        }
+
+        fn get_service_preimage(
+            service_id: u32,
+            code_hash: minijam_protocol::Hash,
+        ) -> Option<Vec<u8>> {
+            pallet_minijam::Pallet::<Runtime>::get_service_preimage(service_id, code_hash)
+                .map(|value| value.encode())
+        }
+
         fn get_service_controller(service_id: u32) -> Option<Vec<u8>> {
             pallet_minijam::Pallet::<Runtime>::get_service_controller(service_id)
                 .map(|value| value.encode())

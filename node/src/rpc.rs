@@ -15,7 +15,15 @@ use sc_transaction_pool_api::TransactionPool;
 use sp_api::ProvideRuntimeApi;
 use sp_block_builder::BlockBuilder;
 use sp_blockchain::{Error as BlockChainError, HeaderBackend, HeaderMetadata};
-use sp_runtime::traits::Block as BlockT;
+use sp_runtime::traits::{Block as BlockT, Header as HeaderT};
+
+#[derive(Clone, serde::Serialize)]
+struct FinalizedContextV1 {
+    block_hash: String,
+    block_number: u32,
+    state_root: String,
+    slot: u32,
+}
 
 /// Full client dependencies.
 pub struct FullDeps<C, P> {
@@ -311,7 +319,89 @@ where
         }
     })?;
 
+    module.register_method("minijam_getFinalizedContext", {
+        let client = client.clone();
+        move |_, _, _| -> RpcResult<FinalizedContextV1> {
+            let block_hash = finalized_hash(&client);
+            let header = client
+                .header(block_hash)
+                .map_err(blockchain_error)?
+                .ok_or_else(|| rpc_state_error("finalized header is unavailable"))?;
+            let block_number = *header.number();
+            Ok(FinalizedContextV1 {
+                block_hash: hex_encode(block_hash.as_ref()),
+                block_number,
+                state_root: hex_encode(header.state_root().as_ref()),
+                slot: block_number,
+            })
+        }
+    })?;
+
+    module.register_method("minijam_getServiceInfoAt", {
+        let client = client.clone();
+        move |params, _, _| -> RpcResult<Option<String>> {
+            let (block_hash, service_id): (sp_core::H256, u32) = params.parse()?;
+            let encoded = client
+                .runtime_api()
+                .get_service_info(block_hash, service_id)
+                .map_err(runtime_api_error)?;
+            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+        }
+    })?;
+
+    module.register_method("minijam_getServiceStorageAt", {
+        let client = client.clone();
+        move |params, _, _| -> RpcResult<Option<String>> {
+            let (block_hash, service_id, key_hex): (sp_core::H256, u32, String) = params.parse()?;
+            let key = parse_hex_vec(&key_hex)?;
+            let encoded = client
+                .runtime_api()
+                .get_service_storage(block_hash, service_id, key)
+                .map_err(runtime_api_error)?;
+            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+        }
+    })?;
+
+    module.register_method("minijam_getServicePreimageAt", {
+        let client = client.clone();
+        move |params, _, _| -> RpcResult<Option<String>> {
+            let (block_hash, service_id, code_hash): (sp_core::H256, u32, sp_core::H256) =
+                params.parse()?;
+            let encoded = client
+                .runtime_api()
+                .get_service_preimage(block_hash, service_id, code_hash.to_fixed_bytes())
+                .map_err(runtime_api_error)?;
+            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+        }
+    })?;
+
+    module.register_method("minijam_getServiceControllerAt", {
+        let client = client.clone();
+        move |params, _, _| -> RpcResult<Option<String>> {
+            let (block_hash, service_id): (sp_core::H256, u32) = params.parse()?;
+            let encoded = client
+                .runtime_api()
+                .get_service_controller(block_hash, service_id)
+                .map_err(runtime_api_error)?;
+            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+        }
+    })?;
+
+    module.register_method("minijam_getProtocolStateAt", {
+        let client = client.clone();
+        move |params, _, _| -> RpcResult<Option<String>> {
+            let (block_hash, key_hex): (sp_core::H256, String) = params.parse()?;
+            let key = parse_hex_array::<31>(&key_hex)?;
+            let encoded = client
+                .runtime_api()
+                .get_protocol_state(block_hash, key)
+                .map_err(runtime_api_error)?;
+            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+        }
+    })?;
+
     module.register_method("minijam_getProtocolState", {
+        let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {
             let key_hex: String = params.one()?;
             let key = parse_hex_array::<31>(&key_hex)?;
@@ -344,6 +434,14 @@ fn runtime_api_error(error: sp_api::ApiError) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(-32001, "MiniJAM runtime API error", Some(error.to_string()))
 }
 
+fn blockchain_error(error: BlockChainError) -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(-32002, "MiniJAM blockchain error", Some(error.to_string()))
+}
+
+fn rpc_state_error(message: &'static str) -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(-32003, "MiniJAM state unavailable", Some(message))
+}
+
 fn invalid_params(message: &'static str) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(-32602, "Invalid MiniJAM RPC params", Some(message))
 }
@@ -363,6 +461,17 @@ fn parse_hex_array<const N: usize>(input: &str) -> Result<[u8; N], ErrorObjectOw
         output[index] = (high << 4) | low;
     }
     Ok(output)
+}
+
+fn parse_hex_vec(input: &str) -> Result<Vec<u8>, ErrorObjectOwned> {
+    let hex = input.strip_prefix("0x").unwrap_or(input);
+    if hex.len() % 2 != 0 {
+        return Err(invalid_params("hex input must have an even length"));
+    }
+    hex.as_bytes()
+        .chunks_exact(2)
+        .map(|chunk| Ok((hex_nibble(chunk[0])? << 4) | hex_nibble(chunk[1])?))
+        .collect()
 }
 
 fn hex_nibble(byte: u8) -> Result<u8, ErrorObjectOwned> {

@@ -1569,3 +1569,37 @@ fn three_missing_candidate_rounds_fail_and_slash_work_deposit() {
         assert_eq!(Balances::total_balance(&100), pool_before + 100);
     });
 }
+
+#[test]
+fn service_state_accessors_address_canonical_protocol_keys() {
+    new_test_ext().execute_with(|| {
+        let service_id = 42;
+        let code_hash = [0x44; 32];
+        let storage_key = b"counter".to_vec();
+        let info = StateValue::try_from(vec![1, 2, 3]).unwrap();
+        let stored = StateValue::try_from(7i64.to_le_bytes().to_vec()).unwrap();
+        let preimage = StateValue::try_from(vec![9, 8, 7, 6]).unwrap();
+
+        let info_key = StoreKey::new_service_info_key(&service_id).to_state_key().0;
+        let value_key =
+            StoreKey::new_service_storage_key(&service_id, &ByteSequence::from(storage_key.clone()))
+                .to_state_key()
+                .0;
+        let preimage_key = StoreKey::new_preimage_key(&service_id, &OpaqueHash(code_hash))
+            .to_state_key()
+            .0;
+        pallet_minijam::ProtocolState::<Test>::insert(info_key, info.clone());
+        pallet_minijam::ProtocolState::<Test>::insert(value_key, stored.clone());
+        pallet_minijam::ProtocolState::<Test>::insert(preimage_key, preimage.clone());
+
+        assert_eq!(MiniJam::get_service_info(service_id), Some(info));
+        assert_eq!(
+            MiniJam::get_service_storage(service_id, storage_key),
+            Some(stored)
+        );
+        assert_eq!(
+            MiniJam::get_service_preimage(service_id, code_hash),
+            Some(preimage)
+        );
+    });
+}

@@ -24,6 +24,7 @@ pub mod pallet {
     use frame_system::pallet_prelude::*;
     use jam_codec::Decode as JamDecode;
     use jp_core_primitives::{
+        crypto::OpaqueHash,
         simple::ByteSequence,
         state::StoreKey,
         work::{WorkPackage, WorkReport},
@@ -1098,6 +1099,25 @@ pub mod pallet {
 
         pub fn get_system_service_info() -> Option<StateValue> {
             ProtocolState::<T>::get(Self::service_info_state_key(0))
+        }
+
+        pub fn get_service_info(service_id: u32) -> Option<StateValue> {
+            ProtocolState::<T>::get(Self::service_info_state_key(service_id))
+        }
+
+        pub fn get_service_storage(service_id: u32, key: Vec<u8>) -> Option<StateValue> {
+            let state_key =
+                StoreKey::new_service_storage_key(&service_id, &ByteSequence::from(key))
+                    .to_state_key()
+                    .0;
+            ProtocolState::<T>::get(state_key)
+        }
+
+        pub fn get_service_preimage(service_id: u32, code_hash: Hash) -> Option<StateValue> {
+            let state_key = StoreKey::new_preimage_key(&service_id, &OpaqueHash(code_hash))
+                .to_state_key()
+                .0;
+            ProtocolState::<T>::get(state_key)
         }
 
         pub fn get_service_controller(service_id: u32) -> Option<StateValue> {
