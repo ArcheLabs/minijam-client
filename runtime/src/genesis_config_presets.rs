@@ -39,6 +39,7 @@ fn testnet_genesis(
 ) -> Value {
     let reward_pool = AccountId::new([9; 32]);
     let fuel_escrow = AccountId::new([7; 32]);
+    let playground_relayer = AccountId::new([0x92; 32]);
     if !endowed_accounts
         .iter()
         .any(|account| account == &reward_pool)
@@ -50,6 +51,12 @@ fn testnet_genesis(
         .any(|account| account == &fuel_escrow)
     {
         endowed_accounts.push(fuel_escrow.clone());
+    }
+    if !endowed_accounts
+        .iter()
+        .any(|account| account == &playground_relayer)
+    {
+        endowed_accounts.push(playground_relayer);
     }
 
     build_struct_json_patch!(RuntimeGenesisConfig {

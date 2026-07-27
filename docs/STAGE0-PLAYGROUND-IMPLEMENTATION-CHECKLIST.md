@@ -26,11 +26,17 @@ Evidence:
 
 ## M1: Economics, ingress, and Worker permissions
 
-- [ ] Stage 0 economic prices, deposits, bonds, rewards, and slashes are zero.
-- [ ] Work, system-op, and preimage ingress accept only the configured relayer.
-- [ ] Candidate submitter is a registered, assigned Worker.
-- [ ] Pending tasks expose assignment and deterministic candidate producer.
-- [ ] Runtime, pallet, and Wasm acceptance commands pass.
+- [x] Stage 0 economic prices, deposits, bonds, rewards, and slashes are zero.
+- [x] Work, system-op, and preimage ingress accept only the configured relayer.
+- [x] Candidate submitter is a registered, assigned Worker.
+- [x] Pending tasks expose assignment and deterministic candidate producer.
+- [x] Runtime, pallet, and Wasm acceptance commands pass.
+
+Evidence:
+
+- `cargo test -p pallet-minijam -p minijam-worker`
+- `SKIP_WASM_BUILD=1 cargo test -p minijam-runtime`
+- `cargo check -p minijam-runtime --no-default-features --target wasm32v1-none`
 
 ## M2: Controller and upgrade protocol
 
@@ -102,4 +108,3 @@ Evidence:
 - [ ] Upgrade and rollback rehearsal passes.
 - [ ] 48-hour canary completes without unresolved critical incidents.
 - [ ] All release gates are checked and `Decision: approved`.
-

@@ -123,6 +123,9 @@ impl pallet_minijam::Config for Test {
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
     type JamHoldReason = RuntimeHoldReason;
+    type WorkIngressOrigin = frame_system::EnsureSigned<u64>;
+    type PreimageIngressOrigin = frame_system::EnsureSigned<u64>;
+    type SystemIngressOrigin = frame_system::EnsureSigned<u64>;
     type ChainId = ChainId;
     type WorkDeposit = WorkDeposit;
     type CandidateBond = CandidateBond;

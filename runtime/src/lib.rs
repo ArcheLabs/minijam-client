@@ -4,7 +4,7 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 #[cfg(feature = "std")]
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
@@ -13,7 +13,7 @@ pub mod apis;
 pub mod genesis_config_presets;
 
 use frame_support::{
-    derive_impl, parameter_types,
+    derive_impl, ord_parameter_types, parameter_types,
     traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, VariantCountOf},
     weights::{
         constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
@@ -145,6 +145,10 @@ parameter_types! {
     pub const AccumulateGasPrice: Balance = 0;
 }
 
+ord_parameter_types! {
+    pub const PlaygroundRelayer: AccountId = AccountId::new([0x92; 32]);
+}
+
 #[derive_impl(frame_system::config_preludes::SolochainDefaultConfig)]
 impl frame_system::Config for Runtime {
     type Block = Block;
@@ -248,6 +252,9 @@ impl pallet_minijam::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
     type JamHoldReason = RuntimeHoldReason;
+    type WorkIngressOrigin = frame_system::EnsureSignedBy<PlaygroundRelayer, AccountId>;
+    type PreimageIngressOrigin = frame_system::EnsureSignedBy<PlaygroundRelayer, AccountId>;
+    type SystemIngressOrigin = frame_system::EnsureSignedBy<PlaygroundRelayer, AccountId>;
     type ChainId = MiniJamChainId;
     type WorkDeposit = WorkDeposit;
     type CandidateBond = CandidateBond;
@@ -323,6 +330,7 @@ mod runtime {
 #[cfg(test)]
 mod stage0_economics_tests {
     use super::*;
+    use frame_support::traits::EnsureOrigin;
 
     #[test]
     fn user_economic_charges_are_zero() {
@@ -333,5 +341,49 @@ mod stage0_economics_tests {
         assert_eq!(TimelyVoteReward::get(), 0);
         assert_eq!(RefineGasPrice::get(), 0);
         assert_eq!(AccumulateGasPrice::get(), 0);
+    }
+
+    #[test]
+    fn state_changing_ingress_accepts_only_playground_relayer() {
+        let relayer = AccountId::new([0x92; 32]);
+        let direct_user = AccountId::new([0x93; 32]);
+
+        assert!(
+            <Runtime as pallet_minijam::Config>::WorkIngressOrigin::try_origin(
+                RuntimeOrigin::signed(relayer.clone())
+            )
+            .is_ok()
+        );
+        assert!(
+            <Runtime as pallet_minijam::Config>::PreimageIngressOrigin::try_origin(
+                RuntimeOrigin::signed(relayer.clone())
+            )
+            .is_ok()
+        );
+        assert!(
+            <Runtime as pallet_minijam::Config>::SystemIngressOrigin::try_origin(
+                RuntimeOrigin::signed(relayer)
+            )
+            .is_ok()
+        );
+
+        assert!(
+            <Runtime as pallet_minijam::Config>::WorkIngressOrigin::try_origin(
+                RuntimeOrigin::signed(direct_user.clone())
+            )
+            .is_err()
+        );
+        assert!(
+            <Runtime as pallet_minijam::Config>::PreimageIngressOrigin::try_origin(
+                RuntimeOrigin::signed(direct_user.clone())
+            )
+            .is_err()
+        );
+        assert!(
+            <Runtime as pallet_minijam::Config>::SystemIngressOrigin::try_origin(
+                RuntimeOrigin::signed(direct_user)
+            )
+            .is_err()
+        );
     }
 }

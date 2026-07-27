@@ -229,6 +229,12 @@ pub mod pallet {
 
         type JamHoldReason: From<HoldReason>;
 
+        type WorkIngressOrigin: EnsureOrigin<OriginFor<Self>, Success = Self::AccountId>;
+
+        type PreimageIngressOrigin: EnsureOrigin<OriginFor<Self>, Success = Self::AccountId>;
+
+        type SystemIngressOrigin: EnsureOrigin<OriginFor<Self>, Success = Self::AccountId>;
+
         #[pallet::constant]
         type ChainId: Get<[u8; 32]>;
 
@@ -635,7 +641,7 @@ pub mod pallet {
             canonical_work_package: BoundedVec<u8, T::MaxWorkPackageBytes>,
             bundle_ref: ContentRef,
         ) -> DispatchResult {
-            let owner = ensure_signed(origin)?;
+            let owner = T::WorkIngressOrigin::ensure_origin(origin)?;
             ensure!(
                 !canonical_work_package.is_empty(),
                 Error::<T>::InvalidWorkPackage
@@ -705,7 +711,7 @@ pub mod pallet {
             origin: OriginFor<T>,
             envelope: Box<ReportEnvelopeV1>,
         ) -> DispatchResult {
-            let submitter = ensure_signed(origin)?;
+            let submitter = T::PreimageIngressOrigin::ensure_origin(origin)?;
             let envelope = *envelope;
             let mut work = Works::<T>::get(envelope.work_id).ok_or(Error::<T>::WorkNotFound)?;
             let worker_id = pallet_minijam_workers::WorkerByAccount::<T>::get(&submitter)
@@ -808,7 +814,7 @@ pub mod pallet {
             origin: OriginFor<T>,
             canonical_preimage: CanonicalPreimageBytes,
         ) -> DispatchResult {
-            let submitter = ensure_signed(origin)?;
+            let submitter = T::SystemIngressOrigin::ensure_origin(origin)?;
             let state = FrameProtocolState::<T>(Default::default());
             let executor = T::JamCoreExecutor::default();
             let metadata = executor
