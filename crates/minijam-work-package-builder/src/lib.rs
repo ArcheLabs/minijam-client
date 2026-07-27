@@ -12,15 +12,9 @@ use jp_core_primitives::{
     traits::JamHash,
     work::{ExtrinsicSpec, RefineContext, WorkItem, WorkPackage},
 };
-use minijam_protocol::{blake2_256, ContentRef};
+use minijam_protocol::{blake2_256, stage0, ContentRef};
 use multihash::Multihash;
 use thiserror::Error;
-
-pub const STAGE0_CORE_INDEX: u16 = 0;
-pub const STAGE0_AUTH_CODE_HOST: u32 = 0;
-pub const STAGE0_AUTH_CODE_HASH: [u8; 32] = [0; 32];
-pub const STAGE0_REFINE_GAS: u64 = 10_000_000;
-pub const STAGE0_ACCUMULATE_GAS: u64 = 10_000_000;
 
 const RAW_CODEC: u64 = 0x55;
 const BLAKE2B_256_MULTIHASH: u64 = 0xb220;
@@ -71,8 +65,8 @@ pub fn build_work_package(input: BuildWorkInput) -> Result<BuiltWorkPackage, Bui
     }
 
     let work_package = WorkPackage {
-        auth_code_host: STAGE0_AUTH_CODE_HOST,
-        auth_code_hash: OpaqueHash(STAGE0_AUTH_CODE_HASH),
+        auth_code_host: stage0::AUTH_CODE_HOST,
+        auth_code_hash: OpaqueHash(stage0::AUTH_CODE_HASH),
         context: RefineContext {
             anchor: OpaqueHash(input.anchor_hash),
             state_root: OpaqueHash(input.state_root),
@@ -86,8 +80,8 @@ pub fn build_work_package(input: BuildWorkInput) -> Result<BuiltWorkPackage, Bui
         items: vec![WorkItem {
             service: input.service_id,
             code_hash: OpaqueHash(input.service_code_hash),
-            refine_gas_limit: STAGE0_REFINE_GAS,
-            accumulate_gas_limit: STAGE0_ACCUMULATE_GAS,
+            refine_gas_limit: stage0::REFINE_GAS_LIMIT,
+            accumulate_gas_limit: stage0::ACCUMULATE_GAS_LIMIT,
             export_count: 0,
             payload: ByteSequence::from(input.payload),
             import_segments: Vec::new(),
@@ -97,7 +91,7 @@ pub fn build_work_package(input: BuildWorkInput) -> Result<BuiltWorkPackage, Bui
     let canonical_work_package = work_package.encode();
     let package_hash = work_package.jam_hash().0;
     let report_input = WorkReportInput {
-        core_index: STAGE0_CORE_INDEX,
+        core_index: stage0::CORE_INDEX,
         work_package: Arc::new(work_package.clone()),
         external_data: Arc::new(vec![external_data]),
         import_segments: Arc::new(vec![Vec::new()]),
@@ -168,8 +162,11 @@ mod tests {
         assert!(encoded.is_empty());
         assert!(decoded.package_hash_matches());
         assert_eq!(decoded.package_hash.0, built.package_hash);
-        assert_eq!(decoded.work_package.auth_code_host, STAGE0_AUTH_CODE_HOST);
-        assert_eq!(decoded.work_package.auth_code_hash.0, STAGE0_AUTH_CODE_HASH);
+        assert_eq!(decoded.work_package.auth_code_host, stage0::AUTH_CODE_HOST);
+        assert_eq!(
+            decoded.work_package.auth_code_hash.0,
+            stage0::AUTH_CODE_HASH
+        );
         assert_eq!(decoded.work_package.context.anchor.0, [0x22; 32]);
         assert_eq!(decoded.work_package.context.lookup_anchor.0, [0x22; 32]);
         assert_eq!(decoded.work_package.context.state_root.0, [0x33; 32]);

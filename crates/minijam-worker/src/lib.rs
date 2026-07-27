@@ -28,11 +28,8 @@ use jp_core_primitives::{
 };
 use jp_vm_interp::InterpBackend;
 use minijam_protocol::{
-    BulletinEvidence, ContentRef, Hash, ReportEnvelopeV1, Verdict, WorkId, WorkerId, WorkerVoteV1,
-    PROTOCOL_VERSION_V1,
-};
-use minijam_work_package_builder::{
-    STAGE0_AUTH_CODE_HASH, STAGE0_AUTH_CODE_HOST, STAGE0_CORE_INDEX,
+    stage0, BulletinEvidence, ContentRef, Hash, ReportEnvelopeV1, Verdict, WorkId, WorkerId,
+    WorkerVoteV1, PROTOCOL_VERSION_V1,
 };
 use minijam_worker_engine::{
     fetch::{fetch_verified_content, ContentFetcher, FetchError, HttpBytesClient},
@@ -861,9 +858,9 @@ where
             "Jambda work bundle package does not match task canonical work package".into(),
         ));
     }
-    if core_index != STAGE0_CORE_INDEX
-        || bundle.work_package.auth_code_host != STAGE0_AUTH_CODE_HOST
-        || bundle.work_package.auth_code_hash.0 != STAGE0_AUTH_CODE_HASH
+    if core_index != stage0::CORE_INDEX
+        || bundle.work_package.auth_code_host != stage0::AUTH_CODE_HOST
+        || bundle.work_package.auth_code_hash.0 != stage0::AUTH_CODE_HASH
         || !bundle.work_package.authorization.is_empty()
         || !bundle.work_package.authorizer_config.is_empty()
     {
@@ -1779,7 +1776,7 @@ mod tests {
     fn refine_package(seed: u8) -> WorkPackage {
         WorkPackage {
             auth_code_host: 0,
-            auth_code_hash: OpaqueHash(STAGE0_AUTH_CODE_HASH),
+            auth_code_hash: OpaqueHash(stage0::AUTH_CODE_HASH),
             context: RefineContext {
                 anchor: OpaqueHash([2u8; 32]),
                 state_root: OpaqueHash([seed; 32]),
@@ -2148,7 +2145,7 @@ mod tests {
         let error = prepare_candidate_envelope(
             &EmptyProtocolStateSource,
             [42u8; 32],
-            STAGE0_CORE_INDEX,
+            stage0::CORE_INDEX,
             &task,
             &encoded,
         )

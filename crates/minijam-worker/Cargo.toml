@@ -20,7 +20,6 @@ jsonrpsee = { workspace = true, features = ["ws-client"] }
 minijam-protocol = { path = "../minijam-protocol" }
 minijam-runtime = { path = "../../runtime" }
 minijam-worker-engine = { path = "../minijam-worker-engine" }
-minijam-work-package-builder = { path = "../minijam-work-package-builder" }
 pallet-minijam = { path = "../../pallets/minijam" }
 pallet-minijam-workers = { path = "../../pallets/minijam-workers" }
 pallet-transaction-payment.workspace = true
