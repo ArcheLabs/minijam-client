@@ -435,7 +435,15 @@ impl BlockingHttpWorkerChainSource {
 }
 
 pub trait ProtocolStateSource {
-    fn protocol_state_value(&self, key: [u8; 31]) -> Result<Option<Vec<u8>>, WorkerError>;
+    fn ensure_finalized_anchor(&self, _block_hash: [u8; 32]) -> Result<(), WorkerError> {
+        Ok(())
+    }
+
+    fn protocol_state_value_at(
+        &self,
+        block_hash: [u8; 32],
+        key: [u8; 31],
+    ) -> Result<Option<Vec<u8>>, WorkerError>;
 }
 
 pub trait WorkerSignedTxContext {
@@ -445,14 +453,37 @@ pub trait WorkerSignedTxContext {
 }
 
 impl ProtocolStateSource for BlockingHttpWorkerChainSource {
-    fn protocol_state_value(&self, key: [u8; 31]) -> Result<Option<Vec<u8>>, WorkerError> {
+    fn ensure_finalized_anchor(&self, block_hash: [u8; 32]) -> Result<(), WorkerError> {
+        let finalized = self.rpc_string("chain_getFinalizedHead", json!([]))?;
+        let finalized_number = self.header_number(&finalized)?;
+        let anchor = hex_encode(&block_hash);
+        let anchor_number = self.header_number(&anchor)?;
+        if anchor_number > finalized_number {
+            return Err(WorkerError::Refine(
+                "work package lookup anchor is not finalized".into(),
+            ));
+        }
+        let canonical = self.rpc_string("chain_getBlockHash", json!([anchor_number]))?;
+        if canonical != anchor {
+            return Err(WorkerError::Refine(
+                "work package lookup anchor is not on the finalized chain".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn protocol_state_value_at(
+        &self,
+        block_hash: [u8; 32],
+        key: [u8; 31],
+    ) -> Result<Option<Vec<u8>>, WorkerError> {
         let response = http_post_json(
             &self.rpc_url,
             &json!({
                 "jsonrpc": "2.0",
                 "id": 1,
-                "method": "minijam_getProtocolState",
-                "params": [hex_encode(&key)],
+                "method": "minijam_getProtocolStateAt",
+                "params": [hex_encode(&block_hash), hex_encode(&key)],
             })
             .to_string(),
         )
@@ -466,6 +497,43 @@ impl ProtocolStateSource for BlockingHttpWorkerChainSource {
                 WorkerError::Chain(format!("invalid protocol state value: {error}"))
             })?;
         Ok(Some(value.into_inner()))
+    }
+}
+
+impl BlockingHttpWorkerChainSource {
+    fn rpc_string(&self, method: &str, params: Value) -> Result<String, WorkerError> {
+        let response = http_post_json(
+            &self.rpc_url,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).to_string(),
+        )
+        .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        json_rpc_string_result(&response)
+    }
+
+    fn header_number(&self, block_hash: &str) -> Result<u32, WorkerError> {
+        let response = http_post_json(
+            &self.rpc_url,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "chain_getHeader",
+                "params": [block_hash],
+            })
+            .to_string(),
+        )
+        .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        let response: Value = serde_json::from_str(&response)
+            .map_err(|error| WorkerError::Chain(format!("invalid JSON-RPC response: {error}")))?;
+        let result = response
+            .get("result")
+            .and_then(Value::as_object)
+            .ok_or_else(|| WorkerError::Chain("chain_getHeader returned no header".into()))?;
+        let number = result
+            .get("number")
+            .and_then(Value::as_str)
+            .ok_or_else(|| WorkerError::Chain("chain_getHeader returned no number".into()))?;
+        u32::from_str_radix(number.strip_prefix("0x").unwrap_or(number), 16)
+            .map_err(|error| WorkerError::Chain(format!("invalid header number: {error}")))
     }
 }
 
@@ -507,14 +575,16 @@ impl WorkerSignedTxContext for BlockingHttpWorkerChainSource {
 
 struct ProtocolStateDb<'a, S> {
     source: &'a S,
+    block_hash: [u8; 32],
     writes: Mutex<BTreeMap<(ColumnFamily, Vec<u8>), Vec<u8>>>,
     deletes: Mutex<BTreeMap<(ColumnFamily, Vec<u8>), ()>>,
 }
 
 impl<'a, S> ProtocolStateDb<'a, S> {
-    fn new(source: &'a S) -> Self {
+    fn new(source: &'a S, block_hash: [u8; 32]) -> Self {
         Self {
             source,
+            block_hash,
             writes: Mutex::new(BTreeMap::new()),
             deletes: Mutex::new(BTreeMap::new()),
         }
@@ -554,7 +624,7 @@ where
         let mut state_key = [0u8; 31];
         state_key.copy_from_slice(key);
         self.source
-            .protocol_state_value(state_key)
+            .protocol_state_value_at(self.block_hash, state_key)
             .map_err(|error| DataBaseError::Other(format!("{error:?}")))
     }
 
@@ -789,8 +859,10 @@ where
         ));
     }
 
+    let lookup_anchor = bundle.work_package.context.lookup_anchor.0;
+    state.ensure_finalized_anchor(lookup_anchor)?;
     let input = bundle.into_work_report_input(core_index);
-    let db = ProtocolStateDb::new(state);
+    let db = ProtocolStateDb::new(state, lookup_anchor);
     let mut backend = StateBackend::<TinySpec, _>::new_tiny(db);
     backend
         .load_tiny_from_db()
@@ -1544,7 +1616,38 @@ mod tests {
     struct EmptyProtocolStateSource;
 
     impl ProtocolStateSource for EmptyProtocolStateSource {
-        fn protocol_state_value(&self, _key: [u8; 31]) -> Result<Option<Vec<u8>>, WorkerError> {
+        fn protocol_state_value_at(
+            &self,
+            _block_hash: [u8; 32],
+            _key: [u8; 31],
+        ) -> Result<Option<Vec<u8>>, WorkerError> {
+            Ok(None)
+        }
+    }
+
+    #[derive(Default)]
+    struct TrackingProtocolStateSource {
+        anchors: Mutex<Vec<[u8; 32]>>,
+        reject_anchor: bool,
+    }
+
+    impl ProtocolStateSource for TrackingProtocolStateSource {
+        fn ensure_finalized_anchor(&self, block_hash: [u8; 32]) -> Result<(), WorkerError> {
+            if self.reject_anchor {
+                return Err(WorkerError::Refine(format!(
+                    "anchor {} is not finalized",
+                    hex_encode(&block_hash)
+                )));
+            }
+            Ok(())
+        }
+
+        fn protocol_state_value_at(
+            &self,
+            block_hash: [u8; 32],
+            _key: [u8; 31],
+        ) -> Result<Option<Vec<u8>>, WorkerError> {
+            self.anchors.lock().unwrap().push(block_hash);
             Ok(None)
         }
     }
@@ -1624,7 +1727,11 @@ mod tests {
     }
 
     impl ProtocolStateSource for TestCandidateSubmitChainSource {
-        fn protocol_state_value(&self, _key: [u8; 31]) -> Result<Option<Vec<u8>>, WorkerError> {
+        fn protocol_state_value_at(
+            &self,
+            _block_hash: [u8; 32],
+            _key: [u8; 31],
+        ) -> Result<Option<Vec<u8>>, WorkerError> {
             Ok(None)
         }
     }
@@ -1982,6 +2089,36 @@ mod tests {
             package_hash
         );
         assert_eq!(prepared.exported_segment_count, 0);
+    }
+
+    #[test]
+    fn candidate_refine_reads_state_at_package_lookup_anchor() {
+        let (bundle, package_hash) = refine_bundle(9);
+        let task = refine_task(77, 2, package_hash, &bundle);
+        let source = TrackingProtocolStateSource::default();
+
+        prepare_candidate_envelope(&source, [42u8; 32], 0, &task, &bundle).unwrap();
+        let db = ProtocolStateDb::new(&source, [5u8; 32]);
+        db.get(column::COL_STATE, &[7u8; 31]).unwrap();
+
+        let anchors = source.anchors.lock().unwrap();
+        assert!(!anchors.is_empty());
+        assert!(anchors.iter().all(|anchor| *anchor == [5u8; 32]));
+    }
+
+    #[test]
+    fn candidate_refine_rejects_non_finalized_lookup_anchor() {
+        let (bundle, package_hash) = refine_bundle(9);
+        let task = refine_task(77, 2, package_hash, &bundle);
+        let source = TrackingProtocolStateSource {
+            reject_anchor: true,
+            ..Default::default()
+        };
+
+        let error = prepare_candidate_envelope(&source, [42u8; 32], 0, &task, &bundle).unwrap_err();
+
+        assert!(matches!(error, WorkerError::Refine(message) if message.contains("not finalized")));
+        assert!(source.anchors.lock().unwrap().is_empty());
     }
 
     #[test]
