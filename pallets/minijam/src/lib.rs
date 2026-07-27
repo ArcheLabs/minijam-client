@@ -47,6 +47,7 @@ pub mod pallet {
         <<T as Config>::Currency as Inspect<<T as frame_system::Config>::AccountId>>::Balance;
     const SYSTEM_SERVICE_ID: u32 = 0;
     const SYSTEM_STORAGE_RECEIPT_PREFIX: &[u8] = b"system/receipt/";
+    const SYSTEM_STORAGE_CONTROLLER_PREFIX: &[u8] = b"system/controller/";
 
     #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
     pub struct ServiceFuelAccount<Balance> {
@@ -1099,6 +1100,16 @@ pub mod pallet {
             ProtocolState::<T>::get(Self::service_info_state_key(0))
         }
 
+        pub fn get_service_controller(service_id: u32) -> Option<StateValue> {
+            let mut key = Vec::from(SYSTEM_STORAGE_CONTROLLER_PREFIX);
+            key.extend_from_slice(&service_id.to_le_bytes());
+            let state_key =
+                StoreKey::new_service_storage_key(&SYSTEM_SERVICE_ID, &ByteSequence::from(key))
+                    .to_state_key()
+                    .0;
+            ProtocolState::<T>::get(state_key)
+        }
+
         pub fn get_protocol_state(key: [u8; 31]) -> Option<StateValue> {
             ProtocolState::<T>::get(key)
         }
@@ -1649,13 +1660,23 @@ pub mod pallet {
                     code_len,
                     min_item_gas,
                     min_memo_gas,
-                    initial_balance,
                     ..
                 } => {
                     ensure!(*code_len > 0, Error::<T>::InvalidSystemOp);
                     ensure!(*min_item_gas > 0, Error::<T>::InvalidSystemOp);
                     ensure!(*min_memo_gas > 0, Error::<T>::InvalidSystemOp);
-                    ensure!(*initial_balance > 0, Error::<T>::InvalidSystemOp);
+                }
+                SystemCommandV1::UpgradeService {
+                    service_id,
+                    code_len,
+                    min_item_gas,
+                    min_memo_gas,
+                    ..
+                } => {
+                    ensure!(*service_id > 0, Error::<T>::InvalidSystemOp);
+                    ensure!(*code_len > 0, Error::<T>::InvalidSystemOp);
+                    ensure!(*min_item_gas > 0, Error::<T>::InvalidSystemOp);
+                    ensure!(*min_memo_gas > 0, Error::<T>::InvalidSystemOp);
                 }
             }
             Ok(())

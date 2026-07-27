@@ -272,11 +272,11 @@ mod tests {
                     [1u8; 32],
                     0,
                     minijam_protocol::SystemCommandV1::CreateService {
+                        controller: [1u8; 32],
                         code_hash: [9u8; 32],
                         code_len: 1,
                         min_item_gas: 1,
                         min_memo_gas: 1,
-                        initial_balance: 1,
                     },
                 )
                 .request_id,

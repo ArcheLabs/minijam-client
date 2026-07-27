@@ -378,11 +378,11 @@ mod tests {
     fn system_ops_execute_through_real_jambda_executor() {
         let sender = [0x5a; 32];
         let command = SystemCommandV1::CreateService {
+            controller: sender,
             code_hash: [0x9b; 32],
             code_len: 27,
             min_item_gas: 2,
             min_memo_gas: 3,
-            initial_balance: 400,
         };
         let op = SystemOpV1::new(sender, 0, command);
         let input = MiniJamExecutionInput {
@@ -418,7 +418,7 @@ mod tests {
             ServiceInfo::decode(&mut value.as_slice()).is_ok_and(|info| {
                 info.code_hash == OpaqueHash([0x9b; 32])
                     && info.parent_service == 0
-                    && info.balance == 400
+                    && info.balance >= 1_000_000
             })
         }));
         assert!(output.ordered_changes.iter().any(|change| {

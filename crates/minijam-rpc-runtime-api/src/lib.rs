@@ -28,6 +28,7 @@ decl_runtime_apis! {
         fn get_system_op(request_id: Hash) -> Option<Vec<u8>>;
         fn get_system_receipt(request_id: Hash) -> Option<Vec<u8>>;
         fn get_system_service_info() -> Option<Vec<u8>>;
+        fn get_service_controller(service_id: u32) -> Option<Vec<u8>>;
         fn get_protocol_state(key: [u8; 31]) -> Option<Vec<u8>>;
     }
 }

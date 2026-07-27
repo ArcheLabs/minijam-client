@@ -299,6 +299,18 @@ where
         }
     })?;
 
+    module.register_method("minijam_getServiceController", {
+        let client = client.clone();
+        move |params, _, _| -> RpcResult<Option<String>> {
+            let service_id: u32 = params.one()?;
+            let encoded = client
+                .runtime_api()
+                .get_service_controller(best_hash(&client), service_id)
+                .map_err(runtime_api_error)?;
+            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+        }
+    })?;
+
     module.register_method("minijam_getProtocolState", {
         move |params, _, _| -> RpcResult<Option<String>> {
             let key_hex: String = params.one()?;

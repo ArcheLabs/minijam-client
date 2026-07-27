@@ -109,15 +109,41 @@ impl SystemOpV1 {
 #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub enum SystemCommandV1 {
     CreateService {
+        controller: [u8; 32],
         code_hash: Hash,
         code_len: u32,
         min_item_gas: u64,
         min_memo_gas: u64,
-        initial_balance: u64,
+    },
+    UpgradeService {
+        controller: [u8; 32],
+        service_id: u32,
+        code_hash: Hash,
+        code_len: u32,
+        min_item_gas: u64,
+        min_memo_gas: u64,
     },
 }
 
 impl DecodeWithMemTracking for SystemCommandV1 {}
+
+#[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+pub enum SystemReceiptV1 {
+    ServiceCreated {
+        service_id: u32,
+        controller: [u8; 32],
+    },
+    ServiceUpgraded {
+        service_id: u32,
+        controller: [u8; 32],
+        code_hash: Hash,
+    },
+    Rejected {
+        code: u32,
+    },
+}
+
+impl DecodeWithMemTracking for SystemReceiptV1 {}
 
 #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub enum HashingAlgorithm {
@@ -379,11 +405,11 @@ mod tests {
     #[test]
     fn system_op_request_id_commits_sender_nonce_and_command() {
         let command = SystemCommandV1::CreateService {
+            controller: [8u8; 32],
             code_hash: [9u8; 32],
             code_len: 32,
             min_item_gas: 1,
             min_memo_gas: 2,
-            initial_balance: 3,
         };
         let op = SystemOpV1::new([1u8; 32], 7, command.clone());
         assert!(op.request_id_matches());

@@ -931,11 +931,11 @@ fn queued_preimages_are_imported_with_next_virtual_block() {
 fn queued_system_ops_are_consumed_with_next_virtual_block() {
     new_test_ext().execute_with(|| {
         let command = SystemCommandV1::CreateService {
+            controller: [5u8; 32],
             code_hash: [9u8; 32],
             code_len: 32,
             min_item_gas: 1,
             min_memo_gas: 1,
-            initial_balance: 100,
         };
         assert_ok!(MiniJam::submit_system_op(
             RuntimeOrigin::signed(5),
@@ -1187,11 +1187,11 @@ fn invalid_system_ops_are_rejected_before_queueing() {
             MiniJam::submit_system_op(
                 RuntimeOrigin::signed(5),
                 Box::new(SystemCommandV1::CreateService {
+                    controller: [5u8; 32],
                     code_hash: [9u8; 32],
                     code_len: 0,
                     min_item_gas: 1,
                     min_memo_gas: 1,
-                    initial_balance: 100,
                 })
             ),
             pallet_minijam::Error::<Test>::InvalidSystemOp
@@ -1206,11 +1206,11 @@ fn system_op_execution_failure_is_quarantined_without_panic() {
         assert_ok!(MiniJam::submit_system_op(
             RuntimeOrigin::signed(5),
             Box::new(SystemCommandV1::CreateService {
+                controller: [5u8; 32],
                 code_hash: [0xee; 32],
                 code_len: 32,
                 min_item_gas: 1,
                 min_memo_gas: 1,
-                initial_balance: 100,
             })
         ));
         let pending = pallet_minijam::PendingSystemOps::<Test>::get();
@@ -1277,11 +1277,11 @@ fn root_manages_quarantined_system_ops() {
         assert_ok!(MiniJam::submit_system_op(
             RuntimeOrigin::signed(5),
             Box::new(SystemCommandV1::CreateService {
+                controller: [5u8; 32],
                 code_hash: [0xee; 32],
                 code_len: 32,
                 min_item_gas: 1,
                 min_memo_gas: 1,
-                initial_balance: 100,
             })
         ));
         let first_request_id = pallet_minijam::PendingSystemOps::<Test>::get()[0]
@@ -1317,11 +1317,11 @@ fn root_manages_quarantined_system_ops() {
         assert_ok!(MiniJam::submit_system_op(
             RuntimeOrigin::signed(5),
             Box::new(SystemCommandV1::CreateService {
+                controller: [5u8; 32],
                 code_hash: [0xee; 32],
                 code_len: 32,
                 min_item_gas: 1,
                 min_memo_gas: 1,
-                initial_balance: 100,
             })
         ));
         <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(102);

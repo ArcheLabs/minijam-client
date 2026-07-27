@@ -90,6 +90,8 @@ enum Command {
     },
     SubmitCreateServiceSystemOp {
         #[arg(long)]
+        controller: String,
+        #[arg(long)]
         code_hash: String,
         #[arg(long)]
         code_len: u32,
@@ -97,8 +99,20 @@ enum Command {
         min_item_gas: u64,
         #[arg(long)]
         min_memo_gas: u64,
+    },
+    SubmitUpgradeServiceSystemOp {
         #[arg(long)]
-        initial_balance: u64,
+        controller: String,
+        #[arg(long)]
+        service_id: u32,
+        #[arg(long)]
+        code_hash: String,
+        #[arg(long)]
+        code_len: u32,
+        #[arg(long)]
+        min_item_gas: u64,
+        #[arg(long)]
+        min_memo_gas: u64,
     },
     ClaimFaucet,
     SubmitRawExtrinsic {
@@ -153,6 +167,9 @@ enum Command {
         request_id: String,
     },
     GetSystemServiceInfo,
+    GetServiceController {
+        service_id: u32,
+    },
     GetProtocolState {
         key: String,
     },
@@ -261,18 +278,40 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
         }
         Command::SubmitCreateServiceSystemOp {
+            controller,
             code_hash,
             code_len,
             min_item_gas,
             min_memo_gas,
-            initial_balance,
         } => {
             let command = SystemCommandV1::CreateService {
+                controller: parse_hex_array::<32>(&controller)?,
                 code_hash: parse_hash(&code_hash)?,
                 code_len,
                 min_item_gas,
                 min_memo_gas,
-                initial_balance,
+            };
+            print_call_data(
+                "MiniJam",
+                "submit_system_op",
+                call_data(CALL_SUBMIT_SYSTEM_OP, &command),
+            );
+        }
+        Command::SubmitUpgradeServiceSystemOp {
+            controller,
+            service_id,
+            code_hash,
+            code_len,
+            min_item_gas,
+            min_memo_gas,
+        } => {
+            let command = SystemCommandV1::UpgradeService {
+                controller: parse_hex_array::<32>(&controller)?,
+                service_id,
+                code_hash: parse_hash(&code_hash)?,
+                code_len,
+                min_item_gas,
+                min_memo_gas,
             };
             print_call_data(
                 "MiniJam",
@@ -363,6 +402,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         Command::GetSystemServiceInfo => {
             print_rpc_result(&cli.rpc, "minijam_getSystemServiceInfo", json!([]))?
         }
+        Command::GetServiceController { service_id } => print_rpc_result(
+            &cli.rpc,
+            "minijam_getServiceController",
+            json!([service_id]),
+        )?,
         Command::GetProtocolState { key } => {
             let key = parse_hex_array::<31>(&key)?;
             print_rpc_result(
