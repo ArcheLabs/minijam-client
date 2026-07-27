@@ -50,15 +50,18 @@ Evidence:
 ## M3: Service 0 and SDK
 
 - [x] Minimal C/C++ Service SDK is versioned.
-- [ ] Service 0 is reproducibly built from source as a real PVM program.
-- [ ] CreateService executes through the Service 0 VM path.
-- [ ] The Jambda adapter handles only the documented Stage 0 upgrade deviation.
+- [x] Service 0 is reproducibly built from source as a real PVM program.
+- [x] CreateService executes through the Service 0 VM path.
+- [x] The Jambda adapter handles only the documented Stage 0 upgrade deviation.
 - [ ] Counter C and C++ services compile and execute.
 
 Evidence:
 
-- `./scripts/check-service-sdk.sh` (native ABI compile/link smoke)
-- `service-toolchain/compiler/toolchain.lock` records unresolved release-toolchain blockers.
+- `./scripts/check-service-sdk.sh` (native plus C/C++ ELF → PolkaVM → JAM blob smoke)
+- `./scripts/build-system-service.sh` produces the manifest-pinned Service 0 blob reproducibly.
+- `cargo test -p minijam-runtime system_service`
+- `cargo test -p minijam-runtime system_ops_execute_through_real_jambda_executor`
+- `service-toolchain/compiler/toolchain.lock` pins the release blob toolchain.
 
 ## M4: Finalized context and WorkPackage builder
 
