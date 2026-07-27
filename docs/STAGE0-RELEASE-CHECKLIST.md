@@ -4,6 +4,12 @@ Current status: not releasable. This file is the operator-facing release gate fo
 the Stage-0 public testnet. Items stay unchecked until the linked evidence proves
 completion on the release commit or release candidate network.
 
+The expanded Playground gates and implementation progress are tracked in
+`STAGE0-PLAYGROUND-IMPLEMENTATION-CHECKLIST.md`. In particular, the current
+Worker already performs real Jambda Refine and submits signed Candidates, while
+Service 0 still relies on the Stage 0 adapter and cross-process E2E evidence is
+not yet available.
+
 ## Release Candidate
 
 - Release commit: TBD
@@ -46,6 +52,12 @@ Evidence:
 - [ ] CreateService succeeds through service 0 accumulation.
 - [ ] Worker daemon executes Is-Authorized / Refine against Jambda.
 - [ ] Worker submits candidates and independent Support/Oppose votes.
+- [ ] Work, system-op, and preimage ingress is restricted to the Playground
+      relayer.
+- [ ] Service Controller is explicit, stored on chain, and enforced for Work
+      and upgrades.
+- [ ] WorkPackage, Worker reads, and Candidate validation share one finalized
+      anchor.
 
 Evidence:
 

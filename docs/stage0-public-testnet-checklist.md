@@ -1,7 +1,8 @@
 # MiniJAM Stage-0 Public Testnet Checklist
 
-This checklist tracks implementation against
-`minijam-stage0-public-testnet-implementation-spec.md`.
+This legacy checklist records the pre-Playground baseline. Current work is
+tracked by `STAGE0-PLAYGROUND-IMPLEMENTATION-CHECKLIST.md` and the canonical
+`minijam-stage0-playground-implementation-spec.md`.
 
 ## Baseline
 
@@ -67,8 +68,10 @@ Evidence:
 - [x] Worker chain RPC reads pending task inputs through `minijam_getPendingWorkTasks`, which executes against the finalized block hash.
 - [x] Real Auditable Work Bundle decoder validates version, SCALE encoding, trailing bytes, and package hash.
 - [x] Worker can build sr25519-signed worker vote payloads, wrap them as unsigned runtime extrinsics, and submit them through `author_submitExtrinsic` behind an explicit smoke-test flag.
-- [ ] Jambda Is-Authorized and Refine execution.
-- [ ] Candidate submission and independent Support/Oppose voting.
+- [x] Jambda Refine execution and signed Candidate submission.
+- [ ] Jambda Is-Authorized execution.
+- [ ] Independent Support/Oppose voting (the current Worker automatically
+      supports its locally produced report).
 - [x] Prometheus metrics endpoint exposes worker poll, task, bundle-ready, and bundle-rejected counters.
 
 Evidence:
@@ -180,5 +183,8 @@ Evidence:
 ## Current Known Risks
 
 - Service 0 is still a placeholder artifact and cannot satisfy the public testnet CreateService requirement.
-- Worker binary can poll finalized pending task inputs, fetch verified bundles, observe open vote tasks, and submit explicitly enabled sr25519-signed vote extrinsics. Real refine-backed candidate generation and independent Support/Oppose decisions are still pending.
+- Worker binary can poll finalized pending task inputs, fetch verified bundles,
+  execute Jambda Refine, submit signed Candidates, observe vote tasks, and
+  submit explicitly enabled votes. Independent Refine-backed Support/Oppose
+  decisions are still pending.
 - Cross-process E2E and Canary evidence are missing.
