@@ -31,16 +31,14 @@ MINIJAM_IMPORT_METADATA(minijam_log, MINIJAM_HOST_LOG);
 #undef MINIJAM_IMPORT_METADATA
 #endif
 
-uint64_t minijam_host_call6(uint32_t call, uint64_t a0, uint64_t a1,
-                            uint64_t a2, uint64_t a3, uint64_t a4,
-                            uint64_t a5) {
+uint64_t minijam_host_call(uint32_t call, const uint64_t args[6]) {
 #if defined(__riscv)
-  register uint64_t r0 __asm__("a0") = a0;
-  register uint64_t r1 __asm__("a1") = a1;
-  register uint64_t r2 __asm__("a2") = a2;
-  register uint64_t r3 __asm__("a3") = a3;
-  register uint64_t r4 __asm__("a4") = a4;
-  register uint64_t r5 __asm__("a5") = a5;
+  register uint64_t r0 __asm__("a0") = args[0];
+  register uint64_t r1 __asm__("a1") = args[1];
+  register uint64_t r2 __asm__("a2") = args[2];
+  register uint64_t r3 __asm__("a3") = args[3];
+  register uint64_t r4 __asm__("a4") = args[4];
+  register uint64_t r5 __asm__("a5") = args[5];
 #define MINIJAM_ECALLI(METADATA)                                              \
   __asm__ volatile(".insn r 0xb, 0, 0, zero, zero, zero\n"                   \
                    ".8byte %c6\n"                                             \

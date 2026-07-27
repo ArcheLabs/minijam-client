@@ -1,10 +1,11 @@
 # MiniJAM System Service 0
 
-This directory is the source root for the Stage-0 MiniJAM system service.
+This directory contains the Stage-0 MiniJAM system service C source.
 
-The current `src/system-service.pvm.hex` source rebuilds a minimal executable
-PVM artifact. It halts successfully; Stage-0 `CreateService` state transitions
-are applied by the MiniJAM system-op adapter in `MiniJamExecutive`.
+The service decodes accumulated `SystemOpBatch` results and executes
+`CreateService` through the standard `NEW`, `WRITE`, and `YIELD` JAM host
+calls. The narrowly scoped native adapter remains responsible only for
+`UpgradeService`.
 
 Use:
 

@@ -80,9 +80,48 @@ size_t minijam_result_count(void) {
   return count;
 }
 
+static int decode_fnencode(const uint8_t *input, size_t size, size_t *offset,
+                           uint64_t *value) {
+  if (*offset >= size) return 0;
+  uint8_t first = input[(*offset)++];
+  if (first < 0x80) {
+    *value = first;
+    return 1;
+  }
+  unsigned length = 0;
+  while (length < 8 && (first & (0x80u >> length)) != 0) ++length;
+  if (length == 0 || length > 7 || size - *offset < length) return 0;
+  uint64_t low = 0;
+  for (unsigned i = 0; i < length; ++i)
+    low |= (uint64_t)input[(*offset)++] << (8 * i);
+  *value = ((uint64_t)(first & (0x7fu >> length)) << (8 * length)) | low;
+  return 1;
+}
+
 minijam_status minijam_result(size_t index, void *output, size_t capacity,
                               size_t *output_size) {
-  return copy_fetch(15, index, output, capacity, output_size);
+  // FETCH mode 15 returns the packed accumulation operand, not just the
+  // successful WorkExecResult payload:
+  // 0 || four hashes || fnencode(gas) || 0 || fnencode(payload_len) || payload.
+  uint8_t prefix[160];
+  uint64_t item_size = minijam_host_call6(
+      MINIJAM_HOST_FETCH, (uintptr_t)prefix, 0, sizeof(prefix), 15, index, 0);
+  if (item_size == MINIJAM_HOST_NONE) return MINIJAM_NOT_FOUND;
+  size_t available =
+      item_size < sizeof(prefix) ? (size_t)item_size : sizeof(prefix);
+  size_t offset = 1 + 4 * 32;
+  uint64_t ignored_gas = 0;
+  uint64_t payload_size = 0;
+  if (available <= offset ||
+      !decode_fnencode(prefix, available, &offset, &ignored_gas) ||
+      offset >= available || prefix[offset++] != 0 ||
+      !decode_fnencode(prefix, available, &offset, &payload_size))
+    return MINIJAM_HOST_ERROR;
+  if (output_size) *output_size = (size_t)payload_size;
+  if (payload_size > capacity) return MINIJAM_BUFFER_TOO_SMALL;
+  uint64_t fetched = minijam_host_call6(
+      MINIJAM_HOST_FETCH, (uintptr_t)output, offset, payload_size, 15, index, 0);
+  return fetched == item_size ? MINIJAM_OK : MINIJAM_HOST_ERROR;
 }
 
 minijam_status minijam_storage_read(const void *key, size_t key_size,
@@ -114,8 +153,14 @@ void minijam_log(const char *message, size_t size) {
 }
 
 void minijam_yield(const void *value, size_t size) {
-  (void)minijam_host_call6(MINIJAM_HOST_YIELD, (uintptr_t)value, size, 0, 0, 0,
-                           0);
+  volatile uint8_t commitment[32];
+  const uint8_t *source = value;
+  size_t copied = size < sizeof(commitment) ? size : sizeof(commitment);
+  for (size_t i = 0; i < sizeof(commitment); ++i) commitment[i] = 0;
+  for (size_t i = 0; i < copied; ++i) commitment[i] = source[i];
+  (void)minijam_host_call6(MINIJAM_HOST_YIELD,
+                           (uintptr_t)(const volatile void *)commitment, 0, 0,
+                           0, 0, 0);
 }
 
 minijam_refine_output minijam_refine_ok(const void *value, size_t size) {

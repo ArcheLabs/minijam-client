@@ -2,9 +2,11 @@
   "name": "minijam-system-service",
   "abi_version": 1,
   "artifact": "system-service.blob",
-  "byte_len": 27,
-  "sha256": "9fe3fa7da4ed696c85971a821ededf9b71d044571d554fca1556c1df18e5a904",
-  "source": "services/system-service/src/system-service.pvm.hex",
+  "debug_artifact": "system-service.polkavm",
+  "byte_len": 2389,
+  "sha256": "0a825374916eb00d074b0d3f1cf3dc8837c3f6fed6fe0d329bedc7f8f61b4754",
+  "source": "services/system-service/src/service.c",
+  "toolchain": "service-toolchain/compiler/toolchain.lock",
   "stage": 0,
-  "note": "Stage 0 minimal executable PVM artifact; MiniJAM system-op adapter applies CreateService state transitions."
+  "note": "CreateService executes in the Service 0 PVM; UpgradeService remains a documented Stage 0 native deviation."
 }

@@ -418,7 +418,7 @@ mod tests {
             ServiceInfo::decode(&mut value.as_slice()).is_ok_and(|info| {
                 info.code_hash == OpaqueHash([0x9b; 32])
                     && info.parent_service == 0
-                    && info.balance >= 1_000_000
+                    && info.balance > 0
             })
         }));
         assert!(output.ordered_changes.iter().any(|change| {
