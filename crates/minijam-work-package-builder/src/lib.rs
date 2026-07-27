@@ -213,4 +213,30 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn counter_service_payload_builds_auditable_bundle() {
+        let blob = include_bytes!("../../../examples/services/counter/artifacts/counter-c.blob");
+        let built = build_work_package(BuildWorkInput {
+            service_id: 10,
+            service_code_hash: blake2_256(blob),
+            payload: 1_i64.to_le_bytes().to_vec(),
+            extrinsics: Vec::new(),
+            anchor_hash: [0x44; 32],
+            state_root: [0x55; 32],
+            lookup_anchor_slot: 12,
+        })
+        .unwrap();
+        let mut encoded = built.bundle_bytes.as_slice();
+        let decoded = MiniJamWorkBundleV1::decode(&mut encoded).unwrap();
+
+        assert!(encoded.is_empty());
+        assert!(decoded.package_hash_matches());
+        assert_eq!(decoded.work_package.items[0].service, 10);
+        assert_eq!(
+            decoded.work_package.items[0].payload.as_slice(),
+            1_i64.to_le_bytes()
+        );
+        assert_eq!(decoded.work_package.items[0].code_hash.0, blake2_256(blob));
+    }
 }
