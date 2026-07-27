@@ -719,19 +719,39 @@ fn submit_candidate_rejects_report_not_bound_to_work_package() {
 }
 
 #[test]
-fn submit_candidate_requires_assigned_selected_worker() {
+fn relayer_cannot_submit_candidate_as_worker() {
     new_test_ext().execute_with(|| {
         submit_assigned_service_work();
-        let candidate = envelope(0, 0);
-
         assert_noop!(
-            MiniJam::submit_candidate(RuntimeOrigin::signed(99), Box::new(candidate.clone())),
+            MiniJam::submit_candidate(RuntimeOrigin::signed(99), Box::new(envelope(0, 0))),
             pallet_minijam::Error::<Test>::CandidateSubmitterNotWorker
         );
+    });
+}
+
+#[test]
+fn non_selected_worker_candidate_is_rejected() {
+    new_test_ext().execute_with(|| {
+        submit_assigned_service_work();
         assert_noop!(
-            MiniJam::submit_candidate(RuntimeOrigin::signed(2), Box::new(candidate)),
+            MiniJam::submit_candidate(RuntimeOrigin::signed(2), Box::new(envelope(0, 0))),
             pallet_minijam::Error::<Test>::CandidateProducerNotSelected
         );
+    });
+}
+
+#[test]
+fn selected_worker_candidate_succeeds() {
+    new_test_ext().execute_with(|| {
+        let package_hash = submit_assigned_service_work();
+        assert_ok!(MiniJam::submit_candidate(
+            RuntimeOrigin::signed(1),
+            Box::new(envelope_with_report(
+                0,
+                0,
+                encoded_work_report(package_hash, vec![work_result(7, 4, 6)])
+            ))
+        ));
     });
 }
 
