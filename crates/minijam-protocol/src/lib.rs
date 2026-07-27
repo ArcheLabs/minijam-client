@@ -4,11 +4,118 @@
 extern crate alloc;
 
 pub mod stage0 {
+    use super::Hash;
+
     pub const CORE_INDEX: u16 = 0;
     pub const AUTH_CODE_HOST: u32 = 0;
     pub const AUTH_CODE_HASH: [u8; 32] = [0; 32];
     pub const REFINE_GAS_LIMIT: u64 = 10_000_000;
     pub const ACCUMULATE_GAS_LIMIT: u64 = 10_000_000;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct FinalizedContextV1 {
+        pub block_hash: Hash,
+        pub block_number: u32,
+        pub state_root: Hash,
+        pub slot: u32,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct RefineContextV1 {
+        pub anchor: Hash,
+        pub state_root: Hash,
+        pub lookup_anchor: Hash,
+        pub lookup_anchor_slot: u32,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum ContextError {
+        AnchorMismatch,
+        LookupAnchorMismatch,
+        StateRootMismatch,
+        SlotMismatch,
+    }
+
+    pub fn validate_refine_context(
+        context: RefineContextV1,
+        finalized: FinalizedContextV1,
+    ) -> Result<(), ContextError> {
+        if context.anchor != context.lookup_anchor {
+            return Err(ContextError::AnchorMismatch);
+        }
+        if context.lookup_anchor != finalized.block_hash {
+            return Err(ContextError::LookupAnchorMismatch);
+        }
+        if context.state_root != finalized.state_root {
+            return Err(ContextError::StateRootMismatch);
+        }
+        if context.lookup_anchor_slot != finalized.slot || finalized.slot != finalized.block_number
+        {
+            return Err(ContextError::SlotMismatch);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn contexts() -> (RefineContextV1, FinalizedContextV1) {
+            (
+                RefineContextV1 {
+                    anchor: [1; 32],
+                    state_root: [2; 32],
+                    lookup_anchor: [1; 32],
+                    lookup_anchor_slot: 7,
+                },
+                FinalizedContextV1 {
+                    block_hash: [1; 32],
+                    block_number: 7,
+                    state_root: [2; 32],
+                    slot: 7,
+                },
+            )
+        }
+
+        #[test]
+        fn validates_complete_stage0_refine_context() {
+            let (context, finalized) = contexts();
+            assert_eq!(validate_refine_context(context, finalized), Ok(()));
+        }
+
+        #[test]
+        fn rejects_each_inconsistent_stage0_context_field() {
+            let (context, finalized) = contexts();
+
+            let mut invalid = context;
+            invalid.anchor = [9; 32];
+            assert_eq!(
+                validate_refine_context(invalid, finalized),
+                Err(ContextError::AnchorMismatch)
+            );
+
+            let mut invalid = finalized;
+            invalid.block_hash = [9; 32];
+            assert_eq!(
+                validate_refine_context(context, invalid),
+                Err(ContextError::LookupAnchorMismatch)
+            );
+
+            let mut invalid = finalized;
+            invalid.state_root = [9; 32];
+            assert_eq!(
+                validate_refine_context(context, invalid),
+                Err(ContextError::StateRootMismatch)
+            );
+
+            let mut invalid = finalized;
+            invalid.slot = 8;
+            assert_eq!(
+                validate_refine_context(context, invalid),
+                Err(ContextError::SlotMismatch)
+            );
+        }
+    }
 }
 
 use alloc::vec::Vec;

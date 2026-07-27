@@ -69,3 +69,9 @@ observation use the same finalized anchor. Historical state reads are addressed
 by the package lookup-anchor block hash. Advancing best state must not change a
 report produced for an existing Work request.
 
+For Stage 0, the MiniJAM slot is the Substrate block number and the MiniJAM
+posterior state root is the Substrate header state root. A valid RefineContext
+must therefore have `anchor == lookup_anchor`, use that header's state root,
+and use its block number as `lookup_anchor_slot`. Workers verify all three
+relationships against the finalized canonical header before reading protocol
+state or executing Refine.

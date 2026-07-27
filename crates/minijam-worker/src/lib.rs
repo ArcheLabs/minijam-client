@@ -435,7 +435,10 @@ impl BlockingHttpWorkerChainSource {
 }
 
 pub trait ProtocolStateSource {
-    fn ensure_finalized_anchor(&self, _block_hash: [u8; 32]) -> Result<(), WorkerError> {
+    fn validate_finalized_context(
+        &self,
+        _context: stage0::RefineContextV1,
+    ) -> Result<(), WorkerError> {
         Ok(())
     }
 
@@ -453,23 +456,31 @@ pub trait WorkerSignedTxContext {
 }
 
 impl ProtocolStateSource for BlockingHttpWorkerChainSource {
-    fn ensure_finalized_anchor(&self, block_hash: [u8; 32]) -> Result<(), WorkerError> {
+    fn validate_finalized_context(
+        &self,
+        context: stage0::RefineContextV1,
+    ) -> Result<(), WorkerError> {
         let finalized = self.rpc_string("chain_getFinalizedHead", json!([]))?;
-        let finalized_number = self.header_number(&finalized)?;
-        let anchor = hex_encode(&block_hash);
-        let anchor_number = self.header_number(&anchor)?;
-        if anchor_number > finalized_number {
+        let finalized_context = self.header_context(&finalized)?;
+        let anchor = hex_encode(&context.lookup_anchor);
+        let anchor_context = self.header_context(&anchor)?;
+        if anchor_context.block_number > finalized_context.block_number {
             return Err(WorkerError::Refine(
                 "work package lookup anchor is not finalized".into(),
             ));
         }
-        let canonical = self.rpc_string("chain_getBlockHash", json!([anchor_number]))?;
+        let canonical =
+            self.rpc_string("chain_getBlockHash", json!([anchor_context.block_number]))?;
         if canonical != anchor {
             return Err(WorkerError::Refine(
                 "work package lookup anchor is not on the finalized chain".into(),
             ));
         }
-        Ok(())
+        stage0::validate_refine_context(context, anchor_context).map_err(|error| {
+            WorkerError::Refine(format!(
+                "invalid finalized Stage 0 refine context: {error:?}"
+            ))
+        })
     }
 
     fn protocol_state_value_at(
@@ -510,7 +521,7 @@ impl BlockingHttpWorkerChainSource {
         json_rpc_string_result(&response)
     }
 
-    fn header_number(&self, block_hash: &str) -> Result<u32, WorkerError> {
+    fn header_context(&self, block_hash: &str) -> Result<stage0::FinalizedContextV1, WorkerError> {
         let response = http_post_json(
             &self.rpc_url,
             &json!({
@@ -532,8 +543,24 @@ impl BlockingHttpWorkerChainSource {
             .get("number")
             .and_then(Value::as_str)
             .ok_or_else(|| WorkerError::Chain("chain_getHeader returned no number".into()))?;
-        u32::from_str_radix(number.strip_prefix("0x").unwrap_or(number), 16)
-            .map_err(|error| WorkerError::Chain(format!("invalid header number: {error}")))
+        let block_number = u32::from_str_radix(number.strip_prefix("0x").unwrap_or(number), 16)
+            .map_err(|error| WorkerError::Chain(format!("invalid header number: {error}")))?;
+        let state_root = result
+            .get("stateRoot")
+            .and_then(Value::as_str)
+            .ok_or_else(|| WorkerError::Chain("chain_getHeader returned no state root".into()))?;
+        let state_root: [u8; 32] = decode_hex(state_root)?
+            .try_into()
+            .map_err(|_| WorkerError::Chain("header state root is not 32 bytes".into()))?;
+        let block_hash: [u8; 32] = decode_hex(block_hash)?
+            .try_into()
+            .map_err(|_| WorkerError::Chain("header block hash is not 32 bytes".into()))?;
+        Ok(stage0::FinalizedContextV1 {
+            block_hash,
+            block_number,
+            state_root,
+            slot: block_number,
+        })
     }
 }
 
@@ -870,7 +897,12 @@ where
     }
 
     let lookup_anchor = bundle.work_package.context.lookup_anchor.0;
-    state.ensure_finalized_anchor(lookup_anchor)?;
+    state.validate_finalized_context(stage0::RefineContextV1 {
+        anchor: bundle.work_package.context.anchor.0,
+        state_root: bundle.work_package.context.state_root.0,
+        lookup_anchor,
+        lookup_anchor_slot: bundle.work_package.context.lookup_anchor_slot.0,
+    })?;
     let input = bundle.into_work_report_input(core_index);
     let db = ProtocolStateDb::new(state, lookup_anchor);
     let mut backend = StateBackend::<TinySpec, _>::new_tiny(db);
@@ -1639,15 +1671,26 @@ mod tests {
     struct TrackingProtocolStateSource {
         anchors: Mutex<Vec<[u8; 32]>>,
         reject_anchor: bool,
+        finalized_context: Option<stage0::FinalizedContextV1>,
     }
 
     impl ProtocolStateSource for TrackingProtocolStateSource {
-        fn ensure_finalized_anchor(&self, block_hash: [u8; 32]) -> Result<(), WorkerError> {
+        fn validate_finalized_context(
+            &self,
+            context: stage0::RefineContextV1,
+        ) -> Result<(), WorkerError> {
             if self.reject_anchor {
                 return Err(WorkerError::Refine(format!(
                     "anchor {} is not finalized",
-                    hex_encode(&block_hash)
+                    hex_encode(&context.lookup_anchor)
                 )));
+            }
+            if let Some(finalized) = self.finalized_context {
+                stage0::validate_refine_context(context, finalized).map_err(|error| {
+                    WorkerError::Refine(format!(
+                        "invalid finalized Stage 0 refine context: {error:?}"
+                    ))
+                })?;
             }
             Ok(())
         }
@@ -1778,7 +1821,7 @@ mod tests {
             auth_code_host: 0,
             auth_code_hash: OpaqueHash(stage0::AUTH_CODE_HASH),
             context: RefineContext {
-                anchor: OpaqueHash([2u8; 32]),
+                anchor: OpaqueHash([5u8; 32]),
                 state_root: OpaqueHash([seed; 32]),
                 beefy_root: OpaqueHash([4u8; 32]),
                 lookup_anchor: OpaqueHash([5u8; 32]),
@@ -2128,6 +2171,28 @@ mod tests {
         let error = prepare_candidate_envelope(&source, [42u8; 32], 0, &task, &bundle).unwrap_err();
 
         assert!(matches!(error, WorkerError::Refine(message) if message.contains("not finalized")));
+        assert!(source.anchors.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn candidate_refine_rejects_context_state_root_mismatch() {
+        let (bundle, package_hash) = refine_bundle(9);
+        let task = refine_task(77, 2, package_hash, &bundle);
+        let source = TrackingProtocolStateSource {
+            finalized_context: Some(stage0::FinalizedContextV1 {
+                block_hash: [5u8; 32],
+                block_number: 0,
+                state_root: [8u8; 32],
+                slot: 0,
+            }),
+            ..Default::default()
+        };
+
+        let error = prepare_candidate_envelope(&source, [42u8; 32], 0, &task, &bundle).unwrap_err();
+
+        assert!(
+            matches!(error, WorkerError::Refine(message) if message.contains("StateRootMismatch"))
+        );
         assert!(source.anchors.lock().unwrap().is_empty());
     }
 
