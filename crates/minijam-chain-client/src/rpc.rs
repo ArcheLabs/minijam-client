@@ -1,5 +1,6 @@
 use jsonrpsee::{core::client::ClientT, rpc_params, ws_client::WsClient};
 use minijam_protocol::Hash;
+use parity_scale_codec::Decode;
 use serde::Deserialize;
 
 use crate::ChainClientError;
@@ -45,6 +46,34 @@ pub async fn genesis_hash(rpc: &WsClient) -> Result<Hash, ChainClientError> {
         .await
         .map_err(map_rpc)?;
     decode_hash(&value)
+}
+
+pub async fn block_hash(rpc: &WsClient, number: u32) -> Result<Hash, ChainClientError> {
+    let value: String = rpc
+        .request("chain_getBlockHash", rpc_params![number])
+        .await
+        .map_err(map_rpc)?;
+    decode_hash(&value)
+}
+
+pub async fn events_at(
+    rpc: &WsClient,
+    block_hash: Hash,
+) -> Result<Vec<minijam_runtime::RuntimeEvent>, ChainClientError> {
+    let mut key = sp_core::twox_128(b"System").to_vec();
+    key.extend_from_slice(&sp_core::twox_128(b"Events"));
+    let encoded: Option<String> = rpc
+        .request("state_getStorage", rpc_params![hex(&key), hex(&block_hash)])
+        .await
+        .map_err(map_rpc)?;
+    let Some(encoded) = encoded else {
+        return Ok(Vec::new());
+    };
+    let bytes = decode_hex(&encoded)?;
+    let records: Vec<frame_system::EventRecord<minijam_runtime::RuntimeEvent, sp_core::H256>> =
+        Decode::decode(&mut bytes.as_slice())
+            .map_err(|error| ChainClientError::Decode(error.to_string()))?;
+    Ok(records.into_iter().map(|record| record.event).collect())
 }
 
 pub async fn account_nonce(rpc: &WsClient, account: [u8; 32]) -> Result<u32, ChainClientError> {

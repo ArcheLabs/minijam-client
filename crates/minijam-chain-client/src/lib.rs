@@ -4,7 +4,7 @@ mod events;
 mod extrinsic;
 mod rpc;
 
-pub use events::FinalityObservation;
+pub use events::{FinalityObservation, FinalizedEvent};
 pub use extrinsic::sign_call as sign_runtime_call;
 pub use rpc::FinalizedContext;
 
@@ -88,6 +88,41 @@ impl MiniJamChainClient {
             finalized_block: context.block_hash,
             finalized_number: context.block_number,
         })
+    }
+
+    pub async fn wait_for_finalized_event<F>(
+        &self,
+        from_block: u32,
+        wait: Duration,
+        mut matches: F,
+    ) -> Result<FinalizedEvent, ChainClientError>
+    where
+        F: FnMut(&minijam_runtime::RuntimeEvent) -> bool,
+    {
+        let started = std::time::Instant::now();
+        let mut next = from_block;
+        loop {
+            let finalized = self.finalized_context().await?;
+            while next <= finalized.block_number {
+                let block_hash = rpc::block_hash(&*self.rpc.lock().await, next).await?;
+                for event in rpc::events_at(&*self.rpc.lock().await, block_hash).await? {
+                    if matches(&event) {
+                        return Ok(FinalizedEvent {
+                            block_hash,
+                            block_number: next,
+                            event,
+                        });
+                    }
+                }
+                next = next.saturating_add(1);
+            }
+            if started.elapsed() >= wait {
+                return Err(ChainClientError::Rpc(
+                    "timed out waiting for finalized event".into(),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
     }
 
     pub async fn service_info_at(
