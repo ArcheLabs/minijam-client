@@ -24,6 +24,7 @@ use thiserror::Error;
 
 pub const ACTION_DOMAIN: &[u8] = b"minijam/playground-action/v1";
 static ACTION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static OPERATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 pub struct PlaygroundConfig {
@@ -65,6 +66,50 @@ pub struct PreparedAction {
 pub struct ActionAuthorization {
     pub action_id: String,
     pub signature: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationKind {
+    Create,
+    Upgrade,
+    Work,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationStatus {
+    Prepared,
+    Submitted,
+    WaitingReceipt,
+    SubmittingPreimage,
+    TrackingWork,
+    Succeeded,
+    Failed,
+}
+
+impl OperationStatus {
+    fn terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Operation {
+    pub operation_id: String,
+    pub kind: OperationKind,
+    pub status: OperationStatus,
+    pub account: String,
+    pub action_id: String,
+    pub request: serde_json::Value,
+    pub correlation: Option<String>,
+    pub extrinsic_hash: Option<String>,
+    pub submitted_nonce: Option<u32>,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
 }
 
 #[derive(Debug, Error)]
@@ -117,6 +162,21 @@ impl Playground {
                    genesis_hash BLOB NOT NULL,
                    expiry INTEGER NOT NULL,
                    used_at INTEGER
+                 );
+                 CREATE TABLE IF NOT EXISTS operations (
+                   operation_id TEXT PRIMARY KEY,
+                   kind TEXT NOT NULL,
+                   status TEXT NOT NULL,
+                   account BLOB NOT NULL,
+                   action_id BLOB NOT NULL UNIQUE,
+                   request_json TEXT NOT NULL,
+                   correlation BLOB,
+                   extrinsic_hash BLOB,
+                   submitted_nonce INTEGER,
+                   result_json TEXT,
+                   error TEXT,
+                   created_at INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL
                  );",
             )
             .map_err(|error| ApiError::Storage(error.to_string()))?;
@@ -131,6 +191,7 @@ impl Playground {
         Router::new()
             .route("/api/v1/build", post(build))
             .route("/api/v1/actions/prepare", post(prepare_action))
+            .route("/api/v1/operations/{id}", get(get_operation))
             .route("/health/live", get(|| async { StatusCode::NO_CONTENT }))
             .route("/health/ready", get(ready))
             .with_state(self)
@@ -278,6 +339,135 @@ impl Playground {
             .map_err(|error| ApiError::Storage(error.to_string()))?;
         Ok(account)
     }
+
+    pub fn insert_operation(
+        &self,
+        kind: OperationKind,
+        account: [u8; 32],
+        action_id: [u8; 32],
+        request: &serde_json::Value,
+    ) -> Result<Operation, ApiError> {
+        let created_at = now();
+        let operation_id = hex(&minijam_protocol::blake2_256(
+            &(
+                b"minijam/operation/v1".as_slice(),
+                account,
+                action_id,
+                created_at,
+                OPERATION_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            )
+                .encode(),
+        ));
+        let request_json =
+            serde_json::to_string(request).map_err(|error| ApiError::Invalid(error.to_string()))?;
+        self.db
+            .lock()
+            .expect("playground db mutex poisoned")
+            .execute(
+                "INSERT INTO operations
+                 (operation_id, kind, status, account, action_id, request_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                params![
+                    operation_id,
+                    enum_json(kind)?,
+                    enum_json(OperationStatus::Prepared)?,
+                    account.as_slice(),
+                    action_id.as_slice(),
+                    request_json,
+                    created_at as i64,
+                ],
+            )
+            .map_err(|error| ApiError::Storage(error.to_string()))?;
+        self.operation(&operation_id)?
+            .ok_or_else(|| ApiError::Storage("inserted operation disappeared".into()))
+    }
+
+    pub fn operation(&self, operation_id: &str) -> Result<Option<Operation>, ApiError> {
+        self.db
+            .lock()
+            .expect("playground db mutex poisoned")
+            .query_row(
+                "SELECT operation_id, kind, status, account, action_id, request_json,
+                        correlation, extrinsic_hash, submitted_nonce, result_json, error,
+                        created_at, updated_at
+                 FROM operations WHERE operation_id = ?1",
+                params![operation_id],
+                decode_operation,
+            )
+            .optional()
+            .map_err(|error| ApiError::Storage(error.to_string()))
+    }
+
+    pub fn recoverable_operations(&self) -> Result<Vec<Operation>, ApiError> {
+        let connection = self.db.lock().expect("playground db mutex poisoned");
+        let mut statement = connection
+            .prepare(
+                "SELECT operation_id, kind, status, account, action_id, request_json,
+                        correlation, extrinsic_hash, submitted_nonce, result_json, error,
+                        created_at, updated_at
+                 FROM operations ORDER BY created_at, operation_id",
+            )
+            .map_err(|error| ApiError::Storage(error.to_string()))?;
+        let rows = statement
+            .query_map([], decode_operation)
+            .map_err(|error| ApiError::Storage(error.to_string()))?;
+        let mut operations = Vec::new();
+        for row in rows {
+            let operation = row.map_err(|error| ApiError::Storage(error.to_string()))?;
+            if !operation.status.terminal() {
+                operations.push(operation);
+            }
+        }
+        Ok(operations)
+    }
+
+    pub fn update_operation(
+        &self,
+        operation_id: &str,
+        status: OperationStatus,
+        correlation: Option<[u8; 32]>,
+        extrinsic_hash: Option<[u8; 32]>,
+        submitted_nonce: Option<u32>,
+        result: Option<&serde_json::Value>,
+        error: Option<&str>,
+    ) -> Result<(), ApiError> {
+        let result = result
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| ApiError::Storage(error.to_string()))?;
+        self.db
+            .lock()
+            .expect("playground db mutex poisoned")
+            .execute(
+                "UPDATE operations SET status = ?2, correlation = COALESCE(?3, correlation),
+                 extrinsic_hash = COALESCE(?4, extrinsic_hash),
+                 submitted_nonce = COALESCE(?5, submitted_nonce),
+                 result_json = COALESCE(?6, result_json), error = ?7, updated_at = ?8
+                 WHERE operation_id = ?1",
+                params![
+                    operation_id,
+                    enum_json(status)?,
+                    correlation.as_ref().map(|value| value.as_slice()),
+                    extrinsic_hash.as_ref().map(|value| value.as_slice()),
+                    submitted_nonce,
+                    result,
+                    error,
+                    now() as i64,
+                ],
+            )
+            .map_err(|error| ApiError::Storage(error.to_string()))?;
+        Ok(())
+    }
+}
+
+async fn get_operation(
+    State(playground): State<Playground>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<Operation>, ApiError> {
+    playground
+        .operation(&id)?
+        .map(Json)
+        .ok_or_else(|| ApiError::Invalid("operation not found".into()))
 }
 
 async fn prepare_action(
@@ -374,6 +564,66 @@ fn decode_array<const N: usize>(value: &str) -> Result<[u8; N], ApiError> {
     Ok(output)
 }
 
+fn enum_json<T: Serialize>(value: T) -> Result<String, ApiError> {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .ok_or_else(|| ApiError::Storage("invalid enum value".into()))
+}
+
+fn decode_operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Operation> {
+    let kind: String = row.get(1)?;
+    let status: String = row.get(2)?;
+    let account: Vec<u8> = row.get(3)?;
+    let action_id: Vec<u8> = row.get(4)?;
+    let request: String = row.get(5)?;
+    let correlation: Option<Vec<u8>> = row.get(6)?;
+    let extrinsic_hash: Option<Vec<u8>> = row.get(7)?;
+    let result: Option<String> = row.get(9)?;
+    Ok(Operation {
+        operation_id: row.get(0)?,
+        kind: serde_json::from_value(serde_json::Value::String(kind)).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                1,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        status: serde_json::from_value(serde_json::Value::String(status)).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                2,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        account: hex(&account),
+        action_id: hex(&action_id),
+        request: serde_json::from_str(&request).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                5,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        correlation: correlation.map(|value| hex(&value)),
+        extrinsic_hash: extrinsic_hash.map(|value| hex(&value)),
+        submitted_nonce: row.get(8)?,
+        result: result
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    9,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
+        error: row.get(10)?,
+        created_at: row.get::<_, i64>(11)? as u64,
+        updated_at: row.get::<_, i64>(12)? as u64,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +697,44 @@ mod tests {
         assert!(playground
             .consume_action(&authorization, "work", [1; 32])
             .is_ok());
+    }
+
+    #[test]
+    fn operations_survive_restart_and_only_non_terminal_rows_recover() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("playground.sqlite");
+        let operation_id = {
+            let playground = playground(&path);
+            playground
+                .insert_operation(
+                    OperationKind::Create,
+                    [1; 32],
+                    [2; 32],
+                    &serde_json::json!({"codeHash": hex(&[3; 32])}),
+                )
+                .unwrap()
+                .operation_id
+        };
+        let restarted = playground(&path);
+        assert_eq!(
+            restarted.recoverable_operations().unwrap()[0].operation_id,
+            operation_id
+        );
+        restarted
+            .update_operation(
+                &operation_id,
+                OperationStatus::Succeeded,
+                Some([4; 32]),
+                Some([5; 32]),
+                Some(7),
+                Some(&serde_json::json!({"serviceId": 10})),
+                None,
+            )
+            .unwrap();
+        assert!(restarted.recoverable_operations().unwrap().is_empty());
+        assert_eq!(
+            restarted.operation(&operation_id).unwrap().unwrap().status,
+            OperationStatus::Succeeded
+        );
     }
 }
