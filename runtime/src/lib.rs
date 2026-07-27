@@ -330,7 +330,16 @@ mod runtime {
 #[cfg(test)]
 mod stage0_economics_tests {
     use super::*;
-    use frame_support::traits::EnsureOrigin;
+    use frame_support::{assert_noop, assert_ok, traits::EnsureOrigin};
+    use minijam_protocol::SystemCommandV1;
+    use sp_runtime::{BuildStorage, DispatchError};
+
+    fn runtime_ext() -> sp_io::TestExternalities {
+        let storage = frame_system::GenesisConfig::<Runtime>::default()
+            .build_storage()
+            .expect("runtime system genesis builds");
+        storage.into()
+    }
 
     #[test]
     fn user_economic_charges_are_zero() {
@@ -385,5 +394,46 @@ mod stage0_economics_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn runtime_dispatch_enforces_system_and_preimage_ingress() {
+        runtime_ext().execute_with(|| {
+            let relayer = AccountId::new([0x92; 32]);
+            let direct_user = AccountId::new([0x93; 32]);
+            let command = SystemCommandV1::CreateService {
+                controller: [0x44; 32],
+                code_hash: [0x55; 32],
+                code_len: 32,
+                min_item_gas: 1,
+                min_memo_gas: 1,
+            };
+
+            assert_noop!(
+                MiniJam::submit_system_op(
+                    RuntimeOrigin::signed(direct_user.clone()),
+                    Box::new(command.clone())
+                ),
+                DispatchError::BadOrigin
+            );
+            assert_ok!(MiniJam::submit_system_op(
+                RuntimeOrigin::signed(relayer.clone()),
+                Box::new(command)
+            ));
+
+            let malformed_preimage: minijam_protocol::CanonicalPreimageBytes =
+                vec![0xff].try_into().unwrap();
+            assert_noop!(
+                MiniJam::submit_preimage(
+                    RuntimeOrigin::signed(direct_user),
+                    malformed_preimage.clone()
+                ),
+                DispatchError::BadOrigin
+            );
+            assert_noop!(
+                MiniJam::submit_preimage(RuntimeOrigin::signed(relayer), malformed_preimage),
+                pallet_minijam::Error::<Runtime>::InvalidPreimage
+            );
+        });
     }
 }

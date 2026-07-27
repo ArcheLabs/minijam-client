@@ -712,7 +712,7 @@ pub mod pallet {
             origin: OriginFor<T>,
             envelope: Box<ReportEnvelopeV1>,
         ) -> DispatchResult {
-            let submitter = T::PreimageIngressOrigin::ensure_origin(origin)?;
+            let submitter = ensure_signed(origin)?;
             let envelope = *envelope;
             let mut work = Works::<T>::get(envelope.work_id).ok_or(Error::<T>::WorkNotFound)?;
             let worker_id = pallet_minijam_workers::WorkerByAccount::<T>::get(&submitter)
@@ -815,7 +815,7 @@ pub mod pallet {
             origin: OriginFor<T>,
             canonical_preimage: CanonicalPreimageBytes,
         ) -> DispatchResult {
-            let submitter = T::SystemIngressOrigin::ensure_origin(origin)?;
+            let submitter = T::PreimageIngressOrigin::ensure_origin(origin)?;
             let state = FrameProtocolState::<T>(Default::default());
             let executor = T::JamCoreExecutor::default();
             let metadata = executor
@@ -852,7 +852,7 @@ pub mod pallet {
             origin: OriginFor<T>,
             command: Box<SystemCommandV1>,
         ) -> DispatchResult {
-            let submitter = ensure_signed(origin)?;
+            let submitter = T::SystemIngressOrigin::ensure_origin(origin)?;
             Self::validate_system_command(&command)?;
             let sender = Self::system_op_sender(&submitter);
             let nonce = SystemOpNonces::<T>::get(sender);

@@ -27,10 +27,10 @@ Evidence:
 ## M1: Economics, ingress, and Worker permissions
 
 - [x] Stage 0 economic prices, deposits, bonds, rewards, and slashes are zero.
-- [x] Work, system-op, and preimage ingress accept only the configured relayer.
+- [ ] Work, system-op, and preimage ingress accept only the configured relayer.
 - [x] Candidate submitter is a registered, assigned Worker.
 - [x] Pending tasks expose assignment and deterministic candidate producer.
-- [x] Runtime, pallet, and Wasm acceptance commands pass.
+- [ ] Runtime, pallet, and Wasm acceptance commands pass.
 
 Evidence:
 

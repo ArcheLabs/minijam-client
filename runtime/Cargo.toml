@@ -48,6 +48,7 @@ substrate-wasm-builder = { workspace = true, optional = true }
 jam-codec = { version = "0.1.1", default-features = false }
 jp-core-primitives = { path = "../external/jambda/crates/core-primitives" }
 jp-vm-predecode = { path = "../external/jambda/vm/predecode" }
+sp-io = { workspace = true, features = ["std"] }
 
 [features]
 default = ["std"]
