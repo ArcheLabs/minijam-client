@@ -29,4 +29,37 @@ clang++ -nostdlib -Wl,-e,minijam_refine \
 
 test -s "${TMP}/counter-c"
 test -s "${TMP}/counter-cpp"
-printf 'service SDK C/C++ native smoke passed\n'
+
+LLVM_CLANG="${MINIJAM_CLANG:-/usr/lib/llvm-20/bin/clang}"
+POLKATOOL="${MINIJAM_POLKATOOL:-polkatool}"
+if [[ -x "${LLVM_CLANG}" ]] && command -v "${POLKATOOL}" >/dev/null 2>&1; then
+  GUEST_FLAGS=(
+    --target=riscv64-unknown-elf
+    -march=rv64emac
+    -mabi=lp64e
+    -ffreestanding
+    -fno-builtin
+    -fdata-sections
+    -ffunction-sections
+    -Os
+    -Wall
+    -Wextra
+    -Werror
+    -I "${INCLUDE}"
+  )
+  "${LLVM_CLANG}" -std=c11 "${GUEST_FLAGS[@]}" \
+    -c "${ROOT}/service-toolchain/sdk/src/host.c" -o "${TMP}/guest-host.o"
+  "${LLVM_CLANG}" -std=c11 "${GUEST_FLAGS[@]}" \
+    -c "${ROOT}/service-toolchain/sdk/src/minijam.c" -o "${TMP}/guest-minijam.o"
+  "${LLVM_CLANG}" -std=c11 "${GUEST_FLAGS[@]}" \
+    -c "${ROOT}/examples/services/counter/service.c" -o "${TMP}/guest-counter.o"
+  "${LLVM_CLANG}" --target=riscv64-unknown-elf -march=rv64emac -mabi=lp64e \
+    -nostdlib -Wl,--gc-sections -Wl,--emit-relocs -Wl,-e,minijam_refine \
+    "${TMP}/guest-host.o" "${TMP}/guest-minijam.o" "${TMP}/guest-counter.o" \
+    -o "${TMP}/counter.elf"
+  "${POLKATOOL}" link --strip "${TMP}/counter.elf" -o "${TMP}/counter.polkavm"
+  test -s "${TMP}/counter.polkavm"
+  printf 'service SDK native and PolkaVM guest smoke passed\n'
+else
+  printf 'service SDK native smoke passed (guest toolchain unavailable)\n'
+fi
