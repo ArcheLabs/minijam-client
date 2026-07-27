@@ -41,10 +41,10 @@ Evidence:
 ## M2: Controller and upgrade protocol
 
 - [x] System commands carry the explicit user Controller.
-- [ ] Stable create, upgrade, and rejected receipts are implemented.
+- [x] Stable create, upgrade, and rejected receipts are implemented.
 - [x] Controller queries are available through Runtime API and node RPC.
-- [ ] Owner upgrade and non-owner rejection are tested.
-- [ ] Upgrade preimage becomes ready without a Runtime panic.
+- [x] Owner upgrade and non-owner rejection are tested.
+- [x] Upgrade preimage becomes ready without a Runtime panic.
 
 ## M3: Service 0 and SDK
 
