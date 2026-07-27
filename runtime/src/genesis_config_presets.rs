@@ -427,6 +427,22 @@ mod tests {
                 .as_ref()
                 .is_some_and(|value| value.as_slice() == sender)
         }));
+
+        let mut invalid_op = op.clone();
+        invalid_op.request_id[0] ^= 0xff;
+        let invalid_input = MiniJamExecutionInput {
+            system_ops: vec![invalid_op]
+                .try_into()
+                .expect("single system op fits batch"),
+            ..input.clone()
+        };
+        let invalid_result = <MiniJamExecutive as MiniJamExecutor>::execute(
+            &MiniJamExecutive,
+            invalid_input,
+            &TestProtocolState::from_pairs(system_service_zero_protocol_state()),
+        );
+        assert!(invalid_result.is_err(), "invalid request id must be rejected");
+
     }
 
     #[test]

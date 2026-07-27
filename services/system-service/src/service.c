@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#include <minijam/crypto.h>
 #include <minijam/host.h>
 #include <minijam/minijam.h>
 #include <stddef.h>
@@ -6,6 +7,7 @@
 
 #define SYSTEM_INPUT_MAX 16384u
 #define SYSTEM_KEY_MAX 80u
+#define REJECT_REQUEST_ID 3u
 #define REJECT_NONCE 4u
 #define REJECT_COMMAND 5u
 #define REJECT_NEW 6u
@@ -14,6 +16,7 @@ static const uint8_t LAST_NONCE_PREFIX[] = "system/last-nonce/";
 static const uint8_t RECEIPT_PREFIX[] = "system/receipt/";
 static const uint8_t CONTROLLER_PREFIX[] = "system/controller/";
 static const uint8_t SERVICES_PREFIX[] = "system/services/";
+static const uint8_t REQUEST_DOMAIN[] = "minijam/system-op/v1";
 static uint8_t input[SYSTEM_INPUT_MAX];
 
 static uint32_t load_u32(const uint8_t *p) {
@@ -75,6 +78,28 @@ static void write_rejected(const uint8_t request_id[32], uint32_t code) {
   receipt[0] = 2;
   store_u32(receipt + 1, code);
   (void)minijam_storage_write(key, key_size, receipt, sizeof(receipt));
+}
+
+static int request_id_matches(const uint8_t request_id[32],
+                              const uint8_t sender[32],
+                              const uint8_t encoded_nonce[8],
+                              const uint8_t *encoded_command,
+                              size_t command_size) {
+  uint8_t message[sizeof(REQUEST_DOMAIN) - 1 + 32 + 8 + 89];
+  uint8_t actual[32];
+  size_t offset = 0;
+  copy(message + offset, REQUEST_DOMAIN, sizeof(REQUEST_DOMAIN) - 1);
+  offset += sizeof(REQUEST_DOMAIN) - 1;
+  copy(message + offset, sender, 32);
+  offset += 32;
+  copy(message + offset, encoded_nonce, 8);
+  offset += 8;
+  copy(message + offset, encoded_command, command_size);
+  offset += command_size;
+  minijam_blake2b_256(message, offset, actual);
+  uint8_t difference = 0;
+  for (size_t i = 0; i < 32; ++i) difference |= actual[i] ^ request_id[i];
+  return difference == 0;
 }
 
 static int nonce_is_fresh(const uint8_t sender[32], uint64_t nonce) {
@@ -163,16 +188,25 @@ MINIJAM_ACCUMULATE {
     if ((size_t)(end - cursor) < 73) return;
     const uint8_t *request_id = cursor;
     const uint8_t *sender = cursor + 32;
+    const uint8_t *encoded_nonce = cursor + 64;
+    const uint8_t *encoded_command = cursor + 72;
     uint64_t nonce = load_u64(cursor + 64);
     uint8_t command = cursor[72];
     cursor += 73;
 
     if (command == 0) {
       if ((size_t)(end - cursor) < 84) return;
-      create_service(request_id, sender, nonce, cursor);
+      if (request_id_matches(request_id, sender, encoded_nonce, encoded_command,
+                             85))
+        create_service(request_id, sender, nonce, cursor);
+      else
+        write_rejected(request_id, REJECT_REQUEST_ID);
       cursor += 84;
     } else if (command == 1) {
       if ((size_t)(end - cursor) < 88) return;
+      if (!request_id_matches(request_id, sender, encoded_nonce,
+                              encoded_command, 89))
+        write_rejected(request_id, REJECT_REQUEST_ID);
       cursor += 88;
     } else {
       write_rejected(request_id, REJECT_COMMAND);

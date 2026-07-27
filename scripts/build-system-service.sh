@@ -36,11 +36,12 @@ FLAGS=(
 
 "${LLVM_CLANG}" "${FLAGS[@]}" -c "${SDK_SRC}/host.c" -o "${TMP}/host.o"
 "${LLVM_CLANG}" "${FLAGS[@]}" -c "${SDK_SRC}/minijam.c" -o "${TMP}/minijam.o"
+"${LLVM_CLANG}" "${FLAGS[@]}" -c "${SDK_SRC}/crypto.c" -o "${TMP}/crypto.o"
 "${LLVM_CLANG}" "${FLAGS[@]}" -c "${SRC}" -o "${TMP}/service.o"
 "${LLVM_CLANG}" --target=riscv64-unknown-elf -march=rv64emac -mabi=lp64e \
   -nostdlib -Wl,--gc-sections -Wl,--emit-relocs -Wl,-e,minijam_refine \
   -Wl,-u,minijam_accumulate \
-  "${TMP}/host.o" "${TMP}/minijam.o" "${TMP}/service.o" \
+  "${TMP}/host.o" "${TMP}/minijam.o" "${TMP}/crypto.o" "${TMP}/service.o" \
   -o "${TMP}/system-service.elf"
 
 cargo run --quiet --locked --release --manifest-path "${CONVERTER}" -- \
