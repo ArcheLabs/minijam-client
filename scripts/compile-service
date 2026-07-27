@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$#" -ne 4 ]]; then
+  printf 'usage: compile-service <c|cpp> <source> <output-dir> <O0|Os>\n' >&2
+  exit 2
+fi
+
+LANGUAGE="$1"
+SOURCE="$2"
+OUT_DIR="$3"
+OPTIMIZATION="$4"
+ROOT="$(git rev-parse --show-toplevel)"
+INCLUDE="${ROOT}/service-toolchain/sdk/include"
+SDK_SRC="${ROOT}/service-toolchain/sdk/src"
+CONVERTER="${ROOT}/service-toolchain/compiler/polkavm-to-jam/Cargo.toml"
+LLVM_CLANG="${MINIJAM_CLANG:-/usr/lib/llvm-20/bin/clang}"
+LLVM_CLANGXX="${MINIJAM_CLANGXX:-/usr/lib/llvm-20/bin/clang++}"
+
+case "${LANGUAGE}" in
+  c) COMPILER="${LLVM_CLANG}"; STANDARD="-std=c11" ;;
+  cpp) COMPILER="${LLVM_CLANGXX}"; STANDARD="-std=c++17" ;;
+  *) printf 'compile-service: unsupported language: %s\n' "${LANGUAGE}" >&2; exit 2 ;;
+esac
+case "${OPTIMIZATION}" in
+  O0) OPT_FLAG="-O0" ;;
+  Os) OPT_FLAG="-Os" ;;
+  *) printf 'compile-service: unsupported optimization: %s\n' "${OPTIMIZATION}" >&2; exit 2 ;;
+esac
+[[ -f "${SOURCE}" ]] || { printf 'compile-service: source not found\n' >&2; exit 2; }
+[[ -x "${COMPILER}" && -x "${LLVM_CLANG}" ]] || {
+  printf 'compile-service: pinned LLVM 20 compiler unavailable\n' >&2
+  exit 1
+}
+
+TMP="$(mktemp -d)"
+trap 'rm -rf -- "${TMP}"' EXIT
+COMMON=(
+  --target=riscv64-unknown-elf -march=rv64emac -mabi=lp64e
+  -ffreestanding -fno-builtin -fdata-sections -ffunction-sections
+  "-ffile-prefix-map=${ROOT}=." "-fdebug-prefix-map=${ROOT}=."
+  -g0 "${OPT_FLAG}" -Wall -Wextra -Werror -I "${INCLUDE}"
+)
+
+for unit in host minijam crypto; do
+  "${LLVM_CLANG}" -std=c11 "${COMMON[@]}" -c "${SDK_SRC}/${unit}.c" -o "${TMP}/${unit}.o"
+done
+EXTRA=()
+[[ "${LANGUAGE}" == cpp ]] && EXTRA=(-fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit)
+"${COMPILER}" "${STANDARD}" "${COMMON[@]}" "${EXTRA[@]}" -c "${SOURCE}" -o "${TMP}/service.o"
+"${LLVM_CLANG}" --target=riscv64-unknown-elf -march=rv64emac -mabi=lp64e \
+  -nostdlib -Wl,--build-id=none -Wl,--gc-sections -Wl,--emit-relocs \
+  -Wl,-e,minijam_refine -Wl,-u,minijam_accumulate \
+  "${TMP}/host.o" "${TMP}/minijam.o" "${TMP}/crypto.o" "${TMP}/service.o" \
+  -o "${TMP}/service.elf"
+cargo run --quiet --locked --release --manifest-path "${CONVERTER}" -- \
+  "${TMP}/service.elf" "${TMP}/service.blob" "${TMP}/service.polkavm"
+
+install -d "${OUT_DIR}"
+install -m 0644 "${TMP}/service.blob" "${OUT_DIR}/service.blob"
+install -m 0644 "${TMP}/service.polkavm" "${OUT_DIR}/service.polkavm"
