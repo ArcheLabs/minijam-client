@@ -1,0 +1,329 @@
+// SPDX-License-Identifier: Apache-2.0
+
+mod events;
+mod extrinsic;
+mod rpc;
+
+pub use events::FinalityObservation;
+pub use extrinsic::sign_call as sign_runtime_call;
+pub use rpc::FinalizedContext;
+
+use std::time::Duration;
+
+use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
+use minijam_protocol::{CanonicalPreimageBytes, ContentRef, Hash, SystemCommandV1, WorkId};
+use minijam_runtime::RuntimeCall;
+use parity_scale_codec::Decode;
+use sp_core::{sr25519, Pair};
+use sp_runtime::traits::IdentifyAccount;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ChainClientError {
+    #[error("RPC unavailable: {0}")]
+    Rpc(String),
+    #[error("chain dispatch rejected: {0}")]
+    Dispatch(String),
+    #[error("invalid chain response: {0}")]
+    Decode(String),
+    #[error("input exceeds runtime bounds")]
+    InputTooLarge,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Submission {
+    pub extrinsic_hash: Hash,
+    pub submitted_nonce: u32,
+    pub correlation: Hash,
+}
+
+pub struct MiniJamChainClient {
+    rpc_url: String,
+    request_timeout: Duration,
+    rpc: futures::lock::Mutex<WsClient>,
+    signer: sr25519::Pair,
+    next_nonce: futures::lock::Mutex<Option<u32>>,
+    submit_lock: futures::lock::Mutex<()>,
+}
+
+impl MiniJamChainClient {
+    pub async fn connect(
+        rpc_url: impl Into<String>,
+        signer: sr25519::Pair,
+        request_timeout: Duration,
+    ) -> Result<Self, ChainClientError> {
+        let rpc_url = rpc_url.into();
+        let rpc = Self::connect_rpc(&rpc_url, request_timeout).await?;
+        Ok(Self {
+            rpc_url,
+            request_timeout,
+            rpc: futures::lock::Mutex::new(rpc),
+            signer,
+            next_nonce: futures::lock::Mutex::new(None),
+            submit_lock: futures::lock::Mutex::new(()),
+        })
+    }
+
+    async fn connect_rpc(url: &str, timeout: Duration) -> Result<WsClient, ChainClientError> {
+        WsClientBuilder::default()
+            .request_timeout(timeout)
+            .build(url)
+            .await
+            .map_err(|error| ChainClientError::Rpc(error.to_string()))
+    }
+
+    async fn reconnect(&self) -> Result<(), ChainClientError> {
+        let replacement = Self::connect_rpc(&self.rpc_url, self.request_timeout).await?;
+        *self.rpc.lock().await = replacement;
+        Ok(())
+    }
+
+    pub async fn finalized_context(&self) -> Result<FinalizedContext, ChainClientError> {
+        rpc::finalized_context(&*self.rpc.lock().await).await
+    }
+
+    pub async fn observe_finality(&self) -> Result<FinalityObservation, ChainClientError> {
+        let context = self.finalized_context().await?;
+        Ok(FinalityObservation {
+            finalized_block: context.block_hash,
+            finalized_number: context.block_number,
+        })
+    }
+
+    pub async fn service_info_at(
+        &self,
+        block: Hash,
+        service_id: u32,
+    ) -> Result<Option<Vec<u8>>, ChainClientError> {
+        rpc::optional_hex(
+            &*self.rpc.lock().await,
+            "minijam_getServiceInfoAt",
+            serde_json::json!([rpc::hex(&block), service_id]),
+        )
+        .await
+    }
+
+    pub async fn service_controller_at(
+        &self,
+        block: Hash,
+        service_id: u32,
+    ) -> Result<Option<Vec<u8>>, ChainClientError> {
+        rpc::optional_hex(
+            &*self.rpc.lock().await,
+            "minijam_getServiceControllerAt",
+            serde_json::json!([rpc::hex(&block), service_id]),
+        )
+        .await
+    }
+
+    pub async fn service_storage_at(
+        &self,
+        block: Hash,
+        service_id: u32,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, ChainClientError> {
+        rpc::optional_hex(
+            &*self.rpc.lock().await,
+            "minijam_getServiceStorageAt",
+            serde_json::json!([rpc::hex(&block), service_id, rpc::hex(key)]),
+        )
+        .await
+    }
+
+    pub async fn service_preimage_at(
+        &self,
+        block: Hash,
+        service_id: u32,
+        code_hash: Hash,
+    ) -> Result<Option<Vec<u8>>, ChainClientError> {
+        rpc::optional_hex(
+            &*self.rpc.lock().await,
+            "minijam_getServicePreimageAt",
+            serde_json::json!([rpc::hex(&block), service_id, rpc::hex(&code_hash)]),
+        )
+        .await
+    }
+
+    pub async fn submit_create_service(
+        &self,
+        controller: [u8; 32],
+        code_hash: Hash,
+        code_len: u32,
+        min_item_gas: u64,
+        min_memo_gas: u64,
+    ) -> Result<Submission, ChainClientError> {
+        self.submit_system_command(SystemCommandV1::CreateService {
+            controller,
+            code_hash,
+            code_len,
+            min_item_gas,
+            min_memo_gas,
+        })
+        .await
+    }
+
+    pub async fn submit_upgrade_service(
+        &self,
+        controller: [u8; 32],
+        service_id: u32,
+        code_hash: Hash,
+        code_len: u32,
+        min_item_gas: u64,
+        min_memo_gas: u64,
+    ) -> Result<Submission, ChainClientError> {
+        self.submit_system_command(SystemCommandV1::UpgradeService {
+            controller,
+            service_id,
+            code_hash,
+            code_len,
+            min_item_gas,
+            min_memo_gas,
+        })
+        .await
+    }
+
+    async fn submit_system_command(
+        &self,
+        command: SystemCommandV1,
+    ) -> Result<Submission, ChainClientError> {
+        let correlation =
+            minijam_protocol::blake2_256(&parity_scale_codec::Encode::encode(&command));
+        self.submit_call(
+            RuntimeCall::MiniJam(pallet_minijam::Call::submit_system_op {
+                command: Box::new(command),
+            }),
+            correlation,
+        )
+        .await
+    }
+
+    pub async fn submit_preimage(&self, bytes: Vec<u8>) -> Result<Submission, ChainClientError> {
+        let correlation = minijam_protocol::blake2_256(&bytes);
+        let canonical_preimage: CanonicalPreimageBytes = bytes
+            .try_into()
+            .map_err(|_| ChainClientError::InputTooLarge)?;
+        self.submit_call(
+            RuntimeCall::MiniJam(pallet_minijam::Call::submit_preimage { canonical_preimage }),
+            correlation,
+        )
+        .await
+    }
+
+    pub async fn submit_work(
+        &self,
+        canonical: Vec<u8>,
+        bundle_ref: ContentRef,
+        package_hash: Hash,
+    ) -> Result<Submission, ChainClientError> {
+        let canonical_work_package = canonical
+            .try_into()
+            .map_err(|_| ChainClientError::InputTooLarge)?;
+        self.submit_call(
+            RuntimeCall::MiniJam(pallet_minijam::Call::submit_work {
+                canonical_work_package,
+                bundle_ref,
+            }),
+            package_hash,
+        )
+        .await
+    }
+
+    async fn submit_call(
+        &self,
+        call: RuntimeCall,
+        correlation: Hash,
+    ) -> Result<Submission, ChainClientError> {
+        // Preserve nonce submission order as well as uniqueness: a later nonce must never race ahead.
+        let _submission = self.submit_lock.lock().await;
+        let nonce = self.allocate_nonce().await?;
+        let genesis = rpc::genesis_hash(&*self.rpc.lock().await).await?;
+        let encoded = extrinsic::sign_call(&self.signer, nonce, genesis, call);
+        match rpc::submit_extrinsic(&*self.rpc.lock().await, &encoded).await {
+            Ok(extrinsic_hash) => Ok(Submission {
+                extrinsic_hash,
+                submitted_nonce: nonce,
+                correlation,
+            }),
+            Err(error) => {
+                *self.next_nonce.lock().await = None;
+                if matches!(error, ChainClientError::Rpc(_)) {
+                    let _ = self.reconnect().await;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn allocate_nonce(&self) -> Result<u32, ChainClientError> {
+        let mut current = self.next_nonce.lock().await;
+        if let Some(nonce) = *current {
+            *current = Some(nonce.saturating_add(1));
+            return Ok(nonce);
+        }
+        let account = sp_runtime::MultiSigner::Sr25519(self.signer.public()).into_account();
+        let nonce = rpc::account_nonce(&*self.rpc.lock().await, account.into()).await?;
+        *current = Some(nonce.saturating_add(1));
+        Ok(nonce)
+    }
+
+    pub async fn system_receipt<T: Decode>(
+        &self,
+        request_id: Hash,
+    ) -> Result<Option<T>, ChainClientError> {
+        self.decode_query(
+            "minijam_getSystemReceipt",
+            serde_json::json!([rpc::hex(&request_id)]),
+        )
+        .await
+    }
+
+    pub async fn work_status<T: Decode>(
+        &self,
+        work_id: WorkId,
+    ) -> Result<Option<T>, ChainClientError> {
+        self.decode_query("minijam_getWork", serde_json::json!([work_id]))
+            .await
+    }
+
+    pub async fn candidate<T: Decode>(
+        &self,
+        work_id: WorkId,
+        round: u8,
+    ) -> Result<Option<T>, ChainClientError> {
+        self.decode_query("minijam_getCandidate", serde_json::json!([work_id, round]))
+            .await
+    }
+
+    pub async fn execution_receipt(
+        &self,
+        work_id: WorkId,
+    ) -> Result<Option<Hash>, ChainClientError> {
+        let value = rpc::optional_hex(
+            &*self.rpc.lock().await,
+            "minijam_getExecutionReceipt",
+            serde_json::json!([work_id]),
+        )
+        .await?;
+        value
+            .map(|bytes| {
+                bytes
+                    .try_into()
+                    .map_err(|_| ChainClientError::Decode("receipt hash is not 32 bytes".into()))
+            })
+            .transpose()
+    }
+
+    async fn decode_query<T: Decode>(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<Option<T>, ChainClientError> {
+        rpc::optional_hex(&*self.rpc.lock().await, method, params)
+            .await?
+            .map(|bytes| {
+                T::decode(&mut bytes.as_slice())
+                    .map_err(|error| ChainClientError::Decode(error.to_string()))
+            })
+            .transpose()
+    }
+}

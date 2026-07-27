@@ -1,0 +1,20 @@
+[package]
+name = "minijam-chain-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+frame-system.workspace = true
+futures.workspace = true
+jsonrpsee = { workspace = true, features = ["ws-client"] }
+minijam-protocol = { path = "../minijam-protocol" }
+minijam-runtime = { path = "../../runtime" }
+pallet-minijam = { path = "../../pallets/minijam" }
+pallet-transaction-payment.workspace = true
+parity-scale-codec.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+sp-core = { workspace = true, default-features = true }
+sp-runtime.workspace = true
+thiserror.workspace = true

@@ -9,6 +9,7 @@ members = [
   "crates/minijam-work-package-builder",
   "crates/minijam-worker",
   "crates/minijam-cli",
+  "crates/minijam-chain-client",
   "crates/minijam-bridge-engine",
   "crates/minijam-bulletin-api",
   "crates/minijam-bulletin-simulator",

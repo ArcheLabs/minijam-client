@@ -5106,6 +5106,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "minijam-chain-client"
+version = "0.1.0"
+dependencies = [
+ "frame-system",
+ "futures",
+ "jsonrpsee",
+ "minijam-protocol",
+ "minijam-runtime",
+ "pallet-minijam",
+ "pallet-transaction-payment",
+ "parity-scale-codec",
+ "serde",
+ "serde_json",
+ "sp-core",
+ "sp-runtime",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "minijam-cli"
 version = "0.1.0"
 dependencies = [
@@ -5267,7 +5286,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "clap",
- "frame-system",
  "futures",
  "jam-codec",
  "jambda-minijam-executive",
@@ -5277,17 +5295,16 @@ dependencies = [
  "jp-vm-engine",
  "jp-vm-interp",
  "jsonrpsee",
+ "minijam-chain-client",
  "minijam-protocol",
  "minijam-runtime",
  "minijam-worker-engine",
  "pallet-minijam",
  "pallet-minijam-workers",
- "pallet-transaction-payment",
  "parity-scale-codec",
  "serde",
  "serde_json",
  "sp-core",
- "sp-runtime",
  "tempfile",
  "toml 0.8.23",
 ]

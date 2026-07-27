@@ -38,8 +38,7 @@ use minijam_worker_engine::{
 use parity_scale_codec::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sp_core::{sr25519, Pair, H256};
-use sp_runtime::{generic::Era, traits::IdentifyAccount, MultiSigner};
+use sp_core::{sr25519, Pair};
 use std::sync::Mutex;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -951,52 +950,12 @@ pub fn prepare_signed_candidate_submission(
     let call = minijam_runtime::RuntimeCall::MiniJam(pallet_minijam::Call::submit_candidate {
         envelope: Box::new(envelope.clone()),
     });
-    let tx_ext = signed_tx_extension(nonce);
-    let genesis_hash = H256::from(genesis_hash);
-    let raw_payload = minijam_runtime::SignedPayload::from_raw(
-        call.clone(),
-        tx_ext.clone(),
-        (
-            (),
-            (),
-            minijam_runtime::VERSION.spec_version,
-            minijam_runtime::VERSION.transaction_version,
-            genesis_hash,
-            genesis_hash,
-            (),
-            (),
-            (),
-            (),
-        ),
-    );
-    let signature = raw_payload.using_encoded(|payload| pair.sign(payload));
-    let signer = MultiSigner::Sr25519(pair.public()).into_account();
-    let extrinsic = minijam_runtime::UncheckedExtrinsic::new_signed(
-        call,
-        minijam_runtime::Address::Id(signer),
-        minijam_runtime::Signature::Sr25519(signature),
-        tx_ext,
-    );
+    let extrinsic = minijam_chain_client::sign_runtime_call(pair, nonce, genesis_hash, call);
     PreparedSignedCandidateSubmission {
         envelope,
         nonce,
-        extrinsic_hex: hex_encode(&extrinsic.encode()),
+        extrinsic_hex: hex_encode(&extrinsic),
     }
-}
-
-fn signed_tx_extension(nonce: minijam_runtime::Nonce) -> minijam_runtime::TxExtension {
-    (
-        frame_system::AuthorizeCall::<minijam_runtime::Runtime>::new(),
-        frame_system::CheckNonZeroSender::<minijam_runtime::Runtime>::new(),
-        frame_system::CheckSpecVersion::<minijam_runtime::Runtime>::new(),
-        frame_system::CheckTxVersion::<minijam_runtime::Runtime>::new(),
-        frame_system::CheckGenesis::<minijam_runtime::Runtime>::new(),
-        frame_system::CheckEra::<minijam_runtime::Runtime>::from(Era::Immortal),
-        frame_system::CheckNonce::<minijam_runtime::Runtime>::from(nonce),
-        frame_system::CheckWeight::<minijam_runtime::Runtime>::new(),
-        pallet_transaction_payment::ChargeTransactionPayment::<minijam_runtime::Runtime>::from(0),
-        frame_system::WeightReclaim::<minijam_runtime::Runtime>::new(),
-    )
 }
 
 fn json_rpc_string_result(response: &str) -> Result<String, WorkerError> {
