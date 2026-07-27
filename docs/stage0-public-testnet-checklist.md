@@ -183,8 +183,8 @@ Evidence:
 ## Current Known Risks
 
 - Service 0 is built reproducibly from C and CreateService executes through its
-  PVM `NEW`/`WRITE` path. Counter execution through Jambda remains an M3
-  acceptance item.
+  PVM `NEW`/`WRITE` path. Committed C and C++ Counter blobs execute through
+  Jambda Refine and Accumulate, completing the M3 service execution acceptance.
 - Worker binary can poll finalized pending task inputs, fetch verified bundles,
   execute Jambda Refine, submit signed Candidates, observe vote tasks, and
   submit explicitly enabled votes. Independent Refine-backed Support/Oppose

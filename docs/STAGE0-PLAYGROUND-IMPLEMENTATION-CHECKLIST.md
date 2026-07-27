@@ -53,7 +53,7 @@ Evidence:
 - [x] Service 0 is reproducibly built from source as a real PVM program.
 - [x] CreateService executes through the Service 0 VM path.
 - [x] The Jambda adapter handles only the documented Stage 0 upgrade deviation.
-- [ ] Counter C and C++ services compile and execute.
+- [x] Counter C and C++ services compile and execute.
 
 Evidence:
 
@@ -61,6 +61,9 @@ Evidence:
 - `./scripts/build-system-service.sh` produces the manifest-pinned Service 0 blob reproducibly.
 - `cargo test -p minijam-runtime system_service`
 - `cargo test -p minijam-runtime system_ops_execute_through_real_jambda_executor`
+- `./scripts/build-counter-services.sh` reproduces the committed C/C++ artifacts.
+- `./scripts/test-counter-services.sh` executes committed blobs through real
+  Refine and Accumulate paths without invoking Clang.
 - `service-toolchain/compiler/toolchain.lock` pins the release blob toolchain.
 
 ## M4: Finalized context and WorkPackage builder
