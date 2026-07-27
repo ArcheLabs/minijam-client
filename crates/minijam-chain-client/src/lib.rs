@@ -42,7 +42,7 @@ pub struct MiniJamChainClient {
     request_timeout: Duration,
     rpc: futures::lock::Mutex<WsClient>,
     signer: sr25519::Pair,
-    next_nonce: futures::lock::Mutex<Option<u32>>,
+    next_nonce: futures::lock::Mutex<NonceCursor>,
     submit_lock: futures::lock::Mutex<()>,
 }
 
@@ -59,7 +59,7 @@ impl MiniJamChainClient {
             request_timeout,
             rpc: futures::lock::Mutex::new(rpc),
             signer,
-            next_nonce: futures::lock::Mutex::new(None),
+            next_nonce: futures::lock::Mutex::new(NonceCursor::default()),
             submit_lock: futures::lock::Mutex::new(()),
         })
     }
@@ -245,7 +245,7 @@ impl MiniJamChainClient {
                 correlation,
             }),
             Err(error) => {
-                *self.next_nonce.lock().await = None;
+                self.next_nonce.lock().await.invalidate();
                 if matches!(error, ChainClientError::Rpc(_)) {
                     let _ = self.reconnect().await;
                 }
@@ -256,14 +256,12 @@ impl MiniJamChainClient {
 
     async fn allocate_nonce(&self) -> Result<u32, ChainClientError> {
         let mut current = self.next_nonce.lock().await;
-        if let Some(nonce) = *current {
-            *current = Some(nonce.saturating_add(1));
+        if let Some(nonce) = current.take() {
             return Ok(nonce);
         }
         let account = sp_runtime::MultiSigner::Sr25519(self.signer.public()).into_account();
         let nonce = rpc::account_nonce(&*self.rpc.lock().await, account.into()).await?;
-        *current = Some(nonce.saturating_add(1));
-        Ok(nonce)
+        Ok(current.initialize(nonce))
     }
 
     pub async fn system_receipt<T: Decode>(
@@ -325,5 +323,44 @@ impl MiniJamChainClient {
                     .map_err(|error| ChainClientError::Decode(error.to_string()))
             })
             .transpose()
+    }
+}
+
+#[derive(Default)]
+struct NonceCursor {
+    next: Option<u32>,
+}
+
+impl NonceCursor {
+    fn take(&mut self) -> Option<u32> {
+        let nonce = self.next?;
+        self.next = Some(nonce.saturating_add(1));
+        Some(nonce)
+    }
+
+    fn initialize(&mut self, nonce: u32) -> u32 {
+        self.next = Some(nonce.saturating_add(1));
+        nonce
+    }
+
+    fn invalidate(&mut self) {
+        self.next = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NonceCursor;
+
+    #[test]
+    fn nonce_cursor_allocates_once_and_resynchronizes_after_failure() {
+        let mut cursor = NonceCursor::default();
+        assert_eq!(cursor.take(), None);
+        assert_eq!(cursor.initialize(10), 10);
+        assert_eq!(cursor.take(), Some(11));
+        assert_eq!(cursor.take(), Some(12));
+        cursor.invalidate();
+        assert_eq!(cursor.take(), None);
+        assert_eq!(cursor.initialize(20), 20);
     }
 }

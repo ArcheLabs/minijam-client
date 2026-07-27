@@ -67,6 +67,7 @@ pub struct CompileResponse {
 pub struct CompilerConfig {
     pub repository: PathBuf,
     pub image: String,
+    pub docker_binary: PathBuf,
     pub timeout: Duration,
     pub concurrency: usize,
 }
@@ -109,7 +110,7 @@ impl CompilerService {
         output: &Path,
         request: &CompileRequest,
     ) -> Command {
-        let mut command = Command::new("docker");
+        let mut command = Command::new(&self.config.docker_binary);
         command.args([
             "run",
             "--rm",
@@ -273,11 +274,13 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{fs, os::unix::fs::PermissionsExt};
 
     fn service() -> CompilerService {
         CompilerService::new(CompilerConfig {
             repository: PathBuf::from("/repo"),
             image: "minijam-compiler:test".into(),
+            docker_binary: PathBuf::from("docker"),
             timeout: Duration::from_secs(10),
             concurrency: 2,
         })
@@ -322,5 +325,95 @@ mod tests {
             .await;
         assert!(!response.success);
         assert!(response.diagnostics[0].contains("256 KiB"));
+    }
+
+    fn fake_service(script_body: &str, timeout: Duration) -> (tempfile::TempDir, CompilerService) {
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("docker");
+        fs::write(
+            &script,
+            format!("#!/usr/bin/env bash\nset -eu\n{script_body}\n"),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let service = CompilerService::new(CompilerConfig {
+            repository: PathBuf::from("/repo"),
+            image: "minijam-compiler:test".into(),
+            docker_binary: script,
+            timeout,
+            concurrency: 2,
+        });
+        (temp, service)
+    }
+
+    fn successful_fake() -> &'static str {
+        r#"
+for arg in "$@"; do
+  case "$arg" in
+    type=bind,src=*,dst=/output)
+      out="${arg#type=bind,src=}"
+      out="${out%,dst=/output}"
+      printf 'deterministic-jam-blob' > "${out}/service.blob"
+      exit 0
+      ;;
+  esac
+done
+exit 3
+"#
+    }
+
+    fn request() -> CompileRequest {
+        CompileRequest {
+            language: Language::C,
+            source: "int minijam_refine(void) { return 0; }".into(),
+            optimization: Optimization::Os,
+        }
+    }
+
+    #[tokio::test]
+    async fn identical_compiles_return_identical_blob_and_hash() {
+        let (_temp, service) = fake_service(successful_fake(), Duration::from_secs(1));
+        let first = service.execute(request()).await;
+        let second = service.execute(request()).await;
+
+        assert!(first.success && second.success);
+        assert_eq!(first.blob_base64, second.blob_base64);
+        assert_eq!(first.code_hash, second.code_hash);
+    }
+
+    #[tokio::test]
+    async fn compiler_diagnostics_are_bounded_and_returned() {
+        let (_temp, service) =
+            fake_service("printf 'syntax error' >&2\nexit 1", Duration::from_secs(1));
+        let response = service.execute(request()).await;
+
+        assert!(!response.success);
+        assert_eq!(response.diagnostics, vec!["syntax error"]);
+    }
+
+    #[tokio::test]
+    async fn compiler_process_is_killed_at_timeout() {
+        let (_temp, service) = fake_service("sleep 2", Duration::from_millis(20));
+        let response = service.execute(request()).await;
+
+        assert!(!response.success);
+        assert!(response.diagnostics[0].contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn oversized_compiler_output_is_rejected() {
+        let script = successful_fake().replace(
+            "printf 'deterministic-jam-blob' > \"${out}/service.blob\"",
+            "dd if=/dev/zero of=\"${out}/service.blob\" bs=4194305 count=1 status=none",
+        );
+        let (_temp, service) = fake_service(&script, Duration::from_secs(2));
+        let response = service.execute(request()).await;
+
+        assert!(!response.success);
+        assert!(
+            response.diagnostics[0].contains("4 MiB"),
+            "{:?}",
+            response.diagnostics
+        );
     }
 }

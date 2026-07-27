@@ -15,6 +15,7 @@ async fn main() {
     let service = CompilerService::new(CompilerConfig {
         repository,
         image,
+        docker_binary: PathBuf::from("docker"),
         timeout: Duration::from_secs(30),
         concurrency: 2,
     });
