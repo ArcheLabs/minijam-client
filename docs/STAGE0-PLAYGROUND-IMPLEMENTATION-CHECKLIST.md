@@ -76,10 +76,10 @@ Evidence:
 
 ## M5: Chain client and Compiler
 
-- [ ] Shared chain client owns signing, nonce, submission, finality, and events.
-- [ ] Compiler API builds fixed-toolchain C and restricted C++.
-- [ ] Compiler isolation and resource limits are tested.
-- [ ] Compiler output is deterministic and accepted by Jambda.
+- [x] Shared chain client owns signing, nonce, submission, finality, and events.
+- [x] Compiler API builds fixed-toolchain C and restricted C++.
+- [x] Compiler isolation and resource limits are tested.
+- [x] Compiler output is deterministic and accepted by Jambda.
 
 ## M6: Auth, orchestration, and Bundle gateway
 
