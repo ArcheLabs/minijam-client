@@ -5248,6 +5248,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "minijam-work-package-builder"
+version = "0.1.0"
+dependencies = [
+ "bounded-collections 0.2.4",
+ "cid",
+ "jam-codec",
+ "jambda-refine",
+ "jp-core-primitives",
+ "minijam-protocol",
+ "multihash 0.19.5",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "minijam-worker"
 version = "0.1.0"
 dependencies = [

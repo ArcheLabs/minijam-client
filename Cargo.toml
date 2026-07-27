@@ -6,6 +6,7 @@ members = [
   "crates/minijam-jamcore-api",
   "crates/minijam-jamcore-mock",
   "crates/minijam-worker-engine",
+  "crates/minijam-work-package-builder",
   "crates/minijam-worker",
   "crates/minijam-cli",
   "crates/minijam-bridge-engine",
