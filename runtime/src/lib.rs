@@ -131,18 +131,18 @@ parameter_types! {
     pub FaucetAccount: AccountId = AccountId::new([0x91; 32]);
     pub BridgeEscrowAccount: AccountId = AccountId::new([8; 32]);
     pub const MinimumWorkerStake: Balance = 1_000 * UNIT;
-    pub const TimelyVoteReward: Balance = UNIT;
+    pub const TimelyVoteReward: Balance = 0;
     pub const MinimumAbsenceSlash: Balance = UNIT;
     pub const AbsenceSlash: Perbill = Perbill::from_percent(1);
     pub const EquivocationSlash: Perbill = Perbill::from_percent(20);
-    pub const WorkDeposit: Balance = 10 * UNIT;
-    pub const CandidateBond: Balance = 10 * UNIT;
-    pub const CandidateRejectionSlash: Balance = UNIT;
-    pub const AcceptedSubmitterReward: Balance = UNIT;
+    pub const WorkDeposit: Balance = 0;
+    pub const CandidateBond: Balance = 0;
+    pub const CandidateRejectionSlash: Balance = 0;
+    pub const AcceptedSubmitterReward: Balance = 0;
     pub const FaucetDripAmount: Balance = 100 * UNIT;
     pub const FaucetCooldownBlocks: BlockNumber = 100;
-    pub const RefineGasPrice: Balance = 1;
-    pub const AccumulateGasPrice: Balance = 1;
+    pub const RefineGasPrice: Balance = 0;
+    pub const AccumulateGasPrice: Balance = 0;
 }
 
 #[derive_impl(frame_system::config_preludes::SolochainDefaultConfig)]
@@ -318,4 +318,20 @@ mod runtime {
     pub type MiniJam = pallet_minijam;
     #[runtime::pallet_index(9)]
     pub type MiniJamBridge = pallet_minijam_bridge;
+}
+
+#[cfg(test)]
+mod stage0_economics_tests {
+    use super::*;
+
+    #[test]
+    fn user_economic_charges_are_zero() {
+        assert_eq!(WorkDeposit::get(), 0);
+        assert_eq!(CandidateBond::get(), 0);
+        assert_eq!(CandidateRejectionSlash::get(), 0);
+        assert_eq!(AcceptedSubmitterReward::get(), 0);
+        assert_eq!(TimelyVoteReward::get(), 0);
+        assert_eq!(RefineGasPrice::get(), 0);
+        assert_eq!(AccumulateGasPrice::get(), 0);
+    }
 }
