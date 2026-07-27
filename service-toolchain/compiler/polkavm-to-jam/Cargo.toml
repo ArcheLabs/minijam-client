@@ -1,0 +1,12 @@
+[package]
+name = "minijam-polkavm-to-jam"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+jam-program-blob-common = { version = "=0.1.28", default-features = false, features = ["std", "polkavm"] }
+polkavm-linker = { version = "=0.30.0", default-features = false }
+
+[workspace]

@@ -18,7 +18,10 @@ members = [
   "runtime",
   "node",
 ]
-exclude = ["external/jambda"]
+exclude = [
+  "external/jambda",
+  "service-toolchain/compiler/polkavm-to-jam",
+]
 
 [workspace.package]
 version = "0.1.0"

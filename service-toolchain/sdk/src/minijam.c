@@ -2,6 +2,41 @@
 #include <minijam/host.h>
 #include <minijam/minijam.h>
 
+#if defined(__riscv) && !defined(MINIJAM_HOST_TEST)
+struct __attribute__((packed)) minijam_export_metadata_v1 {
+  uint8_t version;
+  uint32_t flags;
+  uint32_t symbol_length;
+  const uint8_t *symbol;
+  uint8_t input_regs;
+  uint8_t output_regs;
+};
+
+static const uint8_t minijam_refine_symbol[]
+    __attribute__((section(".polkavm_metadata"), used)) = "minijam_refine";
+static const struct minijam_export_metadata_v1 minijam_refine_metadata
+    __attribute__((section(".polkavm_metadata"), used)) = {
+        1, 0, sizeof(minijam_refine_symbol) - 1, minijam_refine_symbol, 0, 2};
+static const uint8_t minijam_accumulate_symbol[]
+    __attribute__((section(".polkavm_metadata"), used)) = "minijam_accumulate";
+static const struct minijam_export_metadata_v1 minijam_accumulate_metadata
+    __attribute__((section(".polkavm_metadata"), used)) = {
+        1, 0, sizeof(minijam_accumulate_symbol) - 1, minijam_accumulate_symbol,
+        0, 0};
+
+extern minijam_refine_output minijam_refine(void);
+extern void minijam_accumulate(void);
+
+__asm__(".pushsection .polkavm_exports,\"aR\",@note\n"
+        ".byte 1\n"
+        ".8byte minijam_refine_metadata\n"
+        ".8byte minijam_refine\n"
+        ".byte 1\n"
+        ".8byte minijam_accumulate_metadata\n"
+        ".8byte minijam_accumulate\n"
+        ".popsection\n");
+#endif
+
 static minijam_status copy_fetch(uint64_t mode, uint64_t index, void *output,
                                  size_t capacity, size_t *output_size) {
   uint64_t length = minijam_host_call6(

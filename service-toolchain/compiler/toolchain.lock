@@ -1,8 +1,7 @@
 schema = 1
 clang_major = 20
-polkatool = "0.32.0"
-polkavm_git = "UNRESOLVED"
-polkavm_to_jam_git = "UNRESOLVED"
-
-# UNRESOLVED entries are release blockers. They may not be replaced with
-# floating branches or unverified binaries.
+target = "riscv64-unknown-elf"
+march = "rv64emac"
+abi = "lp64e"
+polkavm_linker = "0.30.0"
+jam_program_blob_common = "0.1.28"

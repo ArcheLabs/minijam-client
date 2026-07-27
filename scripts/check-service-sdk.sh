@@ -31,8 +31,8 @@ test -s "${TMP}/counter-c"
 test -s "${TMP}/counter-cpp"
 
 LLVM_CLANG="${MINIJAM_CLANG:-/usr/lib/llvm-20/bin/clang}"
-POLKATOOL="${MINIJAM_POLKATOOL:-polkatool}"
-if [[ -x "${LLVM_CLANG}" ]] && command -v "${POLKATOOL}" >/dev/null 2>&1; then
+CONVERTER_MANIFEST="${ROOT}/service-toolchain/compiler/polkavm-to-jam/Cargo.toml"
+if [[ -x "${LLVM_CLANG}" ]] && command -v cargo >/dev/null 2>&1; then
   GUEST_FLAGS=(
     --target=riscv64-unknown-elf
     -march=rv64emac
@@ -55,11 +55,14 @@ if [[ -x "${LLVM_CLANG}" ]] && command -v "${POLKATOOL}" >/dev/null 2>&1; then
     -c "${ROOT}/examples/services/counter/service.c" -o "${TMP}/guest-counter.o"
   "${LLVM_CLANG}" --target=riscv64-unknown-elf -march=rv64emac -mabi=lp64e \
     -nostdlib -Wl,--gc-sections -Wl,--emit-relocs -Wl,-e,minijam_refine \
+    -Wl,-u,minijam_accumulate \
     "${TMP}/guest-host.o" "${TMP}/guest-minijam.o" "${TMP}/guest-counter.o" \
     -o "${TMP}/counter.elf"
-  "${POLKATOOL}" link --strip "${TMP}/counter.elf" -o "${TMP}/counter.polkavm"
+  cargo run --quiet --locked --release --manifest-path "${CONVERTER_MANIFEST}" -- \
+    "${TMP}/counter.elf" "${TMP}/counter.blob" "${TMP}/counter.polkavm"
+  test -s "${TMP}/counter.blob"
   test -s "${TMP}/counter.polkavm"
-  printf 'service SDK native and PolkaVM guest smoke passed\n'
+  printf 'service SDK native, PolkaVM, and JAM blob smoke passed\n'
 else
   printf 'service SDK native smoke passed (guest toolchain unavailable)\n'
 fi
