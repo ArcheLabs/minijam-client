@@ -5279,6 +5279,7 @@ dependencies = [
  "jsonrpsee",
  "minijam-protocol",
  "minijam-runtime",
+ "minijam-work-package-builder",
  "minijam-worker-engine",
  "pallet-minijam",
  "pallet-minijam-workers",

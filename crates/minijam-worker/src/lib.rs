@@ -31,6 +31,9 @@ use minijam_protocol::{
     BulletinEvidence, ContentRef, Hash, ReportEnvelopeV1, Verdict, WorkId, WorkerId, WorkerVoteV1,
     PROTOCOL_VERSION_V1,
 };
+use minijam_work_package_builder::{
+    STAGE0_AUTH_CODE_HASH, STAGE0_AUTH_CODE_HOST, STAGE0_CORE_INDEX,
+};
 use minijam_worker_engine::{
     fetch::{fetch_verified_content, ContentFetcher, FetchError, HttpBytesClient},
     verify_work_bundle, MiniJamWorkBundleDecoder, WorkBundleDecoder, WorkBundleVerificationError,
@@ -856,6 +859,16 @@ where
     if canonical_work_package != task.canonical_work_package {
         return Err(WorkerError::Refine(
             "Jambda work bundle package does not match task canonical work package".into(),
+        ));
+    }
+    if core_index != STAGE0_CORE_INDEX
+        || bundle.work_package.auth_code_host != STAGE0_AUTH_CODE_HOST
+        || bundle.work_package.auth_code_hash.0 != STAGE0_AUTH_CODE_HASH
+        || !bundle.work_package.authorization.is_empty()
+        || !bundle.work_package.authorizer_config.is_empty()
+    {
+        return Err(WorkerError::Refine(
+            "work package does not use the fixed Stage 0 allow-all authorization".into(),
         ));
     }
 
@@ -1766,10 +1779,10 @@ mod tests {
     fn refine_package(seed: u8) -> WorkPackage {
         WorkPackage {
             auth_code_host: 0,
-            auth_code_hash: OpaqueHash([seed; 32]),
+            auth_code_hash: OpaqueHash(STAGE0_AUTH_CODE_HASH),
             context: RefineContext {
                 anchor: OpaqueHash([2u8; 32]),
-                state_root: OpaqueHash([3u8; 32]),
+                state_root: OpaqueHash([seed; 32]),
                 beefy_root: OpaqueHash([4u8; 32]),
                 lookup_anchor: OpaqueHash([5u8; 32]),
                 lookup_anchor_slot: TimeSlot(0),
@@ -2119,6 +2132,31 @@ mod tests {
 
         assert!(matches!(error, WorkerError::Refine(message) if message.contains("not finalized")));
         assert!(source.anchors.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn candidate_refine_rejects_user_selected_authorization() {
+        let (encoded, _) = refine_bundle(9);
+        let mut raw = encoded.as_slice();
+        let mut bundle = jambda_refine::MiniJamWorkBundleV1::decode(&mut raw).unwrap();
+        bundle.work_package.authorization = ByteSequence::from(vec![1]);
+        bundle.package_hash = bundle.work_package.jam_hash();
+        let package_hash = bundle.package_hash.0;
+        let encoded = bundle.encode();
+        let task = refine_task(77, 2, package_hash, &encoded);
+
+        let error = prepare_candidate_envelope(
+            &EmptyProtocolStateSource,
+            [42u8; 32],
+            STAGE0_CORE_INDEX,
+            &task,
+            &encoded,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(error, WorkerError::Refine(message) if message.contains("fixed Stage 0 allow-all"))
+        );
     }
 
     #[test]
