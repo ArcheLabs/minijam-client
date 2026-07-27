@@ -563,6 +563,9 @@ pub mod pallet {
         InvalidEnvelope,
         InvalidReportHash,
         InvalidReportProjection,
+        CandidateSubmitterNotWorker,
+        CandidateSubmitterNotAssigned,
+        CandidateProducerNotSelected,
         VotingSetupFailed,
         InconsistentState,
         ExecutionQueueFull,
@@ -705,6 +708,19 @@ pub mod pallet {
             let submitter = ensure_signed(origin)?;
             let envelope = *envelope;
             let mut work = Works::<T>::get(envelope.work_id).ok_or(Error::<T>::WorkNotFound)?;
+            let worker_id = pallet_minijam_workers::WorkerByAccount::<T>::get(&submitter)
+                .ok_or(Error::<T>::CandidateSubmitterNotWorker)?;
+            let assignment =
+                pallet_minijam_workers::Assignments::<T>::get(envelope.work_id, work.round)
+                    .ok_or(Error::<T>::CandidateSubmitterNotAssigned)?;
+            ensure!(
+                assignment.contains(&worker_id),
+                Error::<T>::CandidateSubmitterNotAssigned
+            );
+            ensure!(
+                assignment.iter().copied().min() == Some(worker_id),
+                Error::<T>::CandidateProducerNotSelected
+            );
             ensure!(
                 work.status == WorkStatus::AwaitingCandidate,
                 Error::<T>::CandidateNotExpected
@@ -1094,9 +1110,16 @@ pub mod pallet {
                     let canonical_work_package =
                         CanonicalWorkPackageBytes::try_from(work.canonical_work_package.to_vec())
                             .ok()?;
+                    let assignment =
+                        pallet_minijam_workers::Assignments::<T>::get(work_id, work.round)?;
+                    let assigned_workers = assignment.to_vec().try_into().ok()?;
+                    let candidate_producer = assignment.iter().copied().min()?;
                     Some(WorkerTaskV1 {
                         work_id,
                         round: work.round,
+                        assignment_epoch: pallet_minijam_workers::CurrentEpoch::<T>::get(),
+                        assigned_workers,
+                        candidate_producer,
                         package_hash: work.package_hash,
                         canonical_work_package,
                         bundle_ref: work.bundle_ref,

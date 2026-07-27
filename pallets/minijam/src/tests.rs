@@ -632,6 +632,10 @@ fn pending_worker_tasks_project_finalized_worker_inputs() {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].work_id, 0);
         assert_eq!(tasks[0].round, 0);
+        assert_eq!(tasks[0].assignment_epoch, 1);
+        assert_eq!(tasks[0].assigned_workers.len(), 3);
+        assert!(tasks[0].assigned_workers.iter().all(|worker| *worker <= 2));
+        assert_eq!(tasks[0].candidate_producer, 0);
         assert_eq!(tasks[0].package_hash, package_hash);
         assert_eq!(
             tasks[0].canonical_work_package.as_slice(),
@@ -660,7 +664,7 @@ fn submit_candidate_rejects_report_not_bound_to_work_package() {
         for report in cases {
             assert_noop!(
                 MiniJam::submit_candidate(
-                    RuntimeOrigin::signed(6),
+                    RuntimeOrigin::signed(1),
                     Box::new(envelope_with_report(0, 0, report))
                 ),
                 pallet_minijam::Error::<Test>::InvalidReportProjection
@@ -676,10 +680,27 @@ fn submit_candidate_rejects_report_not_bound_to_work_package() {
         trailing.canonical_report.try_push(0).unwrap();
         trailing.canonical_report_hash = blake2_256(&trailing.canonical_report);
         assert_noop!(
-            MiniJam::submit_candidate(RuntimeOrigin::signed(6), Box::new(trailing)),
+            MiniJam::submit_candidate(RuntimeOrigin::signed(1), Box::new(trailing)),
             pallet_minijam::Error::<Test>::InvalidReportProjection
         );
         assert!(pallet_minijam::Candidates::<Test>::get(0, 0).is_none());
+    });
+}
+
+#[test]
+fn submit_candidate_requires_assigned_selected_worker() {
+    new_test_ext().execute_with(|| {
+        submit_assigned_service_work();
+        let candidate = envelope(0, 0);
+
+        assert_noop!(
+            MiniJam::submit_candidate(RuntimeOrigin::signed(99), Box::new(candidate.clone())),
+            pallet_minijam::Error::<Test>::CandidateSubmitterNotWorker
+        );
+        assert_noop!(
+            MiniJam::submit_candidate(RuntimeOrigin::signed(2), Box::new(candidate)),
+            pallet_minijam::Error::<Test>::CandidateProducerNotSelected
+        );
     });
 }
 
@@ -774,7 +795,7 @@ fn accepted_candidate_releases_bonds_and_enters_execution_queue() {
             pallet_minijam::WorkStatus::AwaitingCandidate
         );
         assert_ok!(MiniJam::submit_candidate(
-            RuntimeOrigin::signed(6),
+            RuntimeOrigin::signed(1),
             Box::new(envelope(0, 0))
         ));
         let assignment = Workers::assignment(0, 0).unwrap();
@@ -809,8 +830,8 @@ fn accepted_candidate_releases_bonds_and_enters_execution_queue() {
         let work_reason: RuntimeHoldReason = pallet_minijam::HoldReason::WorkDeposit.into();
         let candidate_reason: RuntimeHoldReason = pallet_minijam::HoldReason::CandidateBond.into();
         assert_eq!(Balances::balance_on_hold(&work_reason, &5), 0);
-        assert_eq!(Balances::balance_on_hold(&candidate_reason, &6), 0);
-        assert_eq!(Balances::total_balance(&6), 10_011);
+        assert_eq!(Balances::balance_on_hold(&candidate_reason, &1), 0);
+        assert_eq!(Balances::total_balance(&1), 10_021);
     });
 }
 
@@ -820,7 +841,7 @@ fn accepted_candidate_executes_next_block_and_commits_delta() {
         let pairs = activate_workers();
         assert_ok!(submit_work(5));
         assert_ok!(MiniJam::submit_candidate(
-            RuntimeOrigin::signed(6),
+            RuntimeOrigin::signed(1),
             Box::new(envelope(0, 0))
         ));
         let assignment = Workers::assignment(0, 0).unwrap();
@@ -1095,7 +1116,7 @@ fn imported_report_settles_reserved_service_fuel() {
         let report_hash = envelope.canonical_report_hash;
 
         assert_ok!(MiniJam::submit_candidate(
-            RuntimeOrigin::signed(6),
+            RuntimeOrigin::signed(1),
             Box::new(envelope)
         ));
         let assignment = Workers::assignment(0, 0).unwrap();
@@ -1325,7 +1346,7 @@ fn root_pause_delays_imports_but_still_executes_empty_stf() {
         let pairs = activate_workers();
         assert_ok!(submit_work(5));
         assert_ok!(MiniJam::submit_candidate(
-            RuntimeOrigin::signed(6),
+            RuntimeOrigin::signed(1),
             Box::new(envelope(0, 0))
         ));
         let assignment = Workers::assignment(0, 0).unwrap();
@@ -1372,7 +1393,7 @@ fn root_quarantine_moves_execution_queue_without_executing() {
         let pairs = activate_workers();
         assert_ok!(submit_work(5));
         assert_ok!(MiniJam::submit_candidate(
-            RuntimeOrigin::signed(6),
+            RuntimeOrigin::signed(1),
             Box::new(envelope(0, 0))
         ));
         let assignment = Workers::assignment(0, 0).unwrap();
@@ -1418,7 +1439,7 @@ fn rejected_candidate_is_slashed_and_advances_round() {
         let pairs = activate_workers();
         assert_ok!(submit_work(5));
         assert_ok!(MiniJam::submit_candidate(
-            RuntimeOrigin::signed(6),
+            RuntimeOrigin::signed(1),
             Box::new(envelope(0, 0))
         ));
         let assignment = Workers::assignment(0, 0).unwrap();
@@ -1442,7 +1463,7 @@ fn rejected_candidate_is_slashed_and_advances_round() {
         let work = MiniJam::work(0).unwrap();
         assert_eq!(work.round, 1);
         assert_eq!(work.status, pallet_minijam::WorkStatus::AwaitingCandidate);
-        assert_eq!(Balances::total_balance(&6), 9_991);
+        assert_eq!(Balances::total_balance(&1), 10_001);
     });
 }
 

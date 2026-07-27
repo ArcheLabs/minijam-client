@@ -1816,6 +1816,9 @@ mod tests {
         let tasks = vec![minijam_protocol::WorkerTaskV1 {
             work_id: 42,
             round: 1,
+            assignment_epoch: 3,
+            assigned_workers: vec![0, 1, 2].try_into().unwrap(),
+            candidate_producer: 0,
             package_hash,
             canonical_work_package: vec![1, 2, 3].try_into().unwrap(),
             bundle_ref: bundle_ref.clone(),

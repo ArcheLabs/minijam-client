@@ -241,6 +241,9 @@ impl DecodeWithMemTracking for ReportEnvelopeV1 {}
 pub struct WorkerTaskV1 {
     pub work_id: WorkId,
     pub round: AssignmentRound,
+    pub assignment_epoch: EpochIndex,
+    pub assigned_workers: WorkerVoteAssignments,
+    pub candidate_producer: WorkerId,
     pub package_hash: Hash,
     pub canonical_work_package: CanonicalWorkPackageBytes,
     pub bundle_ref: ContentRef,
