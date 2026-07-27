@@ -213,6 +213,10 @@ pub mod pallet {
     >;
 
     #[pallet::storage]
+    pub type AssignmentEpochs<T> =
+        StorageDoubleMap<_, Blake2_128Concat, u64, Blake2_128Concat, u8, EpochIndex, OptionQuery>;
+
+    #[pallet::storage]
     pub type AssignedWorkCount<T> =
         StorageMap<_, Blake2_128Concat, (EpochIndex, u8), u32, ValueQuery>;
 
@@ -683,7 +687,8 @@ pub mod pallet {
             VotingRounds::<T>::insert(
                 (work_id, round),
                 VotingRound::<T> {
-                    assignment_epoch: CurrentEpoch::<T>::get(),
+                    assignment_epoch: AssignmentEpochs::<T>::get(work_id, round)
+                        .ok_or(Error::<T>::NotAssigned)?,
                     candidate_hash,
                     deadline,
                     support: 0,
@@ -725,6 +730,16 @@ pub mod pallet {
                     })
                 })
                 .collect()
+        }
+
+        pub fn clear_assignment(work_id: u64, round: u8) {
+            if let Some(assignment) = Assignments::<T>::take(work_id, round) {
+                for worker_id in assignment {
+                    AssignmentKeys::<T>::remove((work_id, round, worker_id));
+                    Votes::<T>::remove((work_id, round, worker_id));
+                }
+            }
+            AssignmentEpochs::<T>::remove(work_id, round);
         }
 
         fn validate_unsigned_vote(
@@ -849,6 +864,7 @@ pub mod pallet {
                 *count = count.saturating_add(1);
             });
             Assignments::<T>::insert(work_id, round, &assigned);
+            AssignmentEpochs::<T>::insert(work_id, round, epoch);
             Ok(assigned)
         }
 

@@ -649,6 +649,34 @@ fn pending_worker_tasks_project_finalized_worker_inputs() {
 }
 
 #[test]
+fn assignment_epoch_survives_epoch_transition() {
+    new_test_ext().execute_with(|| {
+        activate_workers();
+        assert_ok!(MiniJam::submit_work(
+            RuntimeOrigin::signed(5),
+            work_package(31),
+            bundle_ref(32)
+        ));
+        assert_eq!(
+            pallet_minijam_workers::AssignmentEpochs::<Test>::get(0, 0),
+            Some(1)
+        );
+
+        pallet_minijam_workers::CurrentEpoch::<Test>::put(2);
+        let task = MiniJam::pending_worker_tasks().pop().unwrap();
+        assert_eq!(task.assignment_epoch, 1);
+
+        assert_ok!(Workers::open_voting(0, 0, [7; 32], 120));
+        assert_eq!(
+            pallet_minijam_workers::VotingRounds::<Test>::get((0, 0))
+                .unwrap()
+                .assignment_epoch,
+            1
+        );
+    });
+}
+
+#[test]
 fn submit_candidate_rejects_report_not_bound_to_work_package() {
     new_test_ext().execute_with(|| {
         let package_hash = submit_assigned_service_work();

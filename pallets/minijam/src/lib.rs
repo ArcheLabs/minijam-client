@@ -1134,7 +1134,9 @@ pub mod pallet {
                     Some(WorkerTaskV1 {
                         work_id,
                         round: work.round,
-                        assignment_epoch: pallet_minijam_workers::CurrentEpoch::<T>::get(),
+                        assignment_epoch: pallet_minijam_workers::AssignmentEpochs::<T>::get(
+                            work_id, work.round,
+                        )?,
                         assigned_workers,
                         candidate_producer,
                         package_hash: work.package_hash,
@@ -1189,6 +1191,7 @@ pub mod pallet {
                     round: work.round,
                 });
             }
+            pallet_minijam_workers::Pallet::<T>::clear_assignment(work_id, work.round);
             if work.round.saturating_add(1) >= T::MaxCandidateRounds::get() {
                 Self::fail_work(work_id, &mut work)?;
                 return Ok(());
@@ -1267,6 +1270,7 @@ pub mod pallet {
                     .map_err(|_| Error::<T>::ExecutionQueueFull)
             })?;
             Self::remove_pending(work_id);
+            pallet_minijam_workers::Pallet::<T>::clear_assignment(work_id, work.round);
             Self::deposit_event(Event::CandidateAccepted {
                 work_id,
                 round: work.round,
@@ -1287,6 +1291,7 @@ pub mod pallet {
             work.status = WorkStatus::Failed;
             Works::<T>::insert(work_id, &*work);
             Self::remove_pending(work_id);
+            pallet_minijam_workers::Pallet::<T>::clear_assignment(work_id, work.round);
             Self::deposit_event(Event::WorkFailed { work_id });
             Ok(())
         }
