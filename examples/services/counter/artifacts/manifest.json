@@ -1,0 +1,21 @@
+{
+  "name": "minijam-counter-services",
+  "abi_version": 1,
+  "toolchain": "service-toolchain/compiler/toolchain.lock",
+  "artifacts": {
+    "c": {
+      "source": "examples/services/counter/service.c",
+      "blob": "counter-c.blob",
+      "polkavm": "counter-c.polkavm",
+      "byte_len": 1310,
+      "sha256": "f25511f20923087fdaaebb979be47c421e7f89c5cb0376e7c69f50329ae99472"
+    },
+    "cpp": {
+      "source": "examples/services/counter/service.cpp",
+      "blob": "counter-cpp.blob",
+      "polkavm": "counter-cpp.polkavm",
+      "byte_len": 1310,
+      "sha256": "f25511f20923087fdaaebb979be47c421e7f89c5cb0376e7c69f50329ae99472"
+    }
+  }
+}
