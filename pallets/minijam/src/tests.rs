@@ -741,7 +741,7 @@ fn non_selected_worker_candidate_is_rejected() {
 }
 
 #[test]
-fn selected_worker_candidate_succeeds() {
+fn selected_worker_candidate_succeeds_with_runtime_origins() {
     new_test_ext().execute_with(|| {
         let package_hash = submit_assigned_service_work();
         assert_ok!(MiniJam::submit_candidate(
