@@ -1,0 +1,29 @@
+[package]
+name = "minijam-playground-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+minijam-chain-client = { path = "../minijam-chain-client" }
+minijam-compiler-api = { path = "../minijam-compiler-api" }
+minijam-protocol = { path = "../minijam-protocol" }
+minijam-work-package-builder = { path = "../minijam-work-package-builder" }
+parity-scale-codec.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sp-core = { workspace = true, default-features = true }
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tower = { version = "0.5.2", features = ["util"] }
+
+[[bin]]
+name = "minijam-playground-api"
+path = "src/main.rs"
