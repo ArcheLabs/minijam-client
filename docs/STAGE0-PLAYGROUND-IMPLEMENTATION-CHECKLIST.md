@@ -68,11 +68,11 @@ Evidence:
 
 ## M4: Finalized context and WorkPackage builder
 
-- [ ] Finalized context and historical `At` RPCs are implemented.
-- [ ] Pure Rust WorkPackage builder emits canonical package and Jambda bundle.
-- [ ] Bundle/CID golden tests pass.
-- [ ] Worker state reads are bound to the package lookup anchor.
-- [ ] Fixed allow-all authorization is deterministic and non-user-selectable.
+- [x] Finalized context and historical `At` RPCs are implemented.
+- [x] Pure Rust WorkPackage builder emits canonical package and Jambda bundle.
+- [x] Bundle/CID golden tests pass.
+- [x] Worker state reads are bound to the package lookup anchor.
+- [x] Fixed allow-all authorization is deterministic and non-user-selectable.
 
 ## M5: Chain client and Compiler
 
