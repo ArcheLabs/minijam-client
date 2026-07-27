@@ -1,0 +1,8 @@
+schema = 1
+clang_major = 20
+polkatool = "0.32.0"
+polkavm_git = "UNRESOLVED"
+polkavm_to_jam_git = "UNRESOLVED"
+
+# UNRESOLVED entries are release blockers. They may not be replaced with
+# floating branches or unverified binaries.
