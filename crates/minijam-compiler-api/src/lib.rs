@@ -353,6 +353,29 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "Os"));
     }
 
+    #[test]
+    fn direct_backend_runs_repository_compiler_without_nested_docker() {
+        let mut service = service();
+        service.config.direct = true;
+        let request = CompileRequest {
+            language: Language::C,
+            source: "int x;".into(),
+            optimization: Optimization::O0,
+        };
+        let command =
+            service.sandbox_command(Path::new("/tmp/in.c"), Path::new("/tmp/out"), &request);
+        assert_eq!(
+            command.as_std().get_program(),
+            Path::new("/repo/scripts/compile-service")
+        );
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>();
+        assert_eq!(args, ["c", "/tmp/in.c", "/tmp/out", "O0"]);
+    }
+
     #[tokio::test]
     async fn oversized_source_is_rejected_before_spawning_compiler() {
         let response = service()
