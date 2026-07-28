@@ -55,6 +55,7 @@ test("Build, signed Create, Work, finalized state, and signed Upgrade cross proc
   const upgradedCodeHash = page.locator(".upgrade-actions .mono");
   await expect(upgradedCodeHash).not.toHaveText("No upgraded artifact yet");
   const upgradedHash = await upgradedCodeHash.textContent();
+  expect(upgradedHash).toMatch(/^0x[0-9a-f]{64}$/i);
   expect(upgradedHash).not.toBe(initialCodeHash);
   await page.getByRole("button", { name: "Upgrade Service" }).click();
   await page.getByRole("button", { name: "Confirm & sign" }).click();
@@ -62,6 +63,34 @@ test("Build, signed Create, Work, finalized state, and signed Upgrade cross proc
   await page.getByRole("button", { name: `Open Service ${serviceId}` }).click();
   await expect(page.getByText(upgradedHash ?? "")).toBeVisible();
   await expect(page.getByText("Available")).toBeVisible();
+
+  await cryptoWaitReady();
+  const nonController = sr25519PairFromSeed(new Uint8Array(32).fill(8));
+  const params = {
+    serviceId,
+    serviceCodeHash: upgradedHash!,
+    payloadBase64: "AQAAAAAAAAA=",
+    extrinsicsBase64: []
+  };
+  const expiry = Math.floor(Date.now() / 1000) + 120;
+  const preparedResponse = await page.request.post("/api/v1/actions/prepare", {
+    data: {
+      account: u8aToHex(nonController.publicKey),
+      action: "work",
+      paramsHash: paramsHash(params),
+      expiry
+    }
+  });
+  expect(preparedResponse.ok()).toBeTruthy();
+  const prepared = await preparedResponse.json() as { actionId: string; signingPayload: string };
+  const payload = Uint8Array.from(prepared.signingPayload.slice(2).match(/.{2}/g)!.map((byte) => Number.parseInt(byte, 16)));
+  const signature = u8aToHex(sr25519Sign(payload, nonController));
+  const nonceBefore = await relayerNonce();
+  const forbidden = await page.request.post("/api/v1/work", {
+    data: { authorization: { actionId: prepared.actionId, signature }, ...params }
+  });
+  expect(forbidden.status()).toBe(403);
+  expect(await relayerNonce()).toBe(nonceBefore);
 
   const external = browserRequests.filter((url) =>
     /ws:\/\/|wss:\/\/|:9944|internal\/v1\/compile|worker-[123]/i.test(url)
@@ -97,34 +126,6 @@ test("a non-terminal Work survives Playground and Worker restart without a secon
   expect(new Set(workKeys).size).toBe(workKeys.length);
   const recoveryLogs = composeOutput("logs", "--no-color", "playground-api", "worker-1", "worker-2", "worker-3");
   expect(recoveryLogs).not.toMatch(/duplicate (work|candidate|vote)|already (submitted|voted)/i);
-});
-
-test("a non-controller receives 403 without consuming the relayer nonce", async ({ request }) => {
-  await cryptoWaitReady();
-  const pair = sr25519PairFromSeed(new Uint8Array(32).fill(8));
-  const account = u8aToHex(pair.publicKey);
-  const serviceResponse = await request.get(`/api/v1/services/${createdServiceId}`);
-  const service = await serviceResponse.json() as { codeHash: string };
-  const params = {
-    serviceId: createdServiceId,
-    serviceCodeHash: service.codeHash,
-    payloadBase64: "AQAAAAAAAAA=",
-    extrinsicsBase64: []
-  };
-  const expiry = Math.floor(Date.now() / 1000) + 120;
-  const preparedResponse = await request.post("/api/v1/actions/prepare", {
-    data: { account, action: "work", paramsHash: paramsHash(params), expiry }
-  });
-  expect(preparedResponse.ok()).toBeTruthy();
-  const prepared = await preparedResponse.json() as { actionId: string; signingPayload: string };
-  const payload = Uint8Array.from(prepared.signingPayload.slice(2).match(/.{2}/g)!.map((byte) => Number.parseInt(byte, 16)));
-  const signature = u8aToHex(sr25519Sign(payload, pair));
-  const nonceBefore = await relayerNonce();
-  const response = await request.post("/api/v1/work", {
-    data: { authorization: { actionId: prepared.actionId, signature }, ...params }
-  });
-  expect(response.status()).toBe(403);
-  expect(await relayerNonce()).toBe(nonceBefore);
 });
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
