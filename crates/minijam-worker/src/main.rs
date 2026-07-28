@@ -234,19 +234,7 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let identity_ready = signing_pair
-        .as_ref()
-        .zip(config.worker_id)
-        .is_some_and(|(pair, worker_id)| {
-            chain
-                .registered_session_key(worker_id)
-                .is_ok_and(|key| key == Some(pair.public().0))
-        });
-    let dependencies_ready = chain
-        .genesis_hash()
-        .is_ok_and(|hash| hash == config.chain_id)
-        && check_bundle_gateway_ready(&config.ipfs_gateway).is_ok();
-    health.set_ready(identity_ready && dependencies_ready);
+    refresh_health(&health, &config, signing_pair.as_ref());
     let fetcher = IpfsGatewayFetcher::new(BlockingHttpBytesClient, config.ipfs_gateway.clone());
     let mut runner = WorkerRunner::with_statuses(
         chain,
@@ -280,8 +268,34 @@ fn main() {
             signing_pair.as_ref(),
         ) {
             eprintln!("minijam worker poll failed: {error:?}");
+            health.set_ready(false);
+        } else {
+            refresh_health(&health, &config, signing_pair.as_ref());
         }
     }
+}
+
+fn refresh_health(
+    health: &WorkerHealth,
+    config: &WorkerConfig,
+    signing_pair: Option<&sp_core::sr25519::Pair>,
+) {
+    let Ok(chain) = BlockingHttpWorkerChainSource::new(config.rpc_url.clone()) else {
+        health.set_ready(false);
+        return;
+    };
+    let identity_ready = signing_pair
+        .zip(config.worker_id)
+        .is_some_and(|(pair, worker_id)| {
+            chain
+                .registered_session_key(worker_id)
+                .is_ok_and(|key| key == Some(pair.public().0))
+        });
+    let dependencies_ready = chain
+        .genesis_hash()
+        .is_ok_and(|hash| hash == config.chain_id)
+        && check_bundle_gateway_ready(&config.ipfs_gateway).is_ok();
+    health.set_ready(identity_ready && dependencies_ready);
 }
 
 fn poll_and_persist<C, F, D>(
