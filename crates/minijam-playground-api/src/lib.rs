@@ -1005,7 +1005,8 @@ async fn create_service(
         "minMemoGas": request.min_memo_gas,
     });
     let params_hash = hash_json(&params)?;
-    let account = playground.consume_action(&request.authorization, "create", params_hash)?;
+    let account =
+        playground.consume_action(&request.authorization, "create_service", params_hash)?;
     let action_id = decode_array::<32>(&request.authorization.action_id)?;
     let operation =
         playground.insert_operation(OperationKind::Create, account, action_id, &params)?;
@@ -1036,7 +1037,8 @@ async fn upgrade_service(
         "minMemoGas": request.min_memo_gas,
     });
     let params_hash = hash_json(&params)?;
-    let account = playground.consume_action(&request.authorization, "upgrade", params_hash)?;
+    let account =
+        playground.consume_action(&request.authorization, "upgrade_service", params_hash)?;
     let finalized = playground.chain()?.finalized_context().await?;
     if playground
         .chain()?
@@ -1465,6 +1467,22 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use tower::ServiceExt;
 
+    #[test]
+    fn rust_params_hash_matches_shared_playground_vectors() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../test-vectors/playground-actions.json"
+        ))
+        .unwrap();
+        for vector in vectors.as_array().unwrap() {
+            assert_eq!(
+                hex(&hash_json(&vector["params"]).unwrap()),
+                vector["paramsHash"].as_str().unwrap(),
+                "{}",
+                vector["name"].as_str().unwrap()
+            );
+        }
+    }
+
     fn playground(path: &Path) -> Playground {
         Playground::open(
             path,
@@ -1717,7 +1735,7 @@ mod tests {
         let prepared = playground
             .prepare(PrepareActionRequest {
                 account: hex(&pair.public().0),
-                action: "create".into(),
+                action: "create_service".into(),
                 params_hash: hex(&params_hash),
                 expiry: now() + 60,
             })
@@ -1730,12 +1748,12 @@ mod tests {
 
         assert_eq!(
             playground
-                .consume_action(&authorization, "create", params_hash)
+                .consume_action(&authorization, "create_service", params_hash)
                 .unwrap(),
             pair.public().0
         );
         assert!(matches!(
-            playground.consume_action(&authorization, "create", params_hash),
+            playground.consume_action(&authorization, "create_service", params_hash),
             Err(ApiError::Replayed)
         ));
     }
@@ -1952,7 +1970,7 @@ mod tests {
         let prepared = playground
             .prepare(PrepareActionRequest {
                 account: hex(&pair.public().0),
-                action: "upgrade".into(),
+                action: "upgrade_service".into(),
                 params_hash: hex(&hash_json(&params).unwrap()),
                 expiry: now() + 60,
             })

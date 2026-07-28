@@ -1,0 +1,69 @@
+[
+  {
+    "name": "create-empty",
+    "action": "create_service",
+    "params": {
+      "blobBase64": "",
+      "codeHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "minItemGas": 10,
+      "minMemoGas": 20
+    },
+    "paramsHash": "0x0b6299403d064a34d4e41aeac30a37adbc898302cb40affb52a39424c06f028f"
+  },
+  {
+    "name": "create-nonempty",
+    "action": "create_service",
+    "params": {
+      "blobBase64": "AQID",
+      "codeHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+      "minItemGas": 30,
+      "minMemoGas": 40
+    },
+    "paramsHash": "0x7e28cc29ee9d46df04f8b453b68e150308faf8788d3475f60906dbbb00ff52de"
+  },
+  {
+    "name": "upgrade",
+    "action": "upgrade_service",
+    "params": {
+      "serviceId": 7,
+      "blobBase64": "BAUG",
+      "codeHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "minItemGas": 50,
+      "minMemoGas": 60
+    },
+    "paramsHash": "0xdfea85cf0d0c5601a732fb046fa75ec36dc22a00065ab3207643f625f5a49828"
+  },
+  {
+    "name": "work-empty",
+    "action": "work",
+    "params": {
+      "serviceId": 7,
+      "serviceCodeHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "payloadBase64": "",
+      "extrinsicsBase64": []
+    },
+    "paramsHash": "0xe4020f574ea114f02876ae7095878c8ab8e0fd24b2aba22dd7f89f3ca54f2804"
+  },
+  {
+    "name": "work-payload",
+    "action": "work",
+    "params": {
+      "serviceId": 7,
+      "serviceCodeHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "payloadBase64": "aW5jcmVtZW50",
+      "extrinsicsBase64": []
+    },
+    "paramsHash": "0xad462555314c7023b8398a239391bf0f4a34aa203acab3ee28bf9081c919ffe2"
+  },
+  {
+    "name": "work-extrinsic",
+    "action": "work",
+    "params": {
+      "serviceId": 7,
+      "serviceCodeHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "payloadBase64": "AQ==",
+      "extrinsicsBase64": ["AgM=", "BA=="]
+    },
+    "paramsHash": "0xe6a216a20fdeeeff050f4ae187dfaedb8684e19956d45f1c4483caaee2bc5083"
+  }
+]
