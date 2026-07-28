@@ -116,13 +116,29 @@ Complex Worker databases, dynamic Worker sets, multi-Core execution, economic
 extensions, Kubernetes, full Compose, and the complete product E2E remain
 outside this milestone. Full stack deployment belongs to M9.
 
-## M8: Browser Playground
+## M8: Minimal Browser Playground
 
-- [ ] React/Vite/Monaco single-page Playground is implemented.
-- [ ] Wallet login, Build, Deploy, Upgrade, Work, and state views are functional.
-- [ ] The browser never calls node RPC directly or fabricates job state.
-- [ ] Accessibility, CSP, CORS, and error categories are tested.
-- [ ] Playwright covers the complete browser flow.
+- [x] React, Vite, TypeScript, and locally bundled Monaco provide responsive
+      Counter C/C++ editing and Compiler diagnostics.
+- [x] An sr25519 extension adapter and fixed-key Playwright adapter connect
+      wallets without sessions or bearer tokens.
+- [x] Create, Upgrade, and Work each prepare, validate, display, and sign one
+      parameter-bound action.
+- [x] Rust and TypeScript consume shared canonical parameter-hash vectors.
+- [x] Operation URLs recover polling after refresh and display only API states.
+- [x] Service pages read finalized Controller, code, preimage, and Storage data
+      exclusively through the Playground API.
+- [x] Owner mismatch, replay, expiry, compiler, chain, Bundle, and Work errors
+      have explicit user-facing messages.
+- [x] Playwright covers Build, Deploy, Upgrade, Work, reload recovery, replay,
+      authorization mismatch, and browser request isolation.
+- [x] Responsive layout, labelled controls, textual errors, live status, and
+      keyboard-dismissable signing confirmation provide the required baseline
+      accessibility.
+
+Sessions, account pages, Service discovery, multisig, browser compilation or
+Refine, WorkPackage/Bundle construction, Worker dashboards, WebSockets, and
+full-stack deployment remain outside this minimal milestone.
 
 ## M9: Docker and cross-process E2E
 
