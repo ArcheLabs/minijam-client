@@ -258,10 +258,11 @@ where
         block_on(runner.poll_once_with_metrics(metrics))?
     };
     let submitted_votes = if config.submit_support_votes {
-        block_on(runner.submit_support_votes(
+        block_on(runner.submit_refine_votes(
             config.worker_id.unwrap(),
             signing_pair.expect("signing pair is checked before polling"),
             config.chain_id,
+            config.core_index,
             Some(metrics),
         ))?
         .len()

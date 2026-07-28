@@ -406,6 +406,23 @@ pub struct WorkerVoteTaskV1 {
 impl DecodeWithMemTracking for WorkerVoteTaskV1 {}
 
 #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+pub struct WorkerVerificationTaskV1 {
+    pub work_id: WorkId,
+    pub round: AssignmentRound,
+    pub assignment_epoch: EpochIndex,
+    pub candidate_report_hash: Hash,
+    pub candidate_report: CanonicalReportBytes,
+    pub deadline: BlockNumber,
+    pub assigned_workers: WorkerVoteAssignments,
+    pub submitted_votes: WorkerVoteSubmissions,
+    pub package_hash: Hash,
+    pub canonical_work_package: CanonicalWorkPackageBytes,
+    pub bundle_ref: ContentRef,
+}
+
+impl DecodeWithMemTracking for WorkerVerificationTaskV1 {}
+
+#[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
 pub struct MiniJamWorkBundleV1 {
     pub protocol_version: u16,
     pub package_hash: Hash,

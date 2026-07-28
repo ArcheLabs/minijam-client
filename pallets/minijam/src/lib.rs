@@ -37,7 +37,7 @@ pub mod pallet {
         blake2_256, CanonicalPreimageBytes, CanonicalReportBytes, CanonicalWorkPackageBytes,
         ContentRef, Hash, PreimageBatch, PreimageMetadataV1, ProtocolStateChange, ReportEnvelopeV1,
         StateOperation, StateValue, SystemCommandV1, SystemOpBatch, SystemOpV1, WorkerTaskV1,
-        PROTOCOL_VERSION_V1,
+        WorkerVerificationTaskV1, PROTOCOL_VERSION_V1,
     };
     use minijam_state_adapter::{validate_execution_output, ValidatedDelta, ValidationError};
     use pallet_minijam_workers::RoundDecision;
@@ -1175,6 +1175,36 @@ pub mod pallet {
                 .collect::<Vec<_>>();
             tasks.sort_by_key(|task| (task.work_id, task.round, task.package_hash));
             tasks
+        }
+
+        pub fn open_worker_verification_tasks() -> Vec<WorkerVerificationTaskV1> {
+            pallet_minijam_workers::Pallet::<T>::open_vote_tasks()
+                .into_iter()
+                .filter_map(|task| {
+                    let work = Works::<T>::get(task.work_id)?;
+                    if work.round != task.round || work.status != WorkStatus::Voting {
+                        return None;
+                    }
+                    let candidate = Candidates::<T>::get(task.work_id, task.round)?;
+                    Some(WorkerVerificationTaskV1 {
+                        work_id: task.work_id,
+                        round: task.round,
+                        assignment_epoch: task.assignment_epoch,
+                        candidate_report_hash: task.candidate_report_hash,
+                        candidate_report: candidate.envelope.canonical_report,
+                        deadline: task.deadline,
+                        assigned_workers: task.assigned_workers,
+                        submitted_votes: task.submitted_votes,
+                        package_hash: work.package_hash,
+                        canonical_work_package: work
+                            .canonical_work_package
+                            .to_vec()
+                            .try_into()
+                            .ok()?,
+                        bundle_ref: work.bundle_ref,
+                    })
+                })
+                .collect()
         }
 
         fn prepare_round(work_id: WorkId) -> DispatchResult {

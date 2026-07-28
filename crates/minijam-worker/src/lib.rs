@@ -28,8 +28,8 @@ use jp_core_primitives::{
 };
 use jp_vm_interp::InterpBackend;
 use minijam_protocol::{
-    stage0, BulletinEvidence, ContentRef, Hash, ReportEnvelopeV1, Verdict, WorkId, WorkerId,
-    WorkerVoteV1, PROTOCOL_VERSION_V1,
+    stage0, BulletinEvidence, ContentRef, Hash, OpposeReason, ReportEnvelopeV1, Verdict, WorkId,
+    WorkerId, WorkerVoteV1, PROTOCOL_VERSION_V1,
 };
 use minijam_worker_engine::{
     fetch::{fetch_verified_content, ContentFetcher, FetchError, HttpBytesClient},
@@ -237,9 +237,13 @@ pub struct VoteTask {
     pub round: u8,
     pub assignment_epoch: u32,
     pub candidate_report_hash: Hash,
+    pub candidate_report: Vec<u8>,
     pub deadline: u32,
     pub assigned_workers: Vec<WorkerId>,
     pub submitted_votes: Vec<WorkerId>,
+    pub package_hash: Hash,
+    pub canonical_work_package: Vec<u8>,
+    pub bundle_ref: ContentRef,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -791,7 +795,7 @@ pub fn decode_pending_work_tasks_response(encoded: &str) -> Result<Vec<WorkTask>
 
 pub fn decode_open_vote_tasks_response(encoded: &str) -> Result<Vec<VoteTask>, WorkerError> {
     let bytes = decode_hex(encoded)?;
-    let tasks = Vec::<minijam_protocol::WorkerVoteTaskV1>::decode(&mut bytes.as_slice())
+    let tasks = Vec::<minijam_protocol::WorkerVerificationTaskV1>::decode(&mut bytes.as_slice())
         .map_err(|error| WorkerError::Chain(format!("invalid open vote task batch: {error}")))?;
     Ok(tasks
         .into_iter()
@@ -800,9 +804,13 @@ pub fn decode_open_vote_tasks_response(encoded: &str) -> Result<Vec<VoteTask>, W
             round: task.round,
             assignment_epoch: task.assignment_epoch,
             candidate_report_hash: task.candidate_report_hash,
+            candidate_report: task.candidate_report.into_inner(),
             deadline: task.deadline,
             assigned_workers: task.assigned_workers.into_inner(),
             submitted_votes: task.submitted_votes.into_inner(),
+            package_hash: task.package_hash,
+            canonical_work_package: task.canonical_work_package.into_inner(),
+            bundle_ref: task.bundle_ref,
         })
         .collect())
 }
@@ -812,26 +820,65 @@ pub fn sr25519_pair_from_uri(uri: &str) -> Result<sr25519::Pair, WorkerError> {
         .map_err(|error| WorkerError::Signing(format!("invalid sr25519 key URI: {error}")))
 }
 
-pub fn prepare_support_vote_submission(
+pub fn prepare_refine_backed_vote<S>(
+    state: &S,
     worker_id: WorkerId,
     pair: &sr25519::Pair,
     chain_id: Hash,
+    core_index: u16,
     task: &VoteTask,
-) -> Option<PreparedVoteSubmission> {
+    bundle: &[u8],
+) -> Result<Option<PreparedVoteSubmission>, WorkerError>
+where
+    S: ProtocolStateSource,
+{
     if !task.assigned_workers.contains(&worker_id) || task.submitted_votes.contains(&worker_id) {
-        return None;
+        return Ok(None);
     }
+    if minijam_protocol::blake2_256(&task.candidate_report) != task.candidate_report_hash {
+        return Err(WorkerError::Refine(
+            "candidate canonical report does not match its on-chain hash".into(),
+        ));
+    }
+    let work_task = WorkTask {
+        work_id: task.work_id,
+        round: task.round,
+        assignment_epoch: task.assignment_epoch,
+        assigned_workers: task.assigned_workers.clone(),
+        candidate_producer: task
+            .assigned_workers
+            .iter()
+            .copied()
+            .min()
+            .unwrap_or_default(),
+        package_hash: task.package_hash,
+        canonical_work_package: task.canonical_work_package.clone(),
+        bundle_ref: task.bundle_ref.clone(),
+    };
+    let local = prepare_candidate_envelope(state, chain_id, core_index, &work_task, bundle)?;
+    let candidate_metadata =
+        jambda_minijam_executive::MiniJamExecutive::project_report(&task.candidate_report)
+            .map_err(|error| {
+                WorkerError::Refine(format!("invalid candidate report projection: {error:?}"))
+            })?;
+    let verdict = if local.envelope.canonical_report_hash == task.candidate_report_hash
+        && local.envelope.projected_metadata == candidate_metadata
+    {
+        Verdict::Support
+    } else {
+        Verdict::Oppose(OpposeReason::InvalidRefine)
+    };
     let vote = WorkerVoteV1 {
         work_id: task.work_id,
         round: task.round,
         assignment_epoch: task.assignment_epoch,
         candidate_report_hash: task.candidate_report_hash,
-        verdict: Verdict::Support,
+        verdict,
         deadline: task.deadline,
         chain_id,
         protocol_version: PROTOCOL_VERSION_V1,
     };
-    Some(prepare_vote_submission(worker_id, pair, vote))
+    Ok(Some(prepare_vote_submission(worker_id, pair, vote)))
 }
 
 pub fn prepare_vote_submission(
@@ -1442,13 +1489,16 @@ where
 
 impl<C, F, D> WorkerRunner<C, F, D>
 where
-    C: WorkerChainSource + WorkerTxSubmitter,
+    C: WorkerChainSource + WorkerTxSubmitter + ProtocolStateSource,
+    F: ContentFetcher,
+    D: WorkBundleDecoder,
 {
-    pub async fn submit_support_votes(
+    pub async fn submit_refine_votes(
         &self,
         worker_id: WorkerId,
         pair: &sr25519::Pair,
         chain_id: Hash,
+        core_index: u16,
         metrics: Option<&WorkerMetrics>,
     ) -> Result<Vec<Hash>, WorkerError> {
         let tasks = self.chain.open_vote_tasks().await?;
@@ -1457,8 +1507,32 @@ where
         }
         let mut tx_hashes = Vec::new();
         for task in tasks {
-            let Some(submission) =
-                prepare_support_vote_submission(worker_id, pair, chain_id, &task)
+            if !task.assigned_workers.contains(&worker_id)
+                || task.submitted_votes.contains(&worker_id)
+            {
+                continue;
+            }
+            let bundle =
+                fetch_verified_content(&self.fetcher, &task.bundle_ref, self.max_bundle_bytes)
+                    .await
+                    .map_err(WorkerError::Fetch)?;
+            verify_work_bundle(
+                &task.bundle_ref,
+                &bundle,
+                self.max_bundle_bytes,
+                task.package_hash,
+                &self.decoder,
+            )
+            .map_err(WorkerError::Bundle)?;
+            let Some(submission) = prepare_refine_backed_vote(
+                &self.chain,
+                worker_id,
+                pair,
+                chain_id,
+                core_index,
+                &task,
+                &bundle,
+            )?
             else {
                 continue;
             };
@@ -1536,7 +1610,6 @@ mod tests {
         work::{RefineContext, WorkPackage},
     };
     use minijam_protocol::blake2_256;
-    use minijam_protocol::WorkerVoteTaskV1;
     use minijam_worker_engine::{fetch::MemoryContentFetcher, MiniJamWorkBundleDecoder};
     use parity_scale_codec::Encode;
     use std::sync::Mutex;
@@ -1730,6 +1803,16 @@ mod tests {
         }
     }
 
+    impl ProtocolStateSource for TestVoteSubmitChainSource {
+        fn protocol_state_value_at(
+            &self,
+            _block_hash: [u8; 32],
+            _key: [u8; 31],
+        ) -> Result<Option<Vec<u8>>, WorkerError> {
+            Ok(None)
+        }
+    }
+
     #[async_trait::async_trait]
     impl WorkerChainSource for TestCandidateSubmitChainSource {
         async fn pending_work_tasks(&self) -> Result<Vec<WorkTask>, WorkerError> {
@@ -1845,6 +1928,35 @@ mod tests {
         }
     }
 
+    fn refine_vote_task(
+        work_id: WorkId,
+        assigned_workers: Vec<WorkerId>,
+        submitted_votes: Vec<WorkerId>,
+    ) -> (VoteTask, Vec<u8>) {
+        let (bundle, package_hash) = refine_bundle(work_id as u8);
+        let work = refine_task(work_id, 1, package_hash, &bundle);
+        let candidate =
+            prepare_candidate_envelope(&EmptyProtocolStateSource, [42; 32], 0, &work, &bundle)
+                .unwrap()
+                .envelope;
+        (
+            VoteTask {
+                work_id,
+                round: 1,
+                assignment_epoch: 7,
+                candidate_report_hash: candidate.canonical_report_hash,
+                candidate_report: candidate.canonical_report.into_inner(),
+                deadline: 100,
+                assigned_workers,
+                submitted_votes,
+                package_hash,
+                canonical_work_package: work.canonical_work_package,
+                bundle_ref: work.bundle_ref,
+            },
+            bundle,
+        )
+    }
+
     #[test]
     fn runner_fetches_and_verifies_pending_work_bundles() {
         let (bundle, package_hash) = refine_bundle(7);
@@ -1915,17 +2027,10 @@ mod tests {
 
     #[test]
     fn runner_records_open_vote_task_metrics() {
+        let (vote_task, _) = refine_vote_task(42, vec![0, 1, 2], vec![1]);
         let runner = WorkerRunner::stage0(
             TestVoteChainSource {
-                vote_tasks: vec![VoteTask {
-                    work_id: 42,
-                    round: 1,
-                    assignment_epoch: 7,
-                    candidate_report_hash: [9u8; 32],
-                    deadline: 100,
-                    assigned_workers: vec![0, 1, 2],
-                    submitted_votes: vec![1],
-                }],
+                vote_tasks: vec![vote_task],
             },
             MemoryContentFetcher::new(),
             64,
@@ -1979,14 +2084,23 @@ mod tests {
 
     #[test]
     fn decodes_open_vote_tasks_rpc_response() {
-        let tasks = vec![WorkerVoteTaskV1 {
+        let bundle_ref = ContentRef {
+            cid_v1: b"cid-vote".to_vec().try_into().unwrap(),
+            content_hash: [6; 32],
+            size: 8,
+        };
+        let tasks = vec![minijam_protocol::WorkerVerificationTaskV1 {
             work_id: 42,
             round: 1,
             assignment_epoch: 7,
             candidate_report_hash: [9u8; 32],
+            candidate_report: vec![1, 2].try_into().unwrap(),
             deadline: 100,
             assigned_workers: vec![0, 2, 4].try_into().unwrap(),
             submitted_votes: vec![2].try_into().unwrap(),
+            package_hash: [8; 32],
+            canonical_work_package: vec![3, 4].try_into().unwrap(),
+            bundle_ref: bundle_ref.clone(),
         }];
         let encoded = hex_encode_for_test(&tasks.encode());
 
@@ -1999,27 +2113,32 @@ mod tests {
                 round: 1,
                 assignment_epoch: 7,
                 candidate_report_hash: [9u8; 32],
+                candidate_report: vec![1, 2],
                 deadline: 100,
                 assigned_workers: vec![0, 2, 4],
                 submitted_votes: vec![2],
+                package_hash: [8; 32],
+                canonical_work_package: vec![3, 4],
+                bundle_ref,
             }]
         );
     }
 
     #[test]
-    fn prepares_support_vote_submission_with_session_signature_and_unsigned_extrinsic() {
+    fn prepares_support_only_after_independent_refine() {
         let pair = sr25519::Pair::from_seed(&[1u8; 32]);
-        let task = VoteTask {
-            work_id: 42,
-            round: 1,
-            assignment_epoch: 7,
-            candidate_report_hash: [9u8; 32],
-            deadline: 100,
-            assigned_workers: vec![3, 4, 5],
-            submitted_votes: vec![4],
-        };
-
-        let submission = prepare_support_vote_submission(3, &pair, [42u8; 32], &task).unwrap();
+        let (task, bundle) = refine_vote_task(42, vec![3, 4, 5], vec![4]);
+        let submission = prepare_refine_backed_vote(
+            &EmptyProtocolStateSource,
+            3,
+            &pair,
+            [42u8; 32],
+            0,
+            &task,
+            &bundle,
+        )
+        .unwrap()
+        .unwrap();
 
         assert_eq!(submission.worker_id, 3);
         assert_eq!(submission.vote.work_id, 42);
@@ -2031,42 +2150,46 @@ mod tests {
         ));
         assert!(submission.extrinsic_hex.starts_with("0x"));
         assert!(submission.extrinsic_hex.len() > 16);
-        assert!(prepare_support_vote_submission(4, &pair, [42u8; 32], &task).is_none());
-        assert!(prepare_support_vote_submission(9, &pair, [42u8; 32], &task).is_none());
+        assert!(prepare_refine_backed_vote(
+            &EmptyProtocolStateSource,
+            4,
+            &pair,
+            [42; 32],
+            0,
+            &task,
+            &bundle
+        )
+        .unwrap()
+        .is_none());
+        assert!(prepare_refine_backed_vote(
+            &EmptyProtocolStateSource,
+            9,
+            &pair,
+            [42; 32],
+            0,
+            &task,
+            &bundle
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]
-    fn runner_submits_support_votes_for_assigned_unsubmitted_worker() {
+    fn runner_submits_refine_backed_vote_for_assigned_unsubmitted_worker() {
         let pair = sr25519::Pair::from_seed(&[1u8; 32]);
         let submitted = Arc::new(Mutex::new(Vec::new()));
+        let (assigned, bundle) = refine_vote_task(42, vec![3, 4, 5], vec![4]);
+        let (unassigned, _) = refine_vote_task(43, vec![6, 7, 8], Vec::new());
+        let fetcher = MemoryContentFetcher::new().with_content(&assigned.bundle_ref, bundle);
         let chain = TestVoteSubmitChainSource {
-            vote_tasks: vec![
-                VoteTask {
-                    work_id: 42,
-                    round: 1,
-                    assignment_epoch: 7,
-                    candidate_report_hash: [9u8; 32],
-                    deadline: 100,
-                    assigned_workers: vec![3, 4, 5],
-                    submitted_votes: vec![4],
-                },
-                VoteTask {
-                    work_id: 43,
-                    round: 1,
-                    assignment_epoch: 7,
-                    candidate_report_hash: [8u8; 32],
-                    deadline: 100,
-                    assigned_workers: vec![6, 7, 8],
-                    submitted_votes: Vec::new(),
-                },
-            ],
+            vote_tasks: vec![assigned, unassigned],
             submitted: Arc::clone(&submitted),
         };
-        let runner = WorkerRunner::stage0(chain, MemoryContentFetcher::new(), 64);
+        let runner = WorkerRunner::stage0(chain, fetcher, 4096);
         let metrics = WorkerMetrics::new();
 
         let hashes =
-            block_on(runner.submit_support_votes(3, &pair, [42u8; 32], Some(&metrics))).unwrap();
+            block_on(runner.submit_refine_votes(3, &pair, [42u8; 32], 0, Some(&metrics))).unwrap();
 
         assert_eq!(hashes, vec![[7u8; 32]]);
         assert_eq!(submitted.lock().unwrap().len(), 1);

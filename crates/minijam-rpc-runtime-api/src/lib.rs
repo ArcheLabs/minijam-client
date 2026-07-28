@@ -4,14 +4,14 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use minijam_protocol::{Hash, WorkId, WorkerTaskV1, WorkerVoteTaskV1};
+use minijam_protocol::{Hash, WorkId, WorkerTaskV1, WorkerVerificationTaskV1};
 use sp_api::decl_runtime_apis;
 
 decl_runtime_apis! {
     pub trait MiniJamRuntimeApi {
         fn get_work(work_id: WorkId) -> Option<Vec<u8>>;
         fn get_pending_work_tasks() -> Vec<WorkerTaskV1>;
-        fn get_open_vote_tasks() -> Vec<WorkerVoteTaskV1>;
+        fn get_open_vote_tasks() -> Vec<WorkerVerificationTaskV1>;
         fn get_work_by_package_hash(package_hash: Hash) -> Option<Vec<u8>>;
         fn get_work_id_by_package_hash(package_hash: Hash) -> Option<u64>;
         fn get_work_bundle_ref(work_id: WorkId) -> Option<Vec<u8>>;

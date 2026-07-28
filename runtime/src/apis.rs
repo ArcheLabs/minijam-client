@@ -62,8 +62,8 @@ impl_runtime_apis! {
             pallet_minijam::Pallet::<Runtime>::pending_worker_tasks()
         }
 
-        fn get_open_vote_tasks() -> Vec<minijam_protocol::WorkerVoteTaskV1> {
-            pallet_minijam_workers::Pallet::<Runtime>::open_vote_tasks()
+        fn get_open_vote_tasks() -> Vec<minijam_protocol::WorkerVerificationTaskV1> {
+            pallet_minijam::Pallet::<Runtime>::open_worker_verification_tasks()
         }
 
         fn get_work_by_package_hash(package_hash: minijam_protocol::Hash) -> Option<Vec<u8>> {
