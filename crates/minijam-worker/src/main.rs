@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
+#![feature(generic_const_exprs)]
+#![allow(incomplete_features)]
+#![recursion_limit = "4096"]
 
 use std::{path::PathBuf, sync::Arc, thread, time::Duration};
 
