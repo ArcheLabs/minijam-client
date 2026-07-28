@@ -37,6 +37,14 @@ pub struct Submission {
     pub correlation: Hash,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedSystemOperation {
+    pub encoded_extrinsic: Vec<u8>,
+    pub submitted_nonce: u32,
+    pub system_op_nonce: u64,
+    pub correlation: Hash,
+}
+
 pub struct MiniJamChainClient {
     rpc_url: String,
     request_timeout: Duration,
@@ -45,6 +53,7 @@ pub struct MiniJamChainClient {
     next_nonce: futures::lock::Mutex<NonceCursor>,
     submit_lock: futures::lock::Mutex<()>,
     system_op_lock: futures::lock::Mutex<()>,
+    next_system_op_nonce: futures::lock::Mutex<Option<u64>>,
 }
 
 impl MiniJamChainClient {
@@ -63,6 +72,7 @@ impl MiniJamChainClient {
             next_nonce: futures::lock::Mutex::new(NonceCursor::default()),
             submit_lock: futures::lock::Mutex::new(()),
             system_op_lock: futures::lock::Mutex::new(()),
+            next_system_op_nonce: futures::lock::Mutex::new(None),
         })
     }
 
@@ -203,6 +213,24 @@ impl MiniJamChainClient {
         .await
     }
 
+    pub async fn prepare_create_service(
+        &self,
+        controller: [u8; 32],
+        code_hash: Hash,
+        code_len: u32,
+        min_item_gas: u64,
+        min_memo_gas: u64,
+    ) -> Result<PreparedSystemOperation, ChainClientError> {
+        self.prepare_system_command(SystemCommandV1::CreateService {
+            controller,
+            code_hash,
+            code_len,
+            min_item_gas,
+            min_memo_gas,
+        })
+        .await
+    }
+
     pub async fn submit_upgrade_service(
         &self,
         controller: [u8; 32],
@@ -223,24 +251,95 @@ impl MiniJamChainClient {
         .await
     }
 
+    pub async fn prepare_upgrade_service(
+        &self,
+        controller: [u8; 32],
+        service_id: u32,
+        code_hash: Hash,
+        code_len: u32,
+        min_item_gas: u64,
+        min_memo_gas: u64,
+    ) -> Result<PreparedSystemOperation, ChainClientError> {
+        self.prepare_system_command(SystemCommandV1::UpgradeService {
+            controller,
+            service_id,
+            code_hash,
+            code_len,
+            min_item_gas,
+            min_memo_gas,
+        })
+        .await
+    }
+
     async fn submit_system_command(
         &self,
         command: SystemCommandV1,
     ) -> Result<Submission, ChainClientError> {
+        let prepared = self.prepare_system_command(command).await?;
+        self.submit_prepared_extrinsic(prepared).await
+    }
+
+    async fn prepare_system_command(
+        &self,
+        command: SystemCommandV1,
+    ) -> Result<PreparedSystemOperation, ChainClientError> {
         let _system_op = self.system_op_lock.lock().await;
         let sender = sp_runtime::MultiSigner::Sr25519(self.signer.public())
             .into_account()
             .into();
-        let system_nonce = rpc::system_op_nonce(&*self.rpc.lock().await, sender).await?;
+        let mut next_system_nonce = self.next_system_op_nonce.lock().await;
+        let system_nonce = match *next_system_nonce {
+            Some(nonce) => nonce,
+            None => rpc::system_op_nonce(&*self.rpc.lock().await, sender).await?,
+        };
+        *next_system_nonce = Some(system_nonce.saturating_add(1));
         let correlation =
             minijam_protocol::SystemOpV1::compute_request_id(&sender, system_nonce, &command);
-        self.submit_call(
+        let _submission = self.submit_lock.lock().await;
+        let submitted_nonce = self.allocate_nonce().await?;
+        let genesis = rpc::genesis_hash(&*self.rpc.lock().await).await?;
+        let encoded_extrinsic = extrinsic::sign_call(
+            &self.signer,
+            submitted_nonce,
+            genesis,
             RuntimeCall::MiniJam(pallet_minijam::Call::submit_system_op {
                 command: Box::new(command),
             }),
+        );
+        Ok(PreparedSystemOperation {
+            encoded_extrinsic,
+            submitted_nonce,
+            system_op_nonce: system_nonce,
             correlation,
-        )
-        .await
+        })
+    }
+
+    pub async fn submit_prepared_extrinsic(
+        &self,
+        prepared: PreparedSystemOperation,
+    ) -> Result<Submission, ChainClientError> {
+        let _submission = self.submit_lock.lock().await;
+        match rpc::submit_extrinsic(&*self.rpc.lock().await, &prepared.encoded_extrinsic).await {
+            Ok(extrinsic_hash) => Ok(Submission {
+                extrinsic_hash,
+                submitted_nonce: prepared.submitted_nonce,
+                correlation: prepared.correlation,
+            }),
+            Err(error) if matches!(&error, ChainClientError::Rpc(message) if message.contains("Already Imported") || message.contains("already imported") || message.contains("Stale")) => {
+                Ok(Submission {
+                    extrinsic_hash: minijam_protocol::blake2_256(&prepared.encoded_extrinsic),
+                    submitted_nonce: prepared.submitted_nonce,
+                    correlation: prepared.correlation,
+                })
+            }
+            Err(error) => {
+                self.next_nonce.lock().await.invalidate();
+                if matches!(error, ChainClientError::Rpc(_)) {
+                    let _ = self.reconnect().await;
+                }
+                Err(error)
+            }
+        }
     }
 
     pub async fn submit_preimage(&self, bytes: Vec<u8>) -> Result<Submission, ChainClientError> {

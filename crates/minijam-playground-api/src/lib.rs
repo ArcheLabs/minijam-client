@@ -20,7 +20,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use jp_core_primitives::{simple::ByteSequence, types::Preimage};
-use minijam_chain_client::{FinalizedContext, Submission};
+use minijam_chain_client::{FinalizedContext, PreparedSystemOperation, Submission};
 use minijam_protocol::{StateValue, SystemReceiptV1};
 use parity_scale_codec::{Decode, Encode};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -72,15 +72,15 @@ pub trait ChainGateway: Send + Sync {
         service_id: u32,
         code_hash: [u8; 32],
     ) -> Result<Option<Vec<u8>>, ApiError>;
-    async fn submit_create(
+    async fn prepare_create(
         &self,
         controller: [u8; 32],
         code_hash: [u8; 32],
         code_len: u32,
         min_item_gas: u64,
         min_memo_gas: u64,
-    ) -> Result<Submission, ApiError>;
-    async fn submit_upgrade(
+    ) -> Result<PreparedSystemOperation, ApiError>;
+    async fn prepare_upgrade(
         &self,
         controller: [u8; 32],
         service_id: u32,
@@ -88,6 +88,10 @@ pub trait ChainGateway: Send + Sync {
         code_len: u32,
         min_item_gas: u64,
         min_memo_gas: u64,
+    ) -> Result<PreparedSystemOperation, ApiError>;
+    async fn submit_prepared_system_op(
+        &self,
+        prepared: PreparedSystemOperation,
     ) -> Result<Submission, ApiError>;
     async fn system_receipt(
         &self,
@@ -168,20 +172,20 @@ impl ChainGateway for minijam_chain_client::MiniJamChainClient {
             .map_err(|error| ApiError::Chain(error.to_string()))
     }
 
-    async fn submit_create(
+    async fn prepare_create(
         &self,
         controller: [u8; 32],
         code_hash: [u8; 32],
         code_len: u32,
         min_item_gas: u64,
         min_memo_gas: u64,
-    ) -> Result<Submission, ApiError> {
-        self.submit_create_service(controller, code_hash, code_len, min_item_gas, min_memo_gas)
+    ) -> Result<PreparedSystemOperation, ApiError> {
+        self.prepare_create_service(controller, code_hash, code_len, min_item_gas, min_memo_gas)
             .await
             .map_err(|error| ApiError::Chain(error.to_string()))
     }
 
-    async fn submit_upgrade(
+    async fn prepare_upgrade(
         &self,
         controller: [u8; 32],
         service_id: u32,
@@ -189,8 +193,8 @@ impl ChainGateway for minijam_chain_client::MiniJamChainClient {
         code_len: u32,
         min_item_gas: u64,
         min_memo_gas: u64,
-    ) -> Result<Submission, ApiError> {
-        self.submit_upgrade_service(
+    ) -> Result<PreparedSystemOperation, ApiError> {
+        self.prepare_upgrade_service(
             controller,
             service_id,
             code_hash,
@@ -200,6 +204,15 @@ impl ChainGateway for minijam_chain_client::MiniJamChainClient {
         )
         .await
         .map_err(|error| ApiError::Chain(error.to_string()))
+    }
+
+    async fn submit_prepared_system_op(
+        &self,
+        prepared: PreparedSystemOperation,
+    ) -> Result<Submission, ApiError> {
+        self.submit_prepared_extrinsic(prepared)
+            .await
+            .map_err(|error| ApiError::Chain(error.to_string()))
     }
 
     async fn system_receipt(
@@ -390,6 +403,10 @@ pub struct Operation {
     pub correlation: Option<String>,
     pub extrinsic_hash: Option<String>,
     pub submitted_nonce: Option<u32>,
+    #[serde(skip_serializing)]
+    pub encoded_extrinsic: Option<Vec<u8>>,
+    #[serde(skip_serializing)]
+    pub system_op_nonce: Option<u64>,
     pub result: Option<serde_json::Value>,
     pub error: Option<String>,
     pub created_at: u64,
@@ -469,6 +486,8 @@ impl Playground {
                    correlation BLOB,
                    extrinsic_hash BLOB,
                    submitted_nonce INTEGER,
+                   encoded_extrinsic BLOB,
+                   system_op_nonce INTEGER,
                    result_json TEXT,
                    error TEXT,
                    created_at INTEGER NOT NULL,
@@ -476,6 +495,8 @@ impl Playground {
                  );",
             )
             .map_err(|error| ApiError::Storage(error.to_string()))?;
+        ensure_operation_column(&connection, "encoded_extrinsic", "BLOB")?;
+        ensure_operation_column(&connection, "system_op_nonce", "INTEGER")?;
         Ok(Self {
             config,
             db: Arc::new(Mutex::new(connection)),
@@ -522,32 +543,51 @@ impl Playground {
         let min_memo_gas = json_u64(&operation.request, "minMemoGas")?;
 
         if operation.status == OperationStatus::Prepared {
-            let submission = match operation.kind {
-                OperationKind::Create => {
-                    self.chain()?
-                        .submit_create(
-                            account,
-                            code_hash,
-                            blob.len() as u32,
-                            min_item_gas,
-                            min_memo_gas,
-                        )
-                        .await?
+            let prepared = match operation.encoded_extrinsic.clone() {
+                Some(encoded_extrinsic) => PreparedSystemOperation {
+                    encoded_extrinsic,
+                    submitted_nonce: operation.submitted_nonce.ok_or_else(|| {
+                        ApiError::Storage("prepared operation has no transaction nonce".into())
+                    })?,
+                    system_op_nonce: operation.system_op_nonce.ok_or_else(|| {
+                        ApiError::Storage("prepared operation has no system operation nonce".into())
+                    })?,
+                    correlation: decode_array::<32>(operation.correlation.as_deref().ok_or_else(
+                        || ApiError::Storage("prepared operation has no request id".into()),
+                    )?)?,
+                },
+                None => {
+                    let prepared = match operation.kind {
+                        OperationKind::Create => {
+                            self.chain()?
+                                .prepare_create(
+                                    account,
+                                    code_hash,
+                                    blob.len() as u32,
+                                    min_item_gas,
+                                    min_memo_gas,
+                                )
+                                .await?
+                        }
+                        OperationKind::Upgrade => {
+                            self.chain()?
+                                .prepare_upgrade(
+                                    account,
+                                    json_u64(&operation.request, "serviceId")? as u32,
+                                    code_hash,
+                                    blob.len() as u32,
+                                    min_item_gas,
+                                    min_memo_gas,
+                                )
+                                .await?
+                        }
+                        _ => unreachable!(),
+                    };
+                    self.persist_prepared_system_op(&operation.operation_id, &prepared)?;
+                    prepared
                 }
-                OperationKind::Upgrade => {
-                    self.chain()?
-                        .submit_upgrade(
-                            account,
-                            json_u64(&operation.request, "serviceId")? as u32,
-                            code_hash,
-                            blob.len() as u32,
-                            min_item_gas,
-                            min_memo_gas,
-                        )
-                        .await?
-                }
-                _ => unreachable!(),
             };
+            let submission = self.chain()?.submit_prepared_system_op(prepared).await?;
             self.update_operation(
                 &operation.operation_id,
                 OperationStatus::WaitingReceipt,
@@ -959,7 +999,8 @@ impl Playground {
             .expect("playground db mutex poisoned")
             .query_row(
                 "SELECT operation_id, kind, status, account, action_id, request_json,
-                        correlation, extrinsic_hash, submitted_nonce, result_json, error,
+                        correlation, extrinsic_hash, submitted_nonce, encoded_extrinsic,
+                        system_op_nonce, result_json, error,
                         created_at, updated_at
                  FROM operations WHERE operation_id = ?1",
                 params![operation_id],
@@ -974,7 +1015,8 @@ impl Playground {
         let mut statement = connection
             .prepare(
                 "SELECT operation_id, kind, status, account, action_id, request_json,
-                        correlation, extrinsic_hash, submitted_nonce, result_json, error,
+                        correlation, extrinsic_hash, submitted_nonce, encoded_extrinsic,
+                        system_op_nonce, result_json, error,
                         created_at, updated_at
                  FROM operations ORDER BY created_at, operation_id",
             )
@@ -1023,6 +1065,31 @@ impl Playground {
                     submitted_nonce,
                     result,
                     error,
+                    now() as i64,
+                ],
+            )
+            .map_err(|error| ApiError::Storage(error.to_string()))?;
+        Ok(())
+    }
+
+    fn persist_prepared_system_op(
+        &self,
+        operation_id: &str,
+        prepared: &PreparedSystemOperation,
+    ) -> Result<(), ApiError> {
+        self.db
+            .lock()
+            .expect("playground db mutex poisoned")
+            .execute(
+                "UPDATE operations SET correlation = ?2, submitted_nonce = ?3,
+                 encoded_extrinsic = ?4, system_op_nonce = ?5, updated_at = ?6
+                 WHERE operation_id = ?1 AND status = 'prepared'",
+                params![
+                    operation_id,
+                    prepared.correlation.as_slice(),
+                    prepared.submitted_nonce,
+                    prepared.encoded_extrinsic,
+                    prepared.system_op_nonce as i64,
                     now() as i64,
                 ],
             )
@@ -1470,6 +1537,31 @@ fn enum_json<T: Serialize>(value: T) -> Result<String, ApiError> {
         .ok_or_else(|| ApiError::Storage("invalid enum value".into()))
 }
 
+fn ensure_operation_column(
+    connection: &Connection,
+    name: &str,
+    sql_type: &str,
+) -> Result<(), ApiError> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(operations)")
+        .map_err(|error| ApiError::Storage(error.to_string()))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| ApiError::Storage(error.to_string()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| ApiError::Storage(error.to_string()))?;
+    drop(statement);
+    if !columns.iter().any(|column| column == name) {
+        connection
+            .execute(
+                &format!("ALTER TABLE operations ADD COLUMN {name} {sql_type}"),
+                [],
+            )
+            .map_err(|error| ApiError::Storage(error.to_string()))?;
+    }
+    Ok(())
+}
+
 fn decode_operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Operation> {
     let kind: String = row.get(1)?;
     let status: String = row.get(2)?;
@@ -1478,7 +1570,7 @@ fn decode_operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Operation> {
     let request: String = row.get(5)?;
     let correlation: Option<Vec<u8>> = row.get(6)?;
     let extrinsic_hash: Option<Vec<u8>> = row.get(7)?;
-    let result: Option<String> = row.get(9)?;
+    let result: Option<String> = row.get(11)?;
     Ok(Operation {
         operation_id: row.get(0)?,
         kind: serde_json::from_value(serde_json::Value::String(kind)).map_err(|error| {
@@ -1507,19 +1599,21 @@ fn decode_operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Operation> {
         correlation: correlation.map(|value| hex(&value)),
         extrinsic_hash: extrinsic_hash.map(|value| hex(&value)),
         submitted_nonce: row.get(8)?,
+        encoded_extrinsic: row.get(9)?,
+        system_op_nonce: row.get::<_, Option<i64>>(10)?.map(|value| value as u64),
         result: result
             .map(|value| serde_json::from_str(&value))
             .transpose()
             .map_err(|error| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    9,
+                    11,
                     rusqlite::types::Type::Text,
                     Box::new(error),
                 )
             })?,
-        error: row.get(10)?,
-        created_at: row.get::<_, i64>(11)? as u64,
-        updated_at: row.get::<_, i64>(12)? as u64,
+        error: row.get(12)?,
+        created_at: row.get::<_, i64>(13)? as u64,
+        updated_at: row.get::<_, i64>(14)? as u64,
     })
 }
 
@@ -1570,6 +1664,7 @@ mod tests {
         service_info: Mutex<Option<Vec<u8>>>,
         service_storage: Mutex<Option<Vec<u8>>>,
         service_preimage: Mutex<Option<Vec<u8>>>,
+        submitted_system_extrinsics: Mutex<Vec<Vec<u8>>>,
     }
 
     impl MockChain {
@@ -1586,6 +1681,7 @@ mod tests {
                 service_info: Mutex::new(None),
                 service_storage: Mutex::new(None),
                 service_preimage: Mutex::new(None),
+                submitted_system_extrinsics: Mutex::new(Vec::new()),
             }
         }
 
@@ -1643,19 +1739,23 @@ mod tests {
             Ok(self.service_preimage.lock().unwrap().clone())
         }
 
-        async fn submit_create(
+        async fn prepare_create(
             &self,
             _controller: [u8; 32],
             _code_hash: [u8; 32],
             _code_len: u32,
             _min_item_gas: u64,
             _min_memo_gas: u64,
-        ) -> Result<Submission, ApiError> {
-            self.create_calls.fetch_add(1, Ordering::Relaxed);
-            Ok(Self::submission(1))
+        ) -> Result<PreparedSystemOperation, ApiError> {
+            Ok(PreparedSystemOperation {
+                encoded_extrinsic: vec![1, 1, 1],
+                submitted_nonce: 1,
+                system_op_nonce: 11,
+                correlation: [2; 32],
+            })
         }
 
-        async fn submit_upgrade(
+        async fn prepare_upgrade(
             &self,
             _controller: [u8; 32],
             _service_id: u32,
@@ -1663,9 +1763,33 @@ mod tests {
             _code_len: u32,
             _min_item_gas: u64,
             _min_memo_gas: u64,
+        ) -> Result<PreparedSystemOperation, ApiError> {
+            Ok(PreparedSystemOperation {
+                encoded_extrinsic: vec![3, 3, 3],
+                submitted_nonce: 3,
+                system_op_nonce: 13,
+                correlation: [4; 32],
+            })
+        }
+
+        async fn submit_prepared_system_op(
+            &self,
+            prepared: PreparedSystemOperation,
         ) -> Result<Submission, ApiError> {
-            self.upgrade_calls.fetch_add(1, Ordering::Relaxed);
-            Ok(Self::submission(3))
+            match prepared.encoded_extrinsic.first() {
+                Some(1) => self.create_calls.fetch_add(1, Ordering::Relaxed),
+                Some(3) => self.upgrade_calls.fetch_add(1, Ordering::Relaxed),
+                _ => panic!("unexpected prepared mock extrinsic"),
+            };
+            self.submitted_system_extrinsics
+                .lock()
+                .unwrap()
+                .push(prepared.encoded_extrinsic);
+            Ok(Submission {
+                extrinsic_hash: [prepared.submitted_nonce as u8; 32],
+                submitted_nonce: prepared.submitted_nonce,
+                correlation: prepared.correlation,
+            })
         }
 
         async fn system_receipt(
@@ -1943,6 +2067,103 @@ mod tests {
             restarted.operation(&operation_id).unwrap().unwrap().status,
             OperationStatus::Succeeded
         );
+    }
+
+    #[tokio::test]
+    async fn prepared_system_operation_is_persisted_before_submission_and_reused() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("playground.sqlite");
+        let chain = Arc::new(MockChain::new(None));
+        let blob = b"write-ahead service".to_vec();
+        let code_hash = minijam_protocol::blake2_256(&blob);
+        let request = serde_json::json!({
+            "blobBase64": STANDARD.encode(&blob),
+            "codeHash": hex(&code_hash),
+            "minItemGas": 1,
+            "minMemoGas": 2,
+        });
+        let first = playground(&path).with_chain(chain.clone());
+        let operation = first
+            .insert_operation(OperationKind::Create, [31; 32], [32; 32], &request)
+            .unwrap();
+        let prepared = chain
+            .prepare_create([31; 32], code_hash, blob.len() as u32, 1, 2)
+            .await
+            .unwrap();
+        first
+            .persist_prepared_system_op(&operation.operation_id, &prepared)
+            .unwrap();
+
+        let persisted = first.operation(&operation.operation_id).unwrap().unwrap();
+        assert_eq!(persisted.status, OperationStatus::Prepared);
+        assert_eq!(
+            persisted.encoded_extrinsic.as_deref(),
+            Some(prepared.encoded_extrinsic.as_slice())
+        );
+        assert_eq!(persisted.submitted_nonce, Some(prepared.submitted_nonce));
+        assert_eq!(persisted.system_op_nonce, Some(prepared.system_op_nonce));
+        drop(first);
+
+        let restarted = playground(&path).with_chain(chain.clone());
+        let recovered = restarted.recoverable_operations().unwrap().remove(0);
+        restarted
+            .process_service_operation(recovered)
+            .await
+            .unwrap();
+
+        let submissions = chain.submitted_system_extrinsics.lock().unwrap();
+        assert_eq!(submissions.as_slice(), &[prepared.encoded_extrinsic]);
+        assert_eq!(
+            restarted
+                .operation(&operation.operation_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            OperationStatus::WaitingReceipt
+        );
+    }
+
+    #[tokio::test]
+    async fn crash_after_system_submission_replays_the_identical_extrinsic() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("playground.sqlite");
+        let chain = Arc::new(MockChain::new(None));
+        let blob = b"submitted before crash".to_vec();
+        let code_hash = minijam_protocol::blake2_256(&blob);
+        let request = serde_json::json!({
+            "blobBase64": STANDARD.encode(&blob),
+            "codeHash": hex(&code_hash),
+            "minItemGas": 3,
+            "minMemoGas": 4,
+        });
+        let first = playground(&path).with_chain(chain.clone());
+        let operation = first
+            .insert_operation(OperationKind::Create, [33; 32], [34; 32], &request)
+            .unwrap();
+        let prepared = chain
+            .prepare_create([33; 32], code_hash, blob.len() as u32, 3, 4)
+            .await
+            .unwrap();
+        first
+            .persist_prepared_system_op(&operation.operation_id, &prepared)
+            .unwrap();
+        chain
+            .submit_prepared_system_op(prepared.clone())
+            .await
+            .unwrap();
+        drop(first);
+
+        let restarted = playground(&path).with_chain(chain.clone());
+        let recovered = restarted.recoverable_operations().unwrap().remove(0);
+        restarted
+            .process_service_operation(recovered)
+            .await
+            .unwrap();
+
+        let submissions = chain.submitted_system_extrinsics.lock().unwrap();
+        assert_eq!(submissions.len(), 2);
+        assert_eq!(submissions[0], submissions[1]);
+        assert_eq!(submissions[0], prepared.encoded_extrinsic);
     }
 
     #[tokio::test]
