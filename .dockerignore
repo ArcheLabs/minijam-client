@@ -1,0 +1,11 @@
+.git
+target
+external/jambda/target
+apps/playground-web/node_modules
+apps/playground-web/dist
+apps/playground-web/test-results
+apps/playground-web/playwright-report
+**/*.sqlite
+**/*.sqlite-shm
+**/*.sqlite-wal
+deploy/local/.env
