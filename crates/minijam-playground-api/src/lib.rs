@@ -366,6 +366,7 @@ pub enum OperationStatus {
     Submitted,
     WaitingReceipt,
     SubmittingPreimage,
+    WaitingPreimage,
     TrackingWork,
     Succeeded,
     Failed,
@@ -600,7 +601,7 @@ impl Playground {
             let preimage = self.chain()?.submit_preimage(canonical).await?;
             self.update_operation(
                 &operation.operation_id,
-                OperationStatus::Succeeded,
+                OperationStatus::WaitingPreimage,
                 None,
                 Some(preimage.extrinsic_hash),
                 Some(preimage.submitted_nonce),
@@ -608,6 +609,42 @@ impl Playground {
                     "serviceId": service_id,
                     "preimageHash": hex(&preimage.correlation),
                 })),
+                None,
+            )?;
+            return Ok(());
+        }
+
+        if operation.status == OperationStatus::WaitingPreimage {
+            let service_id = operation
+                .result
+                .as_ref()
+                .and_then(|result| result.get("serviceId"))
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| ApiError::Storage("operation has no service id".into()))?
+                as u32;
+            let finalized = self.chain()?.finalized_context().await?;
+            let Some(encoded) = self
+                .chain()?
+                .service_preimage_at(finalized.block_hash, service_id, code_hash)
+                .await?
+            else {
+                return Ok(());
+            };
+            let finalized_blob = decode_state_value(&encoded)?;
+            if finalized_blob.len() != blob.len()
+                || minijam_protocol::blake2_256(&finalized_blob) != code_hash
+            {
+                return Err(ApiError::Chain(
+                    "finalized Service preimage does not match requested code".into(),
+                ));
+            }
+            self.update_operation(
+                &operation.operation_id,
+                OperationStatus::Succeeded,
+                None,
+                None,
+                None,
+                None,
                 None,
             )?;
         }
@@ -1887,6 +1924,23 @@ mod tests {
         assert_eq!(chain.preimage_calls.load(Ordering::Relaxed), 1);
         assert_eq!(
             restarted.operation(&operation_id).unwrap().unwrap().status,
+            OperationStatus::WaitingPreimage
+        );
+
+        let waiting = restarted.operation(&operation_id).unwrap().unwrap();
+        restarted.process_service_operation(waiting).await.unwrap();
+        assert_eq!(chain.preimage_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            restarted.operation(&operation_id).unwrap().unwrap().status,
+            OperationStatus::WaitingPreimage
+        );
+
+        let value = StateValue::try_from(blob).unwrap();
+        *chain.service_preimage.lock().unwrap() = Some(Encode::encode(&value));
+        let waiting = restarted.operation(&operation_id).unwrap().unwrap();
+        restarted.process_service_operation(waiting).await.unwrap();
+        assert_eq!(
+            restarted.operation(&operation_id).unwrap().unwrap().status,
             OperationStatus::Succeeded
         );
     }
@@ -1922,6 +1976,11 @@ mod tests {
         instance.process_service_operation(waiting).await.unwrap();
 
         assert_eq!(chain.preimage_calls.load(Ordering::Relaxed), 1);
+        let waiting = instance.operation(&operation_id).unwrap().unwrap();
+        assert_eq!(waiting.status, OperationStatus::WaitingPreimage);
+        let value = StateValue::try_from(blob).unwrap();
+        *chain.service_preimage.lock().unwrap() = Some(Encode::encode(&value));
+        instance.process_service_operation(waiting).await.unwrap();
         let completed = instance.operation(&operation_id).unwrap().unwrap();
         assert_eq!(completed.status, OperationStatus::Succeeded);
         assert_eq!(completed.result.unwrap()["serviceId"], 27);

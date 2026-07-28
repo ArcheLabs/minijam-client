@@ -9,6 +9,7 @@ const statusLabel: Record<Operation["status"], string> = {
   submitted: "Submitted",
   waiting_receipt: "Waiting for finality",
   submitting_preimage: "Publishing code",
+  waiting_preimage: "Waiting for finalized code",
   tracking_work: "Processing work",
   succeeded: "Completed",
   failed: "Failed"

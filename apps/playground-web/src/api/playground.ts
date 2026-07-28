@@ -32,7 +32,7 @@ export interface Authorization {
 export interface Operation {
   operationId: string;
   kind: "create" | "upgrade" | "work";
-  status: "prepared" | "submitted" | "waiting_receipt" | "submitting_preimage" | "tracking_work" | "succeeded" | "failed";
+  status: "prepared" | "submitted" | "waiting_receipt" | "submitting_preimage" | "waiting_preimage" | "tracking_work" | "succeeded" | "failed";
   request: Record<string, unknown>;
   correlation?: string;
   extrinsicHash?: string;
