@@ -1027,6 +1027,10 @@ pub mod pallet {
             Works::<T>::get(work_id)
         }
 
+        pub fn get_work_id_by_package_hash(package_hash: Hash) -> Option<WorkId> {
+            WorkByPackageHash::<T>::get(package_hash)
+        }
+
         pub fn get_work_bundle_ref(work_id: WorkId) -> Option<ContentRef> {
             Works::<T>::get(work_id).map(|work| work.bundle_ref)
         }

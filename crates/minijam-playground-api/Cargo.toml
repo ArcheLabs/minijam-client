@@ -5,13 +5,19 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
+cid.workspace = true
+jam-codec = { version = "0.1.1", default-features = false }
+jp-core-primitives = { path = "../../external/jambda/crates/core-primitives", default-features = false }
 minijam-chain-client = { path = "../minijam-chain-client" }
 minijam-compiler-api = { path = "../minijam-compiler-api" }
 minijam-protocol = { path = "../minijam-protocol" }
+minijam-runtime = { path = "../../runtime" }
 minijam-work-package-builder = { path = "../minijam-work-package-builder" }
 parity-scale-codec.workspace = true
+pallet-minijam = { path = "../../pallets/minijam" }
 reqwest.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

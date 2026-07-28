@@ -128,6 +128,20 @@ where
         }
     })?;
 
+    module.register_method("minijam_getWorkIdByPackageHash", {
+        let client = client.clone();
+        move |params, _, _| -> RpcResult<Option<u64>> {
+            let package_hash: sp_core::H256 = params.one()?;
+            client
+                .runtime_api()
+                .get_work_id_by_package_hash(
+                    finalized_hash(&client),
+                    package_hash.to_fixed_bytes(),
+                )
+                .map_err(runtime_api_error)
+        }
+    })?;
+
     module.register_method("minijam_getWorkBundleRef", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {

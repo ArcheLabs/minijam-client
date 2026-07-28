@@ -71,6 +71,10 @@ impl_runtime_apis! {
                 .map(|value| value.encode())
         }
 
+        fn get_work_id_by_package_hash(package_hash: minijam_protocol::Hash) -> Option<u64> {
+            pallet_minijam::Pallet::<Runtime>::get_work_id_by_package_hash(package_hash)
+        }
+
         fn get_work_bundle_ref(work_id: minijam_protocol::WorkId) -> Option<Vec<u8>> {
             pallet_minijam::Pallet::<Runtime>::get_work_bundle_ref(work_id)
                 .map(|value| value.encode())

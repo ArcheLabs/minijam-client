@@ -1,6 +1,7 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use minijam_playground_api::{Playground, PlaygroundConfig};
+use sp_core::{sr25519, Pair};
 
 #[tokio::main]
 async fn main() {
@@ -13,16 +14,30 @@ async fn main() {
     );
     let compiler_url =
         std::env::var("MINIJAM_COMPILER_URL").unwrap_or_else(|_| "http://127.0.0.1:8081".into());
+    let bundle_dir = PathBuf::from(
+        std::env::var("MINIJAM_BUNDLE_DIR").unwrap_or_else(|_| "bundles".into()),
+    );
     let genesis_hex = std::env::var("MINIJAM_GENESIS_HASH").expect("MINIJAM_GENESIS_HASH");
     let genesis_hash = decode_hash(&genesis_hex);
+    let rpc_url = std::env::var("MINIJAM_RPC_URL").unwrap_or_else(|_| "ws://127.0.0.1:9944".into());
+    let signer_uri = std::env::var("MINIJAM_RELAYER_URI").expect("MINIJAM_RELAYER_URI");
+    let signer = sr25519::Pair::from_string(&signer_uri, None).expect("valid relayer URI");
+    let chain = Arc::new(
+        minijam_chain_client::MiniJamChainClient::connect(rpc_url, signer, Duration::from_secs(15))
+            .await
+            .expect("connect MiniJAM chain"),
+    );
     let playground = Playground::open(
         &database,
         PlaygroundConfig {
             genesis_hash,
             compiler_url,
+            bundle_dir,
         },
     )
-    .expect("open playground");
+    .expect("open playground")
+    .with_chain(chain);
+    playground.start_recovery();
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .expect("bind playground");

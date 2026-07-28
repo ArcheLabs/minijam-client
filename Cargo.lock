@@ -5306,12 +5306,18 @@ dependencies = [
 name = "minijam-playground-api"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "base64",
+ "cid",
+ "jam-codec",
+ "jp-core-primitives",
  "minijam-chain-client",
  "minijam-compiler-api",
  "minijam-protocol",
+ "minijam-runtime",
  "minijam-work-package-builder",
+ "pallet-minijam",
  "parity-scale-codec",
  "reqwest",
  "rusqlite",

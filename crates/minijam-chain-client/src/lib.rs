@@ -325,6 +325,22 @@ impl MiniJamChainClient {
             .await
     }
 
+    pub async fn work_id_by_package_hash(
+        &self,
+        package_hash: Hash,
+    ) -> Result<Option<WorkId>, ChainClientError> {
+        use jsonrpsee::core::client::ClientT;
+        self.rpc
+            .lock()
+            .await
+            .request(
+                "minijam_getWorkIdByPackageHash",
+                jsonrpsee::rpc_params![rpc::hex(&package_hash)],
+            )
+            .await
+            .map_err(|error| ChainClientError::Rpc(error.to_string()))
+    }
+
     pub async fn candidate<T: Decode>(
         &self,
         work_id: WorkId,

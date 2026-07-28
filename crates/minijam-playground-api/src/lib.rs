@@ -9,6 +9,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use async_trait::async_trait;
 use axum::{
     extract::State,
     http::StatusCode,
@@ -16,7 +17,11 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use parity_scale_codec::Encode;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use jp_core_primitives::{simple::ByteSequence, types::Preimage};
+use minijam_chain_client::{FinalizedContext, Submission};
+use minijam_protocol::{StateValue, SystemReceiptV1};
+use parity_scale_codec::{Decode, Encode};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sp_core::{sr25519, Pair};
@@ -30,6 +35,7 @@ static OPERATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub struct PlaygroundConfig {
     pub genesis_hash: [u8; 32],
     pub compiler_url: String,
+    pub bundle_dir: std::path::PathBuf,
 }
 
 #[derive(Clone)]
@@ -37,9 +43,184 @@ pub struct Playground {
     config: PlaygroundConfig,
     db: Arc<Mutex<Connection>>,
     compiler: reqwest::Client,
+    chain: Option<Arc<dyn ChainGateway>>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[async_trait]
+pub trait ChainGateway: Send + Sync {
+    async fn finalized_context(&self) -> Result<FinalizedContext, ApiError>;
+    async fn controller_at(
+        &self,
+        block: [u8; 32],
+        service_id: u32,
+    ) -> Result<Option<[u8; 32]>, ApiError>;
+    async fn submit_create(
+        &self,
+        controller: [u8; 32],
+        code_hash: [u8; 32],
+        code_len: u32,
+        min_item_gas: u64,
+        min_memo_gas: u64,
+    ) -> Result<Submission, ApiError>;
+    async fn submit_upgrade(
+        &self,
+        controller: [u8; 32],
+        service_id: u32,
+        code_hash: [u8; 32],
+        code_len: u32,
+        min_item_gas: u64,
+        min_memo_gas: u64,
+    ) -> Result<Submission, ApiError>;
+    async fn system_receipt(
+        &self,
+        request_id: [u8; 32],
+    ) -> Result<Option<SystemReceiptV1>, ApiError>;
+    async fn submit_preimage(&self, canonical: Vec<u8>) -> Result<Submission, ApiError>;
+    async fn submit_work(
+        &self,
+        canonical: Vec<u8>,
+        bundle_ref: minijam_protocol::ContentRef,
+        package_hash: [u8; 32],
+    ) -> Result<Submission, ApiError>;
+    async fn work_id_by_package_hash(
+        &self,
+        package_hash: [u8; 32],
+    ) -> Result<Option<u64>, ApiError>;
+    async fn work_terminal(
+        &self,
+        work_id: u64,
+    ) -> Result<Option<Result<[u8; 32], ()>>, ApiError>;
+}
+
+#[async_trait]
+impl ChainGateway for minijam_chain_client::MiniJamChainClient {
+    async fn finalized_context(&self) -> Result<FinalizedContext, ApiError> {
+        self.finalized_context()
+            .await
+            .map_err(|error| ApiError::Chain(error.to_string()))
+    }
+
+    async fn controller_at(
+        &self,
+        block: [u8; 32],
+        service_id: u32,
+    ) -> Result<Option<[u8; 32]>, ApiError> {
+        let Some(encoded) = self
+            .service_controller_at(block, service_id)
+            .await
+            .map_err(|error| ApiError::Chain(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let value = StateValue::decode(&mut encoded.as_slice())
+            .map_err(|error| ApiError::Chain(error.to_string()))?;
+        value
+            .into_inner()
+            .try_into()
+            .map(Some)
+            .map_err(|_| ApiError::Chain("controller is not 32 bytes".into()))
+    }
+
+    async fn submit_create(
+        &self,
+        controller: [u8; 32],
+        code_hash: [u8; 32],
+        code_len: u32,
+        min_item_gas: u64,
+        min_memo_gas: u64,
+    ) -> Result<Submission, ApiError> {
+        self.submit_create_service(controller, code_hash, code_len, min_item_gas, min_memo_gas)
+            .await
+            .map_err(|error| ApiError::Chain(error.to_string()))
+    }
+
+    async fn submit_upgrade(
+        &self,
+        controller: [u8; 32],
+        service_id: u32,
+        code_hash: [u8; 32],
+        code_len: u32,
+        min_item_gas: u64,
+        min_memo_gas: u64,
+    ) -> Result<Submission, ApiError> {
+        self.submit_upgrade_service(
+            controller,
+            service_id,
+            code_hash,
+            code_len,
+            min_item_gas,
+            min_memo_gas,
+        )
+        .await
+        .map_err(|error| ApiError::Chain(error.to_string()))
+    }
+
+    async fn system_receipt(
+        &self,
+        request_id: [u8; 32],
+    ) -> Result<Option<SystemReceiptV1>, ApiError> {
+        let Some(encoded) = self
+            .system_receipt::<StateValue>(request_id)
+            .await
+            .map_err(|error| ApiError::Chain(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        SystemReceiptV1::decode(&mut encoded.into_inner().as_slice())
+            .map(Some)
+            .map_err(|error| ApiError::Chain(error.to_string()))
+    }
+
+    async fn submit_preimage(&self, canonical: Vec<u8>) -> Result<Submission, ApiError> {
+        self.submit_preimage(canonical)
+            .await
+            .map_err(|error| ApiError::Chain(error.to_string()))
+    }
+
+    async fn submit_work(
+        &self,
+        canonical: Vec<u8>,
+        bundle_ref: minijam_protocol::ContentRef,
+        package_hash: [u8; 32],
+    ) -> Result<Submission, ApiError> {
+        self.submit_work(canonical, bundle_ref, package_hash)
+            .await
+            .map_err(|error| ApiError::Chain(error.to_string()))
+    }
+
+    async fn work_id_by_package_hash(
+        &self,
+        package_hash: [u8; 32],
+    ) -> Result<Option<u64>, ApiError> {
+        self.work_id_by_package_hash(package_hash)
+            .await
+            .map_err(|error| ApiError::Chain(error.to_string()))
+    }
+
+    async fn work_terminal(
+        &self,
+        work_id: u64,
+    ) -> Result<Option<Result<[u8; 32], ()>>, ApiError> {
+        let Some(work) = self
+            .work_status::<pallet_minijam::WorkRecord<minijam_runtime::Runtime>>(work_id)
+            .await
+            .map_err(|error| ApiError::Chain(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        match work.status {
+            pallet_minijam::WorkStatus::Imported => self
+                .execution_receipt(work_id)
+                .await
+                .map(|receipt| receipt.map(Ok))
+                .map_err(|error| ApiError::Chain(error.to_string())),
+            pallet_minijam::WorkStatus::Failed => Ok(Some(Err(()))),
+            _ => Ok(None),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrepareActionRequest {
     pub account: String,
@@ -61,11 +242,43 @@ pub struct PreparedAction {
     pub signing_payload: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionAuthorization {
     pub action_id: String,
     pub signature: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateServiceRequest {
+    pub authorization: ActionAuthorization,
+    pub blob_base64: String,
+    pub code_hash: String,
+    pub min_item_gas: u64,
+    pub min_memo_gas: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeServiceRequest {
+    pub authorization: ActionAuthorization,
+    pub service_id: u32,
+    pub blob_base64: String,
+    pub code_hash: String,
+    pub min_item_gas: u64,
+    pub min_memo_gas: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitWorkRequest {
+    pub authorization: ActionAuthorization,
+    pub service_id: u32,
+    pub service_code_hash: String,
+    pub payload_base64: String,
+    #[serde(default)]
+    pub extrinsics_base64: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -128,6 +341,10 @@ pub enum ApiError {
     Storage(String),
     #[error("compiler unavailable: {0}")]
     Compiler(String),
+    #[error("chain unavailable: {0}")]
+    Chain(String),
+    #[error("account is not the finalized Service Controller")]
+    Forbidden,
 }
 
 impl IntoResponse for ApiError {
@@ -137,7 +354,10 @@ impl IntoResponse for ApiError {
                 StatusCode::BAD_REQUEST
             }
             Self::Expired | Self::Replayed => StatusCode::CONFLICT,
-            Self::Storage(_) | Self::Compiler(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::Storage(_) | Self::Compiler(_) | Self::Chain(_) => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
         };
         (
             status,
@@ -149,6 +369,8 @@ impl IntoResponse for ApiError {
 
 impl Playground {
     pub fn open(path: &Path, config: PlaygroundConfig) -> Result<Self, ApiError> {
+        std::fs::create_dir_all(&config.bundle_dir)
+            .map_err(|error| ApiError::Storage(error.to_string()))?;
         let connection =
             Connection::open(path).map_err(|error| ApiError::Storage(error.to_string()))?;
         connection
@@ -184,13 +406,248 @@ impl Playground {
             config,
             db: Arc::new(Mutex::new(connection)),
             compiler: reqwest::Client::new(),
+            chain: None,
         })
+    }
+
+    pub fn with_chain(mut self, chain: Arc<dyn ChainGateway>) -> Self {
+        self.chain = Some(chain);
+        self
+    }
+
+    pub fn start_recovery(&self) {
+        let playground = self.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Ok(operations) = playground.recoverable_operations() {
+                    for operation in operations {
+                        let _ = playground.process_service_operation(operation).await;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        });
+    }
+
+    fn chain(&self) -> Result<&Arc<dyn ChainGateway>, ApiError> {
+        self.chain
+            .as_ref()
+            .ok_or_else(|| ApiError::Chain("chain client is not configured".into()))
+    }
+
+    async fn process_service_operation(&self, operation: Operation) -> Result<(), ApiError> {
+        if operation.kind == OperationKind::Work {
+            return self.process_work_operation(operation).await;
+        }
+        let account = decode_array::<32>(&operation.account)?;
+        let blob = STANDARD
+            .decode(json_string(&operation.request, "blobBase64")?)
+            .map_err(|error| ApiError::Invalid(error.to_string()))?;
+        let code_hash = decode_array::<32>(json_string(&operation.request, "codeHash")?)?;
+        let min_item_gas = json_u64(&operation.request, "minItemGas")?;
+        let min_memo_gas = json_u64(&operation.request, "minMemoGas")?;
+
+        if operation.status == OperationStatus::Prepared {
+            let submission = match operation.kind {
+                OperationKind::Create => {
+                    self.chain()?
+                        .submit_create(
+                            account,
+                            code_hash,
+                            blob.len() as u32,
+                            min_item_gas,
+                            min_memo_gas,
+                        )
+                        .await?
+                }
+                OperationKind::Upgrade => {
+                    self.chain()?
+                        .submit_upgrade(
+                            account,
+                            json_u64(&operation.request, "serviceId")? as u32,
+                            code_hash,
+                            blob.len() as u32,
+                            min_item_gas,
+                            min_memo_gas,
+                        )
+                        .await?
+                }
+                _ => unreachable!(),
+            };
+            self.update_operation(
+                &operation.operation_id,
+                OperationStatus::WaitingReceipt,
+                Some(submission.correlation),
+                Some(submission.extrinsic_hash),
+                Some(submission.submitted_nonce),
+                None,
+                None,
+            )?;
+            return Ok(());
+        }
+
+        if operation.status == OperationStatus::WaitingReceipt {
+            let request_id = decode_array::<32>(
+                operation
+                    .correlation
+                    .as_deref()
+                    .ok_or_else(|| ApiError::Storage("operation has no request id".into()))?,
+            )?;
+            let Some(receipt) = self.chain()?.system_receipt(request_id).await? else {
+                return Ok(());
+            };
+            let service_id = match receipt {
+                SystemReceiptV1::ServiceCreated {
+                    service_id,
+                    controller,
+                }
+                | SystemReceiptV1::ServiceUpgraded {
+                    service_id,
+                    controller,
+                    ..
+                } if controller == account => service_id,
+                SystemReceiptV1::Rejected { code } => {
+                    self.update_operation(
+                        &operation.operation_id,
+                        OperationStatus::Failed,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(&format!("system operation rejected with code {code}")),
+                    )?;
+                    return Ok(());
+                }
+                _ => return Err(ApiError::Chain("receipt controller mismatch".into())),
+            };
+            let canonical = jam_codec::Encode::encode(&Preimage {
+                requester: service_id,
+                blob: ByteSequence::from(blob),
+            });
+            let preimage = self.chain()?.submit_preimage(canonical).await?;
+            self.update_operation(
+                &operation.operation_id,
+                OperationStatus::Succeeded,
+                None,
+                Some(preimage.extrinsic_hash),
+                Some(preimage.submitted_nonce),
+                Some(&serde_json::json!({
+                    "serviceId": service_id,
+                    "preimageHash": hex(&preimage.correlation),
+                })),
+                None,
+            )?;
+        }
+        Ok(())
+    }
+
+    async fn process_work_operation(&self, operation: Operation) -> Result<(), ApiError> {
+        let package_hash = decode_array::<32>(json_string(&operation.request, "packageHash")?)?;
+        if operation.status == OperationStatus::Prepared {
+            if let Some(work_id) = self.chain()?.work_id_by_package_hash(package_hash).await? {
+                self.update_operation(
+                    &operation.operation_id,
+                    OperationStatus::TrackingWork,
+                    Some(package_hash),
+                    None,
+                    None,
+                    Some(&serde_json::json!({"workId": work_id})),
+                    None,
+                )?;
+                return Ok(());
+            }
+            let canonical = STANDARD
+                .decode(json_string(&operation.request, "canonicalWorkPackage")?)
+                .map_err(|error| ApiError::Invalid(error.to_string()))?;
+            let cid = cid::Cid::try_from(json_string(&operation.request, "bundleCid")?)
+                .map_err(|error| ApiError::Invalid(error.to_string()))?;
+            let bundle_ref = minijam_protocol::ContentRef {
+                cid_v1: cid
+                    .to_bytes()
+                    .try_into()
+                    .map_err(|_| ApiError::Invalid("CID exceeds protocol bounds".into()))?,
+                content_hash: decode_array::<32>(json_string(
+                    &operation.request,
+                    "bundleHash",
+                )?)?,
+                size: json_u64(&operation.request, "bundleSize")?,
+            };
+            let submission = self
+                .chain()?
+                .submit_work(canonical, bundle_ref, package_hash)
+                .await?;
+            self.update_operation(
+                &operation.operation_id,
+                OperationStatus::TrackingWork,
+                Some(package_hash),
+                Some(submission.extrinsic_hash),
+                Some(submission.submitted_nonce),
+                None,
+                None,
+            )?;
+            return Ok(());
+        }
+        if operation.status == OperationStatus::TrackingWork {
+            let Some(work_id) = self.chain()?.work_id_by_package_hash(package_hash).await? else {
+                return Ok(());
+            };
+            match self.chain()?.work_terminal(work_id).await? {
+                Some(Ok(receipt)) => self.update_operation(
+                    &operation.operation_id,
+                    OperationStatus::Succeeded,
+                    None,
+                    None,
+                    None,
+                    Some(&serde_json::json!({
+                        "workId": work_id,
+                        "executionReceipt": hex(&receipt),
+                    })),
+                    None,
+                )?,
+                Some(Err(())) => self.update_operation(
+                    &operation.operation_id,
+                    OperationStatus::Failed,
+                    None,
+                    None,
+                    None,
+                    Some(&serde_json::json!({"workId": work_id})),
+                    Some("work failed"),
+                )?,
+                None => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn save_bundle(&self, bytes: &[u8], expected_hash: [u8; 32]) -> Result<(), ApiError> {
+        if minijam_protocol::blake2_256(bytes) != expected_hash {
+            return Err(ApiError::Invalid("bundle hash mismatch".into()));
+        }
+        let path = self.config.bundle_dir.join(hex_without_prefix(&expected_hash));
+        if path.exists() {
+            let existing =
+                std::fs::read(path).map_err(|error| ApiError::Storage(error.to_string()))?;
+            if existing != bytes {
+                return Err(ApiError::Storage("bundle hash collision".into()));
+            }
+            return Ok(());
+        }
+        let temporary = self
+            .config
+            .bundle_dir
+            .join(format!(".{}.tmp", hex_without_prefix(&expected_hash)));
+        std::fs::write(&temporary, bytes)
+            .and_then(|_| std::fs::rename(&temporary, &path))
+            .map_err(|error| ApiError::Storage(error.to_string()))
     }
 
     pub fn router(self) -> Router {
         Router::new()
             .route("/api/v1/build", post(build))
             .route("/api/v1/actions/prepare", post(prepare_action))
+            .route("/api/v1/services", post(create_service))
+            .route("/api/v1/services/{id}/upgrade", post(upgrade_service))
+            .route("/api/v1/work", post(submit_work))
             .route("/api/v1/operations/{id}", get(get_operation))
             .route("/health/live", get(|| async { StatusCode::NO_CONTENT }))
             .route("/health/ready", get(ready))
@@ -460,6 +917,141 @@ impl Playground {
     }
 }
 
+async fn create_service(
+    State(playground): State<Playground>,
+    Json(request): Json<CreateServiceRequest>,
+) -> Result<(StatusCode, Json<Operation>), ApiError> {
+    decode_service_blob(&request.blob_base64, &request.code_hash)?;
+    let params = serde_json::json!({
+        "blobBase64": request.blob_base64,
+        "codeHash": request.code_hash,
+        "minItemGas": request.min_item_gas,
+        "minMemoGas": request.min_memo_gas,
+    });
+    let params_hash = hash_json(&params)?;
+    let account = playground.consume_action(&request.authorization, "create", params_hash)?;
+    let action_id = decode_array::<32>(&request.authorization.action_id)?;
+    let operation =
+        playground.insert_operation(OperationKind::Create, account, action_id, &params)?;
+    let runner = playground.clone();
+    let queued = operation.clone();
+    tokio::spawn(async move {
+        let _ = runner.process_service_operation(queued).await;
+    });
+    Ok((StatusCode::ACCEPTED, Json(operation)))
+}
+
+async fn upgrade_service(
+    State(playground): State<Playground>,
+    axum::extract::Path(service_id): axum::extract::Path<u32>,
+    Json(request): Json<UpgradeServiceRequest>,
+) -> Result<(StatusCode, Json<Operation>), ApiError> {
+    if service_id != request.service_id {
+        return Err(ApiError::Invalid(
+            "path service id does not match body".into(),
+        ));
+    }
+    decode_service_blob(&request.blob_base64, &request.code_hash)?;
+    let params = serde_json::json!({
+        "serviceId": service_id,
+        "blobBase64": request.blob_base64,
+        "codeHash": request.code_hash,
+        "minItemGas": request.min_item_gas,
+        "minMemoGas": request.min_memo_gas,
+    });
+    let params_hash = hash_json(&params)?;
+    let account = playground.consume_action(&request.authorization, "upgrade", params_hash)?;
+    let finalized = playground.chain()?.finalized_context().await?;
+    if playground
+        .chain()?
+        .controller_at(finalized.block_hash, service_id)
+        .await?
+        != Some(account)
+    {
+        return Err(ApiError::Forbidden);
+    }
+    let action_id = decode_array::<32>(&request.authorization.action_id)?;
+    let operation =
+        playground.insert_operation(OperationKind::Upgrade, account, action_id, &params)?;
+    let runner = playground.clone();
+    let queued = operation.clone();
+    tokio::spawn(async move {
+        let _ = runner.process_service_operation(queued).await;
+    });
+    Ok((StatusCode::ACCEPTED, Json(operation)))
+}
+
+async fn submit_work(
+    State(playground): State<Playground>,
+    Json(request): Json<SubmitWorkRequest>,
+) -> Result<(StatusCode, Json<Operation>), ApiError> {
+    let service_code_hash = decode_array::<32>(&request.service_code_hash)?;
+    let payload = STANDARD
+        .decode(&request.payload_base64)
+        .map_err(|error| ApiError::Invalid(error.to_string()))?;
+    let extrinsics = request
+        .extrinsics_base64
+        .iter()
+        .map(|value| {
+            STANDARD
+                .decode(value)
+                .map_err(|error| ApiError::Invalid(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let signed_params = serde_json::json!({
+        "serviceId": request.service_id,
+        "serviceCodeHash": request.service_code_hash,
+        "payloadBase64": request.payload_base64,
+        "extrinsicsBase64": request.extrinsics_base64,
+    });
+    let params_hash = hash_json(&signed_params)?;
+    let account = playground.consume_action(&request.authorization, "work", params_hash)?;
+    let finalized = playground.chain()?.finalized_context().await?;
+    if playground
+        .chain()?
+        .controller_at(finalized.block_hash, request.service_id)
+        .await?
+        != Some(account)
+    {
+        return Err(ApiError::Forbidden);
+    }
+    let built = minijam_work_package_builder::build_work_package(
+        minijam_work_package_builder::BuildWorkInput {
+            service_id: request.service_id,
+            service_code_hash,
+            payload,
+            extrinsics,
+            anchor_hash: finalized.block_hash,
+            state_root: finalized.state_root,
+            lookup_anchor_slot: finalized.slot,
+        },
+    )
+    .map_err(|error| ApiError::Invalid(error.to_string()))?;
+    playground.save_bundle(&built.bundle_bytes, built.content_ref.content_hash)?;
+    let bundle_cid = cid::Cid::read_bytes(built.content_ref.cid_v1.as_slice())
+        .map_err(|error| ApiError::Invalid(error.to_string()))?;
+    let operation_request = serde_json::json!({
+        "serviceId": request.service_id,
+        "serviceCodeHash": request.service_code_hash,
+        "payloadBase64": request.payload_base64,
+        "extrinsicsBase64": request.extrinsics_base64,
+        "packageHash": hex(&built.package_hash),
+        "canonicalWorkPackage": STANDARD.encode(&built.canonical_work_package),
+        "bundleCid": bundle_cid.to_string(),
+        "bundleHash": hex(&built.content_ref.content_hash),
+        "bundleSize": built.content_ref.size,
+    });
+    let action_id = decode_array::<32>(&request.authorization.action_id)?;
+    let operation =
+        playground.insert_operation(OperationKind::Work, account, action_id, &operation_request)?;
+    let runner = playground.clone();
+    let queued = operation.clone();
+    tokio::spawn(async move {
+        let _ = runner.process_work_operation(queued).await;
+    });
+    Ok((StatusCode::ACCEPTED, Json(operation)))
+}
+
 async fn get_operation(
     State(playground): State<Playground>,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -551,6 +1143,13 @@ fn hex(bytes: &[u8]) -> String {
     )
 }
 
+fn hex_without_prefix(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
 fn decode_array<const N: usize>(value: &str) -> Result<[u8; N], ApiError> {
     let value = value.strip_prefix("0x").unwrap_or(value);
     if value.len() != N * 2 {
@@ -562,6 +1161,36 @@ fn decode_array<const N: usize>(value: &str) -> Result<[u8; N], ApiError> {
             .map_err(|error| ApiError::Invalid(error.to_string()))?;
     }
     Ok(output)
+}
+
+fn decode_service_blob(encoded: &str, expected_hash: &str) -> Result<Vec<u8>, ApiError> {
+    let blob = STANDARD
+        .decode(encoded)
+        .map_err(|error| ApiError::Invalid(error.to_string()))?;
+    if minijam_protocol::blake2_256(&blob) != decode_array::<32>(expected_hash)? {
+        return Err(ApiError::Invalid("code hash does not match Blob".into()));
+    }
+    Ok(blob)
+}
+
+fn hash_json(value: &serde_json::Value) -> Result<[u8; 32], ApiError> {
+    serde_json::to_vec(value)
+        .map(|bytes| minijam_protocol::blake2_256(&bytes))
+        .map_err(|error| ApiError::Invalid(error.to_string()))
+}
+
+fn json_string<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str, ApiError> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ApiError::Invalid(format!("operation has no {key}")))
+}
+
+fn json_u64(value: &serde_json::Value, key: &str) -> Result<u64, ApiError> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| ApiError::Invalid(format!("operation has no {key}")))
 }
 
 fn enum_json<T: Serialize>(value: T) -> Result<String, ApiError> {
@@ -627,6 +1256,7 @@ fn decode_operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Operation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     fn playground(path: &Path) -> Playground {
         Playground::open(
@@ -634,9 +1264,125 @@ mod tests {
             PlaygroundConfig {
                 genesis_hash: [9; 32],
                 compiler_url: "http://127.0.0.1:1".into(),
+                bundle_dir: path.with_extension("bundles"),
             },
         )
         .unwrap()
+    }
+
+    struct MockChain {
+        controller: Option<[u8; 32]>,
+        create_calls: AtomicUsize,
+        upgrade_calls: AtomicUsize,
+        preimage_calls: AtomicUsize,
+        work_calls: AtomicUsize,
+        receipt: Mutex<Option<SystemReceiptV1>>,
+        work_id: Mutex<Option<u64>>,
+        work_terminal: Mutex<Option<Result<[u8; 32], ()>>>,
+    }
+
+    impl MockChain {
+        fn new(controller: Option<[u8; 32]>) -> Self {
+            Self {
+                controller,
+                create_calls: AtomicUsize::new(0),
+                upgrade_calls: AtomicUsize::new(0),
+                preimage_calls: AtomicUsize::new(0),
+                work_calls: AtomicUsize::new(0),
+                receipt: Mutex::new(None),
+                work_id: Mutex::new(None),
+                work_terminal: Mutex::new(None),
+            }
+        }
+
+        fn submission(seed: u8) -> Submission {
+            Submission {
+                extrinsic_hash: [seed; 32],
+                submitted_nonce: seed as u32,
+                correlation: [seed.wrapping_add(1); 32],
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ChainGateway for MockChain {
+        async fn finalized_context(&self) -> Result<FinalizedContext, ApiError> {
+            Ok(FinalizedContext {
+                block_hash: [8; 32],
+                block_number: 8,
+                state_root: [9; 32],
+                slot: 8,
+            })
+        }
+
+        async fn controller_at(
+            &self,
+            _block: [u8; 32],
+            _service_id: u32,
+        ) -> Result<Option<[u8; 32]>, ApiError> {
+            Ok(self.controller)
+        }
+
+        async fn submit_create(
+            &self,
+            _controller: [u8; 32],
+            _code_hash: [u8; 32],
+            _code_len: u32,
+            _min_item_gas: u64,
+            _min_memo_gas: u64,
+        ) -> Result<Submission, ApiError> {
+            self.create_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Self::submission(1))
+        }
+
+        async fn submit_upgrade(
+            &self,
+            _controller: [u8; 32],
+            _service_id: u32,
+            _code_hash: [u8; 32],
+            _code_len: u32,
+            _min_item_gas: u64,
+            _min_memo_gas: u64,
+        ) -> Result<Submission, ApiError> {
+            self.upgrade_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Self::submission(3))
+        }
+
+        async fn system_receipt(
+            &self,
+            _request_id: [u8; 32],
+        ) -> Result<Option<SystemReceiptV1>, ApiError> {
+            Ok(self.receipt.lock().unwrap().clone())
+        }
+
+        async fn submit_preimage(&self, _canonical: Vec<u8>) -> Result<Submission, ApiError> {
+            self.preimage_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Self::submission(5))
+        }
+
+        async fn submit_work(
+            &self,
+            _canonical: Vec<u8>,
+            _bundle_ref: minijam_protocol::ContentRef,
+            _package_hash: [u8; 32],
+        ) -> Result<Submission, ApiError> {
+            self.work_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Self::submission(7))
+        }
+
+        async fn work_id_by_package_hash(
+            &self,
+            _package_hash: [u8; 32],
+        ) -> Result<Option<u64>, ApiError> {
+            Ok(*self.work_id.lock().unwrap())
+        }
+
+        async fn work_terminal(
+            &self,
+            _work_id: u64,
+        ) -> Result<Option<Result<[u8; 32], ()>>, ApiError> {
+            Ok(*self.work_terminal.lock().unwrap())
+        }
     }
 
     #[test]
@@ -736,5 +1482,88 @@ mod tests {
             restarted.operation(&operation_id).unwrap().unwrap().status,
             OperationStatus::Succeeded
         );
+    }
+
+    #[tokio::test]
+    async fn create_recovery_does_not_submit_create_twice() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("playground.sqlite");
+        let chain = Arc::new(MockChain::new(None));
+        let blob = b"service".to_vec();
+        let request = serde_json::json!({
+            "blobBase64": STANDARD.encode(&blob),
+            "codeHash": hex(&minijam_protocol::blake2_256(&blob)),
+            "minItemGas": 1,
+            "minMemoGas": 2,
+        });
+        let first = playground(&path).with_chain(chain.clone());
+        let operation = first
+            .insert_operation(OperationKind::Create, [3; 32], [4; 32], &request)
+            .unwrap();
+        let operation_id = operation.operation_id.clone();
+        first.process_service_operation(operation).await.unwrap();
+        assert_eq!(chain.create_calls.load(Ordering::Relaxed), 1);
+
+        let restarted = playground(&path).with_chain(chain.clone());
+        let waiting = restarted.recoverable_operations().unwrap().remove(0);
+        restarted
+            .process_service_operation(waiting.clone())
+            .await
+            .unwrap();
+        assert_eq!(chain.create_calls.load(Ordering::Relaxed), 1);
+
+        *chain.receipt.lock().unwrap() = Some(SystemReceiptV1::ServiceCreated {
+            service_id: 17,
+            controller: [3; 32],
+        });
+        restarted.process_service_operation(waiting).await.unwrap();
+        assert_eq!(chain.preimage_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            restarted.operation(&operation_id).unwrap().unwrap().status,
+            OperationStatus::Succeeded
+        );
+    }
+
+    #[tokio::test]
+    async fn non_controller_upgrade_is_forbidden_before_chain_submission() {
+        let temp = tempfile::tempdir().unwrap();
+        let chain = Arc::new(MockChain::new(Some([99; 32])));
+        let playground =
+            playground(&temp.path().join("playground.sqlite")).with_chain(chain.clone());
+        let pair = sr25519::Pair::from_seed(&[6; 32]);
+        let blob = b"upgrade".to_vec();
+        let params = serde_json::json!({
+            "serviceId": 9,
+            "blobBase64": STANDARD.encode(&blob),
+            "codeHash": hex(&minijam_protocol::blake2_256(&blob)),
+            "minItemGas": 10,
+            "minMemoGas": 11,
+        });
+        let prepared = playground
+            .prepare(PrepareActionRequest {
+                account: hex(&pair.public().0),
+                action: "upgrade".into(),
+                params_hash: hex(&hash_json(&params).unwrap()),
+                expiry: now() + 60,
+            })
+            .unwrap();
+        let signing_hash = decode_array::<32>(&prepared.signing_payload).unwrap();
+        let request = UpgradeServiceRequest {
+            authorization: ActionAuthorization {
+                action_id: prepared.action_id,
+                signature: hex(&pair.sign(&signing_hash).0),
+            },
+            service_id: 9,
+            blob_base64: params["blobBase64"].as_str().unwrap().into(),
+            code_hash: params["codeHash"].as_str().unwrap().into(),
+            min_item_gas: 10,
+            min_memo_gas: 11,
+        };
+
+        assert!(matches!(
+            upgrade_service(State(playground), axum::extract::Path(9), Json(request)).await,
+            Err(ApiError::Forbidden)
+        ));
+        assert_eq!(chain.upgrade_calls.load(Ordering::Relaxed), 0);
     }
 }
