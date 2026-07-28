@@ -2,49 +2,87 @@ name: CI
 
 on:
   push:
-  pull_request:
+    branches:
+      - main
+      - m9-stage0-local-e2e
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  fmt:
-    name: Format
+  trusted-checks:
+    name: Trusted checks
+    if: github.repository == 'ArcheLabs/minijam-client'
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout MiniJAM
+        uses: actions/checkout@v4
         with:
-          submodules: recursive
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+
+      - name: Check Jambda App configuration
+        env:
+          JAMBDA_APP_CLIENT_ID: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          JAMBDA_APP_PRIVATE_KEY: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+        run: |
+          test -n "${JAMBDA_APP_CLIENT_ID}" || {
+            echo "::error::JAMBDA_APP_CLIENT_ID is not configured"
+            exit 1
+          }
+          test -n "${JAMBDA_APP_PRIVATE_KEY}" || {
+            echo "::error::JAMBDA_APP_PRIVATE_KEY is not configured"
+            exit 1
+          }
+
+      - name: Read pinned Jambda commit
+        id: jambda-pin
+        run: |
+          jambda_sha="$(git ls-tree HEAD external/jambda | awk '{print $3}')"
+          if [[ ! "${jambda_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Unable to determine pinned Jambda commit"
+            exit 1
+          fi
+          echo "sha=${jambda_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create Jambda token
+        id: jambda-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+          owner: ArcheLabs
+          repositories: jambda
+          permission-contents: read
+
+      - name: Checkout pinned Jambda
+        uses: actions/checkout@v4
+        with:
+          repository: ArcheLabs/jambda
+          ref: ${{ steps.jambda-pin.outputs.sha }}
+          token: ${{ steps.jambda-token.outputs.token }}
+          path: external/jambda
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Install Rust toolchain
         run: rustup show
+
       - name: Check submodule pin
         run: ./scripts/check-submodule.sh
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-  test:
-    name: Workspace Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Install Rust toolchain
-        run: rustup show
-      - name: Check submodule pin
-        run: ./scripts/check-submodule.sh
       - name: Test workspace
         run: cargo test --workspace
 
-  wasm-check:
-    name: Wasm Checks
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Install Rust toolchain
-        run: rustup show
       - name: Check no_std public crates
         run: >
           cargo check
@@ -53,39 +91,27 @@ jobs:
           -p minijam-worker-engine
           --no-default-features
           --target wasm32-unknown-unknown
+
       - name: Check runtime Wasm
         run: cargo check -p minijam-runtime --no-default-features --target wasm32v1-none
 
-  compiler-image:
-    name: Compiler Image
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - name: Build isolated compiler and reproduce C/C++ artifacts
         run: ./scripts/test-compiler-image.sh
+
       - name: Execute reproduced-compatible artifacts through Jambda
         run: ./scripts/test-counter-services.sh
 
-  release-artifacts:
-    name: Release Artifacts
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Install Rust toolchain
-        run: rustup show
-      - name: Build node
-        run: cargo build --release -p minijam-node
-      - name: Build worker
-        run: cargo build --release -p minijam-worker
+      - name: Build release binaries
+        run: |
+          cargo build --release -p minijam-node
+          cargo build --release -p minijam-worker
+
       - name: Export raw chain spec
         run: |
           mkdir -p stage0-artifacts
           ./scripts/export-stage0-chain-specs.sh ./target/release/minijam-node chain-specs
           cp chain-specs/stage0*.json stage0-artifacts/
+
       - name: Collect artifacts
         run: |
           cp target/release/minijam-node stage0-artifacts/
@@ -101,7 +127,9 @@ jobs:
             "runtime_wasm_blake2_256": "$(b2sum -l 256 target/release/wbuild/minijam-runtime/minijam_runtime.compact.compressed.wasm | awk '{print $1}')"
           }
           EOF
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: minijam-stage0
           path: stage0-artifacts/
