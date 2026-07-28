@@ -1,0 +1,21 @@
+[node]
+rpc_url = "http://node:9944"
+
+[worker]
+worker_id = 2
+key = "//Charlie"
+submit_candidates = true
+submit_support_votes = true
+poll_interval_ms = 500
+recovery_db_path = "/data/state.toml"
+
+[health]
+bind = "0.0.0.0:8082"
+
+[metrics]
+bind = "0.0.0.0:9616"
+
+[content]
+ipfs_gateway = "http://playground-api:8080"
+request_timeout_secs = 15
+max_bundle_bytes = 16777216

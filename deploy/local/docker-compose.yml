@@ -1,0 +1,133 @@
+name: minijam-stage0
+
+x-worker: &worker
+  build:
+    context: ../..
+    dockerfile: deploy/local/Dockerfile
+    target: worker
+  restart: unless-stopped
+  depends_on:
+    node:
+      condition: service_healthy
+    playground-api:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8082/health/ready"]
+    interval: 2s
+    timeout: 2s
+    retries: 60
+  networks: [stage0]
+
+services:
+  node:
+    build:
+      context: ../..
+      dockerfile: deploy/local/Dockerfile
+      target: node
+    command:
+      - --dev
+      - --alice
+      - --base-path=/data
+      - --rpc-external
+      - --rpc-cors=all
+      - --rpc-methods=unsafe
+    ports:
+      - "${MINIJAM_NODE_PORT:-9944}:9944"
+    volumes:
+      - node-data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'curl -fsS -H "content-type: application/json" --data "{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"system_health\",\"params\":[]}" http://127.0.0.1:9944 >/dev/null'
+      interval: 2s
+      timeout: 2s
+      retries: 90
+    networks: [stage0]
+
+  compiler-api:
+    build:
+      context: ../..
+      dockerfile: deploy/local/Dockerfile
+      target: compiler
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/health/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    networks: [stage0]
+
+  playground-api:
+    build:
+      context: ../..
+      dockerfile: deploy/local/Dockerfile
+      target: playground
+    environment:
+      MINIJAM_PLAYGROUND_BIND: 0.0.0.0:8080
+      MINIJAM_PLAYGROUND_DB: /data/playground.sqlite
+      MINIJAM_BUNDLE_DIR: /data/bundles
+      MINIJAM_COMPILER_URL: http://compiler-api:8081
+      MINIJAM_RPC_URL: ws://node:9944
+      MINIJAM_GENESIS_HASH: ${MINIJAM_GENESIS_HASH}
+      MINIJAM_RELAYER_URI: ${MINIJAM_RELAYER_URI}
+    volumes:
+      - playground-data:/data
+    depends_on:
+      node:
+        condition: service_healthy
+      compiler-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    networks: [stage0]
+
+  worker-1:
+    <<: *worker
+    command: ["--config=/config/worker.toml"]
+    volumes:
+      - ./worker-1.toml:/config/worker.toml:ro
+      - worker-1-data:/data
+
+  worker-2:
+    <<: *worker
+    command: ["--config=/config/worker.toml"]
+    volumes:
+      - ./worker-2.toml:/config/worker.toml:ro
+      - worker-2-data:/data
+
+  worker-3:
+    <<: *worker
+    command: ["--config=/config/worker.toml"]
+    volumes:
+      - ./worker-3.toml:/config/worker.toml:ro
+      - worker-3-data:/data
+
+  playground-web:
+    build:
+      context: ../..
+      dockerfile: deploy/local/Dockerfile.web
+      args:
+        VITE_MINIJAM_GENESIS_HASH: ${MINIJAM_GENESIS_HASH}
+    depends_on:
+      playground-api:
+        condition: service_healthy
+    ports:
+      - "${MINIJAM_WEB_PORT:-4173}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/health/live"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    networks: [stage0]
+
+volumes:
+  node-data:
+  playground-data:
+  worker-1-data:
+  worker-2-data:
+  worker-3-data:
+
+networks:
+  stage0:

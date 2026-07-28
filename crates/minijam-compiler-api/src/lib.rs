@@ -68,6 +68,7 @@ pub struct CompilerConfig {
     pub repository: PathBuf,
     pub image: String,
     pub docker_binary: PathBuf,
+    pub direct: bool,
     pub timeout: Duration,
     pub concurrency: usize,
 }
@@ -110,6 +111,29 @@ impl CompilerService {
         output: &Path,
         request: &CompileRequest,
     ) -> Command {
+        if self.config.direct {
+            let mut command = Command::new(self.config.repository.join("scripts/compile-service"));
+            command.args([
+                match request.language {
+                    Language::C => "c",
+                    Language::Cpp => "cpp",
+                },
+                source.to_str().expect("temporary source path is UTF-8"),
+                output.to_str().expect("temporary output path is UTF-8"),
+                match request.optimization {
+                    Optimization::O0 => "O0",
+                    Optimization::Os => "Os",
+                },
+            ]);
+            command.env(
+                "MINIJAM_CONVERTER_BIN",
+                std::env::var("MINIJAM_CONVERTER_BIN")
+                    .unwrap_or_else(|_| "/usr/local/bin/polkavm-to-jam".into()),
+            );
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+            command.kill_on_drop(true);
+            return command;
+        }
         let mut command = Command::new(&self.config.docker_binary);
         command.args([
             "run",
@@ -295,6 +319,7 @@ mod tests {
             repository: PathBuf::from("/repo"),
             image: "minijam-compiler:test".into(),
             docker_binary: PathBuf::from("docker"),
+            direct: false,
             timeout: Duration::from_secs(10),
             concurrency: 2,
         })
@@ -354,6 +379,7 @@ mod tests {
             repository: PathBuf::from("/repo"),
             image: "minijam-compiler:test".into(),
             docker_binary: script,
+            direct: false,
             timeout,
             concurrency: 2,
         });

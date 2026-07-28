@@ -16,6 +16,8 @@ async fn main() {
         repository,
         image,
         docker_binary: PathBuf::from("docker"),
+        direct: std::env::var("MINIJAM_COMPILER_DIRECT")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
         timeout: Duration::from_secs(30),
         concurrency: 2,
     });
