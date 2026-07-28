@@ -66,6 +66,10 @@ impl_runtime_apis! {
             pallet_minijam::Pallet::<Runtime>::open_worker_verification_tasks()
         }
 
+        fn get_worker(worker_id: u64) -> Option<Vec<u8>> {
+            pallet_minijam_workers::Workers::<Runtime>::get(worker_id).map(|value| value.encode())
+        }
+
         fn get_work_by_package_hash(package_hash: minijam_protocol::Hash) -> Option<Vec<u8>> {
             pallet_minijam::Pallet::<Runtime>::get_work_by_package_hash(package_hash)
                 .map(|value| value.encode())

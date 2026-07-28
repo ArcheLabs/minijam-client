@@ -5,10 +5,12 @@ use std::{path::PathBuf, sync::Arc, thread, time::Duration};
 use clap::Parser;
 use futures::executor::block_on;
 use minijam_worker::{
-    spawn_prometheus_metrics_server, sr25519_pair_from_uri, BlockingHttpBytesClient,
-    BlockingHttpWorkerChainSource, WorkerConfig, WorkerMetrics, WorkerRecoveryDb, WorkerRunner,
+    check_bundle_gateway_ready, spawn_prometheus_metrics_server, spawn_worker_health_server,
+    sr25519_pair_from_uri, BlockingHttpBytesClient, BlockingHttpWorkerChainSource, WorkerConfig,
+    WorkerHealth, WorkerMetrics, WorkerRecoveryDb, WorkerRunner, WorkerSignedTxContext,
 };
 use minijam_worker_engine::{fetch::IpfsGatewayFetcher, MiniJamWorkBundleDecoder};
+use sp_core::Pair;
 
 #[derive(Debug, Parser)]
 #[command(name = "minijam-worker")]
@@ -43,6 +45,9 @@ struct Cli {
 
     #[arg(long)]
     metrics_bind: Option<String>,
+
+    #[arg(long)]
+    health_bind: Option<String>,
 
     #[arg(long)]
     ipfs_gateway: Option<String>,
@@ -94,6 +99,9 @@ fn build_config(cli: &Cli) -> Result<WorkerConfig, String> {
     if let Some(metrics_bind) = &cli.metrics_bind {
         config.metrics_bind = Some(metrics_bind.clone());
     }
+    if let Some(health_bind) = &cli.health_bind {
+        config.health_bind = Some(health_bind.clone());
+    }
     if let Some(ipfs_gateway) = &cli.ipfs_gateway {
         config.ipfs_gateway = ipfs_gateway.clone();
     }
@@ -102,6 +110,36 @@ fn build_config(cli: &Cli) -> Result<WorkerConfig, String> {
     }
     if let Some(max_bundle_bytes) = cli.max_bundle_bytes {
         config.max_bundle_bytes = max_bundle_bytes;
+    }
+    if let Ok(value) = std::env::var("WORKER_ID") {
+        config.worker_id = Some(
+            value
+                .parse()
+                .map_err(|error| format!("invalid WORKER_ID: {error}"))?,
+        );
+    }
+    if let Ok(value) = std::env::var("NODE_RPC_URL") {
+        config.rpc_url = value;
+    }
+    if let Ok(value) = std::env::var("BUNDLE_GATEWAY_URL") {
+        config.ipfs_gateway = value;
+    }
+    if let Ok(value) = std::env::var("POLL_INTERVAL") {
+        config.poll_interval = Duration::from_millis(
+            value
+                .parse()
+                .map_err(|error| format!("invalid POLL_INTERVAL: {error}"))?,
+        );
+    }
+    if let Ok(path) = std::env::var("MINIJAM_WORKER_SEED_FILE") {
+        config.key = Some(
+            std::fs::read_to_string(&path)
+                .map_err(|error| format!("failed to read worker seed file {path}: {error}"))?
+                .trim()
+                .to_owned(),
+        );
+    } else if let Ok(value) = std::env::var("WORKER_SIGNING_KEY") {
+        config.key = Some(value);
     }
     Ok(config)
 }
@@ -161,6 +199,14 @@ fn main() {
         }
         eprintln!("minijam worker metrics listening on {bind}");
     }
+    let health = Arc::new(WorkerHealth::default());
+    if let Some(bind) = &config.health_bind {
+        if let Err(error) = spawn_worker_health_server(bind, Arc::clone(&health)) {
+            eprintln!("failed to start worker health endpoint at {bind}: {error}");
+            std::process::exit(2);
+        }
+        eprintln!("minijam worker health listening on {bind}");
+    }
     let recovery_db = config.recovery_db_path.as_ref().map(WorkerRecoveryDb::new);
     let statuses = if let Some(db) = &recovery_db {
         match db.load_statuses() {
@@ -188,6 +234,19 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let identity_ready = signing_pair
+        .as_ref()
+        .zip(config.worker_id)
+        .is_some_and(|(pair, worker_id)| {
+            chain
+                .registered_session_key(worker_id)
+                .is_ok_and(|key| key == Some(pair.public().0))
+        });
+    let dependencies_ready = chain
+        .genesis_hash()
+        .is_ok_and(|hash| hash == config.chain_id)
+        && check_bundle_gateway_ready(&config.ipfs_gateway).is_ok();
+    health.set_ready(identity_ready && dependencies_ready);
     let fetcher = IpfsGatewayFetcher::new(BlockingHttpBytesClient, config.ipfs_gateway.clone());
     let mut runner = WorkerRunner::with_statuses(
         chain,

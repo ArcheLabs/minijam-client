@@ -1,0 +1,19 @@
+[node]
+rpc_url = "http://node:9944"
+genesis_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+[worker]
+worker_id = 1
+core_index = 0
+submit_candidates = true
+submit_support_votes = true
+poll_interval_ms = 1000
+recovery_db_path = "/data/worker-state.toml"
+
+[health]
+bind = "0.0.0.0:8082"
+
+[content]
+ipfs_gateway = "http://playground:8080/ipfs"
+request_timeout_secs = 30
+max_bundle_bytes = 16777216

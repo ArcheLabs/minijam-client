@@ -116,6 +116,18 @@ where
         }
     })?;
 
+    module.register_method("minijam_getWorker", {
+        let client = client.clone();
+        move |params, _, _| -> RpcResult<Option<String>> {
+            let worker_id: u64 = params.one()?;
+            client
+                .runtime_api()
+                .get_worker(finalized_hash(&client), worker_id)
+                .map(|value| value.map(|encoded| hex_encode(&encoded)))
+                .map_err(runtime_api_error)
+        }
+    })?;
+
     module.register_method("minijam_getWorkByPackageHash", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {
@@ -134,10 +146,7 @@ where
             let package_hash: sp_core::H256 = params.one()?;
             client
                 .runtime_api()
-                .get_work_id_by_package_hash(
-                    finalized_hash(&client),
-                    package_hash.to_fixed_bytes(),
-                )
+                .get_work_id_by_package_hash(finalized_hash(&client), package_hash.to_fixed_bytes())
                 .map_err(runtime_api_error)
         }
     })?;

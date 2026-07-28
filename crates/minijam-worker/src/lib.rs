@@ -12,7 +12,7 @@ use std::{
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     thread,
@@ -53,6 +53,7 @@ pub struct WorkerConfig {
     pub poll_interval: Duration,
     pub recovery_db_path: Option<PathBuf>,
     pub metrics_bind: Option<String>,
+    pub health_bind: Option<String>,
     pub ipfs_gateway: String,
     pub request_timeout: Duration,
     pub max_bundle_bytes: u64,
@@ -71,6 +72,7 @@ impl Default for WorkerConfig {
             poll_interval: Duration::from_millis(1_000),
             recovery_db_path: None,
             metrics_bind: None,
+            health_bind: Some("127.0.0.1:8082".into()),
             ipfs_gateway: "http://127.0.0.1:8080".into(),
             request_timeout: Duration::from_secs(30),
             max_bundle_bytes: 16_777_216,
@@ -101,7 +103,7 @@ impl WorkerConfig {
     pub fn from_toml_str(input: &str) -> Result<Self, ConfigFileError> {
         let file = WorkerConfigFile::parse(input)?;
         let mut config = Self::default();
-        file.apply_to(&mut config);
+        file.apply_to(&mut config)?;
         Ok(config)
     }
 }
@@ -118,12 +120,14 @@ pub enum ConfigError {
 #[derive(Debug)]
 pub enum ConfigFileError {
     Toml(toml::de::Error),
+    InvalidGenesisHash,
 }
 
 impl core::fmt::Display for ConfigFileError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Toml(error) => write!(f, "{error}"),
+            Self::InvalidGenesisHash => write!(f, "node.genesis_hash must be 32-byte hex"),
         }
     }
 }
@@ -135,6 +139,7 @@ struct WorkerConfigFile {
     node: Option<NodeConfigFile>,
     worker: Option<WorkerSectionConfigFile>,
     metrics: Option<MetricsConfigFile>,
+    health: Option<HealthConfigFile>,
     content: Option<ContentConfigFile>,
 }
 
@@ -143,10 +148,17 @@ impl WorkerConfigFile {
         toml::from_str(input).map_err(ConfigFileError::Toml)
     }
 
-    fn apply_to(self, config: &mut WorkerConfig) {
+    fn apply_to(self, config: &mut WorkerConfig) -> Result<(), ConfigFileError> {
         if let Some(node) = self.node {
             if let Some(rpc_url) = node.rpc_url {
                 config.rpc_url = rpc_url;
+            }
+            if let Some(genesis_hash) = node.genesis_hash {
+                let bytes =
+                    decode_hex(&genesis_hash).map_err(|_| ConfigFileError::InvalidGenesisHash)?;
+                config.chain_id = bytes
+                    .try_into()
+                    .map_err(|_| ConfigFileError::InvalidGenesisHash)?;
             }
         }
         if let Some(worker) = self.worker {
@@ -177,6 +189,11 @@ impl WorkerConfigFile {
                 config.metrics_bind = Some(bind);
             }
         }
+        if let Some(health) = self.health {
+            if let Some(bind) = health.bind {
+                config.health_bind = Some(bind);
+            }
+        }
         if let Some(content) = self.content {
             if let Some(ipfs_gateway) = content.ipfs_gateway {
                 config.ipfs_gateway = ipfs_gateway;
@@ -188,12 +205,14 @@ impl WorkerConfigFile {
                 config.max_bundle_bytes = max_bundle_bytes;
             }
         }
+        Ok(())
     }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 struct NodeConfigFile {
     rpc_url: Option<String>,
+    genesis_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -209,6 +228,11 @@ struct WorkerSectionConfigFile {
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 struct MetricsConfigFile {
+    bind: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+struct HealthConfigFile {
     bind: Option<String>,
 }
 
@@ -367,6 +391,60 @@ pub fn spawn_prometheus_metrics_server(
     Ok(handle)
 }
 
+#[derive(Default)]
+pub struct WorkerHealth {
+    ready: AtomicBool,
+}
+
+impl WorkerHealth {
+    pub fn set_ready(&self, ready: bool) {
+        self.ready.store(ready, Ordering::Release);
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+}
+
+pub fn spawn_worker_health_server(
+    bind: &str,
+    health: Arc<WorkerHealth>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    let listener = TcpListener::bind(bind)?;
+    Ok(thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+            let mut request = [0u8; 1024];
+            let count = stream.read(&mut request).unwrap_or_default();
+            let request = String::from_utf8_lossy(&request[..count]);
+            let (status, body) = if request.starts_with("GET /health/live ") {
+                ("200 OK", "live\n")
+            } else if request.starts_with("GET /health/ready ") && health.is_ready() {
+                ("200 OK", "ready\n")
+            } else if request.starts_with("GET /health/ready ") {
+                ("503 Service Unavailable", "not ready\n")
+            } else {
+                ("404 Not Found", "not found\n")
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    }))
+}
+
+pub fn check_bundle_gateway_ready(gateway: &str) -> Result<(), WorkerError> {
+    let base = gateway.trim_end_matches('/');
+    let base = base.strip_suffix("/ipfs").unwrap_or(base);
+    http_get_bytes(&format!("{base}/health/ready"))
+        .map(|_| ())
+        .map_err(|error| WorkerError::Fetch(FetchError::Transport(error.to_string())))
+}
+
 #[derive(Debug)]
 pub struct WsWorkerChainSource {
     client: jsonrpsee::ws_client::WsClient,
@@ -518,6 +596,32 @@ impl ProtocolStateSource for BlockingHttpWorkerChainSource {
 }
 
 impl BlockingHttpWorkerChainSource {
+    pub fn registered_session_key(
+        &self,
+        worker_id: WorkerId,
+    ) -> Result<Option<[u8; 32]>, WorkerError> {
+        let response = http_post_json(
+            &self.rpc_url,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "minijam_getWorker",
+                "params": [worker_id],
+            })
+            .to_string(),
+        )
+        .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        let Some(encoded) = json_rpc_optional_string_result(&response)? else {
+            return Ok(None);
+        };
+        let bytes = decode_hex(&encoded)?;
+        let worker = pallet_minijam_workers::WorkerRecord::<minijam_runtime::Runtime>::decode(
+            &mut bytes.as_slice(),
+        )
+        .map_err(|error| WorkerError::Chain(format!("invalid Worker record: {error}")))?;
+        Ok(Some(worker.session_key))
+    }
+
     fn rpc_string(&self, method: &str, params: Value) -> Result<String, WorkerError> {
         let response = http_post_json(
             &self.rpc_url,
