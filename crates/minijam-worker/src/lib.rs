@@ -223,6 +223,9 @@ struct ContentConfigFile {
 pub struct WorkTask {
     pub work_id: WorkId,
     pub round: u8,
+    pub assignment_epoch: u32,
+    pub assigned_workers: Vec<WorkerId>,
+    pub candidate_producer: WorkerId,
     pub package_hash: Hash,
     pub canonical_work_package: Vec<u8>,
     pub bundle_ref: ContentRef,
@@ -776,6 +779,9 @@ pub fn decode_pending_work_tasks_response(encoded: &str) -> Result<Vec<WorkTask>
         .map(|task| WorkTask {
             work_id: task.work_id,
             round: task.round,
+            assignment_epoch: task.assignment_epoch,
+            assigned_workers: task.assigned_workers.into_inner(),
+            candidate_producer: task.candidate_producer,
             package_hash: task.package_hash,
             canonical_work_package: task.canonical_work_package.into_inner(),
             bundle_ref: task.bundle_ref,
@@ -1474,6 +1480,7 @@ where
 {
     pub async fn submit_candidate_reports(
         &self,
+        worker_id: WorkerId,
         pair: &sr25519::Pair,
         chain_id: Hash,
         core_index: u16,
@@ -1484,6 +1491,9 @@ where
         let genesis_hash = self.chain.genesis_hash()?;
         let mut tx_hashes = Vec::new();
         for task in tasks {
+            if !task.assigned_workers.contains(&worker_id) || task.candidate_producer != worker_id {
+                continue;
+            }
             let bundle =
                 fetch_verified_content(&self.fetcher, &task.bundle_ref, self.max_bundle_bytes)
                     .await
@@ -1762,6 +1772,9 @@ mod tests {
         WorkTask {
             work_id,
             round,
+            assignment_epoch: 1,
+            assigned_workers: vec![0, 1, 2],
+            candidate_producer: 0,
             package_hash,
             canonical_work_package: Vec::from([1, 2, 3]),
             bundle_ref: ContentRef {
@@ -1816,6 +1829,9 @@ mod tests {
         WorkTask {
             work_id,
             round,
+            assignment_epoch: 1,
+            assigned_workers: vec![0, 1, 2],
+            candidate_producer: 0,
             package_hash,
             canonical_work_package: bundle.work_package.encode(),
             bundle_ref: ContentRef {
@@ -1951,6 +1967,9 @@ mod tests {
             vec![WorkTask {
                 work_id: 42,
                 round: 1,
+                assignment_epoch: 3,
+                assigned_workers: vec![0, 1, 2],
+                candidate_producer: 0,
                 package_hash,
                 canonical_work_package: vec![1, 2, 3],
                 bundle_ref,
@@ -2212,8 +2231,14 @@ mod tests {
         let metrics = WorkerMetrics::new();
         let pair = sr25519::Pair::from_seed(&[1u8; 32]);
 
+        let skipped =
+            block_on(runner.submit_candidate_reports(1, &pair, [42u8; 32], 0, Some(&metrics)))
+                .unwrap();
+        assert!(skipped.is_empty());
+        assert!(submitted.lock().unwrap().is_empty());
+
         let hashes =
-            block_on(runner.submit_candidate_reports(&pair, [42u8; 32], 0, Some(&metrics)))
+            block_on(runner.submit_candidate_reports(0, &pair, [42u8; 32], 0, Some(&metrics)))
                 .unwrap();
 
         assert_eq!(hashes, vec![[8u8; 32]]);

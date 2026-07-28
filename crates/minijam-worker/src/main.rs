@@ -134,8 +134,8 @@ fn main() {
             .unwrap_or_else(|| "disabled".into()),
         config.metrics_bind.as_deref().unwrap_or("disabled")
     );
-    if config.submit_candidates && config.key.is_none() {
-        eprintln!("--submit-candidates requires --key");
+    if config.submit_candidates && (config.worker_id.is_none() || config.key.is_none()) {
+        eprintln!("--submit-candidates requires --worker-id and --key");
         std::process::exit(2);
     }
     if config.submit_support_votes && (config.worker_id.is_none() || config.key.is_none()) {
@@ -242,6 +242,7 @@ where
 {
     let submitted_candidates = if config.submit_candidates {
         block_on(runner.submit_candidate_reports(
+            config.worker_id.unwrap(),
             signing_pair.expect("signing pair is checked before polling"),
             config.chain_id,
             config.core_index,
