@@ -62,6 +62,11 @@ else
     "${TMP}/service.elf" "${TMP}/service.blob" "${TMP}/service.polkavm"
 fi
 
-install -d "${OUT_DIR}"
+mkdir -p "${OUT_DIR}"
+[[ -w "${OUT_DIR}" ]] || {
+  printf 'compile-service: output directory is not writable: %s\n' "${OUT_DIR}" >&2
+  exit 1
+}
+
 install -m 0644 "${TMP}/service.blob" "${OUT_DIR}/service.blob"
 install -m 0644 "${TMP}/service.polkavm" "${OUT_DIR}/service.polkavm"
