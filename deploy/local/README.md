@@ -4,6 +4,13 @@ This Compose project runs one deterministic development chain, the Compiler
 API, the persistent Playground API, three independently keyed Workers, and the
 browser Playground.
 
+The authoritative M9 build runs in the trusted GitHub Actions workflow
+`m9-stage0-e2e.yml`. It creates a short-lived, read-only GitHub App installation
+token and checks out exactly the Jambda commit recorded by the MiniJAM gitlink.
+The five SHA-tagged images remain local to that Actions runner while Compose
+runs both real E2E flows; they are not pushed to GHCR. Publishing images belongs
+to M10.
+
 The browser publishes only port `4173` and reaches chain, compiler, Bundle, and
 Worker functionality through the Playground API reverse proxy. Node port
 `9944` is published for E2E assertions and local debugging, but it is never
@@ -39,7 +46,8 @@ cargo build --locked --release \
 ./scripts/stage0-local.sh build
 ```
 
-This is an optional developer fallback, not an M9 acceptance or release build.
+This is an optional developer fallback, not the authoritative M9 acceptance or
+release build.
 It tags the thin images using `MINIJAM_IMAGE_REGISTRY` and
 `MINIJAM_IMAGE_TAG` (the current full Git SHA by default).
 
