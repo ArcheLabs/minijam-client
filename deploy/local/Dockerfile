@@ -53,7 +53,11 @@ COPY service-toolchain/compiler/polkavm-to-jam ./polkavm-to-jam
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/cargo-target \
-    cargo build --locked --release --manifest-path ./polkavm-to-jam/Cargo.toml
+    cargo build --locked --release --manifest-path ./polkavm-to-jam/Cargo.toml \
+    && test -x /cargo-target/release/minijam-polkavm-to-jam \
+    && install -Dm0755 \
+    /cargo-target/release/minijam-polkavm-to-jam \
+    /out/minijam-polkavm-to-jam
 
 FROM debian:bookworm-slim AS compiler
 ARG LLVM_VERSION=20
@@ -68,7 +72,7 @@ RUN apt-get -o Acquire::Retries=5 update \
     && rm -rf /var/lib/apt/lists/* /tmp/llvm.sh \
     && useradd --uid 10001 --create-home --shell /usr/sbin/nologin minijam
 COPY --from=compiler-binary /usr/local/bin/minijam-compiler-api /usr/local/bin/
-COPY --from=converter /cargo-target/release/minijam-polkavm-to-jam /usr/local/bin/polkavm-to-jam
+COPY --from=converter /out/minijam-polkavm-to-jam /usr/local/bin/polkavm-to-jam
 COPY scripts /repository/scripts
 COPY service-toolchain /repository/service-toolchain
 USER minijam
