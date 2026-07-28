@@ -1,7 +1,7 @@
 name: minijam-stage0
 
 x-worker: &worker
-  image: minijam-stage0-worker:local
+  image: ${MINIJAM_IMAGE_REGISTRY:-ghcr.io/archelabs}/minijam-worker:${MINIJAM_IMAGE_TAG:?set MINIJAM_IMAGE_TAG}
   pull_policy: never
   build:
     context: ../..
@@ -22,7 +22,7 @@ x-worker: &worker
 
 services:
   node:
-    image: minijam-stage0-node:local
+    image: ${MINIJAM_IMAGE_REGISTRY:-ghcr.io/archelabs}/minijam-node:${MINIJAM_IMAGE_TAG:?set MINIJAM_IMAGE_TAG}
     pull_policy: never
     build:
       context: ../..
@@ -49,7 +49,7 @@ services:
     networks: [stage0]
 
   compiler-api:
-    image: minijam-stage0-compiler-api:local
+    image: ${MINIJAM_IMAGE_REGISTRY:-ghcr.io/archelabs}/minijam-compiler-api:${MINIJAM_IMAGE_TAG:?set MINIJAM_IMAGE_TAG}
     pull_policy: never
     build:
       context: ../..
@@ -69,7 +69,7 @@ services:
     networks: [stage0]
 
   playground-api:
-    image: minijam-stage0-playground-api:local
+    image: ${MINIJAM_IMAGE_REGISTRY:-ghcr.io/archelabs}/minijam-playground-api:${MINIJAM_IMAGE_TAG:?set MINIJAM_IMAGE_TAG}
     pull_policy: never
     build:
       context: ../..
@@ -119,7 +119,7 @@ services:
       - worker-3-data:/data
 
   playground-web:
-    image: minijam-stage0-playground-web:local
+    image: ${MINIJAM_IMAGE_REGISTRY:-ghcr.io/archelabs}/minijam-playground-web:${MINIJAM_IMAGE_TAG:?set MINIJAM_IMAGE_TAG}
     pull_policy: never
     build:
       context: ../..

@@ -14,11 +14,12 @@ configured in the Web build.
 From the repository root:
 
 ```bash
-./scripts/stage0-local.sh build
+export MINIJAM_IMAGE_TAG=<trusted-build-git-sha>
+./scripts/stage0-local.sh pull
+./scripts/stage0-local.sh reset
 ./scripts/stage0-local.sh up
 ./scripts/stage0-local.sh test
 ./scripts/stage0-local.sh down
-./scripts/stage0-local.sh reset
 ```
 
 `reset` removes the local Node, Playground, and Worker volumes. Ordinary
@@ -38,9 +39,14 @@ cargo build --locked --release \
 ./scripts/stage0-local.sh build
 ```
 
-`up` uses only the fixed `minijam-stage0-*:local` image tags. Compose applies
-`pull_policy: never`, and the script also passes `--no-build --pull never`;
-runtime startup therefore cannot trigger registry access or compilation.
+This is an optional developer fallback, not an M9 acceptance or release build.
+It tags the thin images using `MINIJAM_IMAGE_REGISTRY` and
+`MINIJAM_IMAGE_TAG` (the current full Git SHA by default).
+
+Runtime services use `pull_policy: never`, and `up` also passes
+`--no-build --pull never`. Only the explicit `pull` command contacts the
+registry. The registry defaults to `ghcr.io/archelabs`.
+Runtime startup therefore cannot trigger registry access or compilation.
 
 Copy `.env.example` to `.env` only when overriding ports, the test-wallet
 build, or deterministic local identities. The checked-in defaults run without
@@ -59,6 +65,6 @@ reads the actual genesis hash from RPC at startup and exposes it through its
 same-origin configuration endpoint, so browser action validation cannot drift
 after a Runtime rebuild.
 
-Every service has a dependency-aware health check. `wait-ready` waits for
-healthy Node, Compiler, Playground, all three Workers, and Web. On E2E failure,
-`test-e2e` prints Compose status plus recent logs for every relevant process.
+Every service has a dependency-aware health check. `up` waits for healthy
+Node, Compiler, Playground, all three Workers, and Web. On E2E failure, `test`
+prints Compose status plus recent logs for every relevant process.

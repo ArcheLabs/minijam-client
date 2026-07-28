@@ -5,6 +5,8 @@ repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose_file="${repository}/deploy/local/docker-compose.yml"
 env_file="${MINIJAM_STAGE0_ENV:-${repository}/deploy/local/.env}"
 project="minijam-stage0"
+export MINIJAM_IMAGE_REGISTRY="${MINIJAM_IMAGE_REGISTRY:-ghcr.io/archelabs}"
+export MINIJAM_IMAGE_TAG="${MINIJAM_IMAGE_TAG:-$(git -C "${repository}" rev-parse HEAD)}"
 
 compose=(docker compose --project-name "${project}")
 if [[ -f "${env_file}" ]]; then
@@ -48,6 +50,9 @@ wait_ready() {
 
 command="${1:-}"
 case "${command}" in
+  pull)
+    "${compose[@]}" pull --policy always
+    ;;
   build)
     required=(
       minijam-node
@@ -98,7 +103,7 @@ case "${command}" in
     )
     ;;
   *)
-    echo "usage: $0 {build|up|down|reset|test}" >&2
+    echo "usage: $0 {pull|build|up|down|reset|test}" >&2
     exit 2
     ;;
 esac
