@@ -1581,10 +1581,12 @@ fn service_state_accessors_address_canonical_protocol_keys() {
         let preimage = StateValue::try_from(vec![9, 8, 7, 6]).unwrap();
 
         let info_key = StoreKey::new_service_info_key(&service_id).to_state_key().0;
-        let value_key =
-            StoreKey::new_service_storage_key(&service_id, &ByteSequence::from(storage_key.clone()))
-                .to_state_key()
-                .0;
+        let value_key = StoreKey::new_service_storage_key(
+            &service_id,
+            &ByteSequence::from(storage_key.clone()),
+        )
+        .to_state_key()
+        .0;
         let preimage_key = StoreKey::new_preimage_key(&service_id, &OpaqueHash(code_hash))
             .to_state_key()
             .0;

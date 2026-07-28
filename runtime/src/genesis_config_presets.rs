@@ -441,8 +441,10 @@ mod tests {
             invalid_input,
             &TestProtocolState::from_pairs(system_service_zero_protocol_state()),
         );
-        assert!(invalid_result.is_err(), "invalid request id must be rejected");
-
+        assert!(
+            invalid_result.is_err(),
+            "invalid request id must be rejected"
+        );
     }
 
     #[test]
