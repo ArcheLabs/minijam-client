@@ -4,11 +4,18 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends clang libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY . .
-RUN cargo build --locked --release \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo build --locked --release \
     -p minijam-node \
     -p minijam-compiler-api \
     -p minijam-playground-api \
-    -p minijam-worker
+    -p minijam-worker \
+    && install -D target/release/minijam-node /out/minijam-node \
+    && install -D target/release/minijam-compiler-api /out/minijam-compiler-api \
+    && install -D target/release/minijam-playground-api /out/minijam-playground-api \
+    && install -D target/release/minijam-worker /out/minijam-worker
 
 FROM debian:bookworm-slim AS rust-runtime
 RUN apt-get update \
@@ -17,24 +24,24 @@ RUN apt-get update \
     && useradd --uid 10001 --create-home --shell /usr/sbin/nologin minijam
 
 FROM rust-runtime AS node
-COPY --from=rust-builder /src/target/release/minijam-node /usr/local/bin/
+COPY --from=rust-builder /out/minijam-node /usr/local/bin/
 USER minijam
 ENTRYPOINT ["minijam-node"]
 
 FROM rust-runtime AS playground
-COPY --from=rust-builder /src/target/release/minijam-playground-api /usr/local/bin/
+COPY --from=rust-builder /out/minijam-playground-api /usr/local/bin/
 RUN install -d -o minijam -g minijam /data/bundles
 USER minijam
 ENTRYPOINT ["minijam-playground-api"]
 
 FROM rust-runtime AS worker
-COPY --from=rust-builder /src/target/release/minijam-worker /usr/local/bin/
+COPY --from=rust-builder /out/minijam-worker /usr/local/bin/
 RUN install -d -o minijam -g minijam /data
 USER minijam
 ENTRYPOINT ["minijam-worker"]
 
 FROM rust-runtime AS compiler-binary
-COPY --from=rust-builder /src/target/release/minijam-compiler-api /usr/local/bin/
+COPY --from=rust-builder /out/minijam-compiler-api /usr/local/bin/
 
 FROM rust:1.88-bookworm AS converter
 WORKDIR /build
