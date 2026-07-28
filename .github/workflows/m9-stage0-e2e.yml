@@ -1,0 +1,117 @@
+name: M9 Stage 0 E2E
+
+on:
+  push:
+    branches:
+      - m9-stage0-local-e2e
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  MINIJAM_IMAGE_REGISTRY: ghcr.io/archelabs
+  MINIJAM_IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  m9-stage0-e2e:
+    name: Build and run trusted Stage 0 E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout MiniJAM
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Checkout pinned private Jambda
+        env:
+          JAMBDA_DEPLOY_KEY: ${{ secrets.JAMBDA_DEPLOY_KEY }}
+        run: |
+          test -n "${JAMBDA_DEPLOY_KEY}"
+          install -d -m 0700 "${HOME}/.ssh"
+          install -m 0600 /dev/null "${HOME}/.ssh/jambda_deploy_key"
+          printf '%s\n' "${JAMBDA_DEPLOY_KEY}" > "${HOME}/.ssh/jambda_deploy_key"
+          ssh-keyscan -H github.com > "${HOME}/.ssh/known_hosts"
+          GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/jambda_deploy_key -o IdentitiesOnly=yes" \
+            git submodule update --init external/jambda
+          rm -f "${HOME}/.ssh/jambda_deploy_key"
+          ./scripts/check-submodule.sh
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Restore Cargo and Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            service-toolchain/compiler/polkavm-to-jam/target
+          key: m9-stage0-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'service-toolchain/compiler/polkavm-to-jam/Cargo.lock') }}
+          restore-keys: |
+            m9-stage0-${{ runner.os }}-
+
+      - name: Build Stage 0 release binaries
+        run: |
+          cargo build --locked --release \
+            -p minijam-node \
+            -p minijam-compiler-api \
+            -p minijam-playground-api \
+            -p minijam-worker
+          cargo build --locked --release \
+            --manifest-path service-toolchain/compiler/polkavm-to-jam/Cargo.toml
+
+      - name: Install browser test dependencies
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/playground-web/package-lock.json
+
+      - name: Install Chromium
+        working-directory: apps/playground-web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Build five local Stage 0 images
+        run: ./scripts/stage0-local.sh build
+
+      - name: Reset Stage 0 volumes
+        run: ./scripts/stage0-local.sh reset
+
+      - name: Start Stage 0 Compose
+        run: ./scripts/stage0-local.sh up
+
+      - name: Run two real Stage 0 E2E flows
+        run: ./scripts/stage0-local.sh test
+
+      - name: Collect failure diagnostics
+        if: failure()
+        run: |
+          mkdir -p stage0-diagnostics
+          docker compose --project-name minijam-stage0 \
+            -f deploy/local/docker-compose.yml ps --all \
+            > stage0-diagnostics/compose-ps.txt 2>&1 || true
+          docker compose --project-name minijam-stage0 \
+            -f deploy/local/docker-compose.yml logs --no-color \
+            > stage0-diagnostics/compose.log 2>&1 || true
+          cp -R apps/playground-web/playwright-report stage0-diagnostics/ 2>/dev/null || true
+          cp -R apps/playground-web/test-results stage0-diagnostics/ 2>/dev/null || true
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m9-stage0-diagnostics-${{ github.sha }}
+          path: stage0-diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Stop Stage 0 Compose
+        if: always()
+        run: ./scripts/stage0-local.sh down
