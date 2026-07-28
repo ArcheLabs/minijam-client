@@ -1,5 +1,8 @@
 FROM rust:1.88-bookworm AS rust-builder
 WORKDIR /src
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends clang libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN cargo build --locked --release \
     -p minijam-node \

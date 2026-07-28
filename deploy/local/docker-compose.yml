@@ -50,7 +50,11 @@ services:
       dockerfile: deploy/local/Dockerfile
       target: compiler
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/health/ready"]
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/8081; printf "GET /health/ready HTTP/1.0\r\n\r\n" >&3; grep -q "204 No Content" <&3'
       interval: 2s
       timeout: 2s
       retries: 60
