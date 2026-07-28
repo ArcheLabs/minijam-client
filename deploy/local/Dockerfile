@@ -68,7 +68,6 @@ COPY scripts /repository/scripts
 COPY service-toolchain /repository/service-toolchain
 USER minijam
 ENV MINIJAM_COMPILER_BIND=0.0.0.0:8081 \
-    MINIJAM_COMPILER_DIRECT=1 \
     MINIJAM_REPOSITORY=/repository \
     MINIJAM_CONVERTER_BIN=/usr/local/bin/polkavm-to-jam
 ENTRYPOINT ["minijam-compiler-api"]

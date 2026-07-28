@@ -1,9 +1,11 @@
 name: minijam-stage0
 
 x-worker: &worker
+  image: minijam-stage0-worker:local
+  pull_policy: never
   build:
     context: ../..
-    dockerfile: deploy/local/Dockerfile
+    dockerfile: deploy/local/Dockerfile.thin
     target: worker
   restart: unless-stopped
   depends_on:
@@ -20,9 +22,11 @@ x-worker: &worker
 
 services:
   node:
+    image: minijam-stage0-node:local
+    pull_policy: never
     build:
       context: ../..
-      dockerfile: deploy/local/Dockerfile
+      dockerfile: deploy/local/Dockerfile.thin
       target: node
     command:
       - --dev
@@ -45,10 +49,14 @@ services:
     networks: [stage0]
 
   compiler-api:
+    image: minijam-stage0-compiler-api:local
+    pull_policy: never
     build:
       context: ../..
-      dockerfile: deploy/local/Dockerfile
+      dockerfile: deploy/local/Dockerfile.thin
       target: compiler
+    environment:
+      MINIJAM_COMPILER_DIRECT: "true"
     healthcheck:
       test:
         - CMD
@@ -61,9 +69,11 @@ services:
     networks: [stage0]
 
   playground-api:
+    image: minijam-stage0-playground-api:local
+    pull_policy: never
     build:
       context: ../..
-      dockerfile: deploy/local/Dockerfile
+      dockerfile: deploy/local/Dockerfile.thin
       target: playground
     environment:
       MINIJAM_PLAYGROUND_BIND: 0.0.0.0:8080
@@ -109,6 +119,8 @@ services:
       - worker-3-data:/data
 
   playground-web:
+    image: minijam-stage0-playground-web:local
+    pull_policy: never
     build:
       context: ../..
       dockerfile: deploy/local/Dockerfile.web

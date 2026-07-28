@@ -1,7 +1,14 @@
 .git
-target
-**/target
+target/*
+!target/release/
+target/release/*
+!target/release/minijam-node
+!target/release/minijam-compiler-api
+!target/release/minijam-playground-api
+!target/release/minijam-worker
+!target/release/minijam-polkavm-to-jam
 external/jambda/target
+service-toolchain/compiler/polkavm-to-jam/target
 apps/playground-web/node_modules
 **/node_modules
 apps/playground-web/dist

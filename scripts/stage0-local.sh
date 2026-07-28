@@ -48,8 +48,33 @@ wait_ready() {
 
 command="${1:-}"
 case "${command}" in
+  build)
+    required=(
+      minijam-node
+      minijam-compiler-api
+      minijam-playground-api
+      minijam-worker
+    )
+    for binary in "${required[@]}"; do
+      if [[ ! -x "${repository}/target/release/${binary}" ]]; then
+        echo "missing target/release/${binary}; build release binaries on the host or in CI first" >&2
+        exit 2
+      fi
+    done
+    converter="${repository}/target/release/minijam-polkavm-to-jam"
+    if [[ ! -x "${converter}" ]]; then
+      nested_converter="${repository}/service-toolchain/compiler/polkavm-to-jam/target/release/minijam-polkavm-to-jam"
+      if [[ ! -x "${nested_converter}" ]]; then
+        echo "missing release minijam-polkavm-to-jam converter" >&2
+        exit 2
+      fi
+      install -m 0755 "${nested_converter}" "${converter}"
+    fi
+    "${compose[@]}" build
+    ;;
   up)
-    "${compose[@]}" up --build -d
+    trap diagnostics ERR
+    "${compose[@]}" up --detach --no-build --pull never
     wait_ready
     ;;
   down)
@@ -58,10 +83,7 @@ case "${command}" in
   reset)
     "${compose[@]}" down --volumes --remove-orphans
     ;;
-  wait-ready)
-    wait_ready
-    ;;
-  test-e2e)
+  test)
     trap diagnostics ERR
     wait_ready
     web_address="$("${compose[@]}" port playground-web 8080)"
@@ -76,7 +98,7 @@ case "${command}" in
     )
     ;;
   *)
-    echo "usage: $0 {up|down|reset|wait-ready|test-e2e}" >&2
+    echo "usage: $0 {build|up|down|reset|test}" >&2
     exit 2
     ;;
 esac

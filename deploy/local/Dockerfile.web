@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim AS builder
 WORKDIR /src/apps/playground-web
 COPY apps/playground-web/package.json apps/playground-web/package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY apps/playground-web/ ./
 COPY test-vectors /src/test-vectors
 ARG VITE_MINIJAM_GENESIS_HASH
