@@ -1,7 +1,7 @@
 FROM rust:1.88-bookworm AS rust-builder
 WORKDIR /src
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends clang libclang-dev \
+    && apt-get install -y --no-install-recommends clang libclang-dev protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
