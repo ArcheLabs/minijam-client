@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 FROM rust:1.88-bookworm AS rust-builder
 WORKDIR /src
 COPY . .
