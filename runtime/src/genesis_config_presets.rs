@@ -2,7 +2,7 @@
 
 use alloc::{vec, vec::Vec};
 
-use frame_support::build_struct_json_patch;
+use frame_support::{build_struct_json_patch, traits::Get};
 use jambda_minijam_executive::{system_service_genesis_state, SystemServiceGenesisConfig};
 use serde_json::Value;
 use sp_consensus_aura::sr25519::AuthorityId as AuraId;
