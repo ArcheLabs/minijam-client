@@ -78,6 +78,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const playgroundApi = {
+  getConfig: () =>
+    request<{ genesisHash: string; actionDomain: string }>("/api/v1/config"),
   build: (body: BuildRequest) =>
     request<BuildArtifact>("/api/v1/build", { method: "POST", body: JSON.stringify(body) }),
   prepareAction: (body: { account: string; action: string; paramsHash: string; expiry: number }) =>

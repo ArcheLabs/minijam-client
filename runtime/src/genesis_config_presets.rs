@@ -39,7 +39,7 @@ fn testnet_genesis(
 ) -> Value {
     let reward_pool = AccountId::new([9; 32]);
     let fuel_escrow = AccountId::new([7; 32]);
-    let playground_relayer = AccountId::new([0x92; 32]);
+    let playground_relayer = crate::PlaygroundRelayer::get();
     if !endowed_accounts
         .iter()
         .any(|account| account == &reward_pool)

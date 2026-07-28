@@ -10,10 +10,15 @@ export async function signAction(
   account: WalletAccount,
   action: PlaygroundAction,
   params: Record<string, unknown>,
-  expectedGenesis = import.meta.env.VITE_MINIJAM_GENESIS_HASH
+  configuredGenesis = import.meta.env.VITE_MINIJAM_GENESIS_HASH
 ): Promise<Authorization> {
   if (account.type !== "sr25519") throw new Error(SR25519_ONLY_ERROR);
-  if (!expectedGenesis) throw new Error("The Playground genesis hash is not configured.");
+  const config = configuredGenesis
+    ? { genesisHash: configuredGenesis, actionDomain: ACTION_DOMAIN }
+    : await playgroundApi.getConfig();
+  if (config.actionDomain !== ACTION_DOMAIN || !/^0x[0-9a-f]{64}$/i.test(config.genesisHash)) {
+    throw new Error("The Playground chain configuration is invalid.");
+  }
   const hash = paramsHash(params);
   const expiry = Math.floor(Date.now() / 1000) + 120;
   const prepared = await playgroundApi.prepareAction({
@@ -27,7 +32,7 @@ export async function signAction(
     prepared.action === action &&
     prepared.paramsHash.toLowerCase() === hash.toLowerCase() &&
     prepared.domain === ACTION_DOMAIN &&
-    prepared.genesis.toLowerCase() === expectedGenesis.toLowerCase() &&
+    prepared.genesis.toLowerCase() === config.genesisHash.toLowerCase() &&
     prepared.expiry === expiry &&
     /^0x[0-9a-f]{64}$/i.test(prepared.signingPayload);
   if (!valid) throw new Error("The prepared action does not match the operation you confirmed.");

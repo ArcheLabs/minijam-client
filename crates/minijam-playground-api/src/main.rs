@@ -14,11 +14,8 @@ async fn main() {
     );
     let compiler_url =
         std::env::var("MINIJAM_COMPILER_URL").unwrap_or_else(|_| "http://127.0.0.1:8081".into());
-    let bundle_dir = PathBuf::from(
-        std::env::var("MINIJAM_BUNDLE_DIR").unwrap_or_else(|_| "bundles".into()),
-    );
-    let genesis_hex = std::env::var("MINIJAM_GENESIS_HASH").expect("MINIJAM_GENESIS_HASH");
-    let genesis_hash = decode_hash(&genesis_hex);
+    let bundle_dir =
+        PathBuf::from(std::env::var("MINIJAM_BUNDLE_DIR").unwrap_or_else(|_| "bundles".into()));
     let rpc_url = std::env::var("MINIJAM_RPC_URL").unwrap_or_else(|_| "ws://127.0.0.1:9944".into());
     let signer_uri = std::env::var("MINIJAM_RELAYER_URI").expect("MINIJAM_RELAYER_URI");
     let signer = sr25519::Pair::from_string(&signer_uri, None).expect("valid relayer URI");
@@ -27,6 +24,13 @@ async fn main() {
             .await
             .expect("connect MiniJAM chain"),
     );
+    let genesis_hash = match std::env::var("MINIJAM_GENESIS_HASH") {
+        Ok(value) if !value.eq_ignore_ascii_case("rpc") => decode_hash(&value),
+        _ => chain
+            .genesis_hash()
+            .await
+            .expect("read genesis hash from MiniJAM chain"),
+    };
     let playground = Playground::open(
         &database,
         PlaygroundConfig {

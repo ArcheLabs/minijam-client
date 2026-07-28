@@ -717,6 +717,7 @@ impl Playground {
     pub fn router(self) -> Router {
         Router::new()
             .route("/api/v1/build", post(build))
+            .route("/api/v1/config", get(get_config))
             .route("/api/v1/actions/prepare", post(prepare_action))
             .route("/api/v1/services", post(create_service))
             .route("/api/v1/services/{id}", get(get_service))
@@ -1281,15 +1282,40 @@ async fn build(
     Ok(Json(body))
 }
 
+async fn get_config(State(playground): State<Playground>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "genesisHash": hex(&playground.config.genesis_hash),
+        "actionDomain": String::from_utf8_lossy(ACTION_DOMAIN),
+    }))
+}
+
 async fn ready(State(playground): State<Playground>) -> StatusCode {
-    match playground
+    let database_ready = playground
         .db
         .lock()
         .expect("playground db mutex poisoned")
         .query_row("SELECT 1", [], |row| row.get::<_, u8>(0))
-    {
-        Ok(1) => StatusCode::NO_CONTENT,
-        _ => StatusCode::SERVICE_UNAVAILABLE,
+        .is_ok_and(|value| value == 1);
+    if !database_ready {
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
+    let compiler_ready = playground
+        .compiler
+        .get(format!(
+            "{}/health/ready",
+            playground.config.compiler_url.trim_end_matches('/')
+        ))
+        .send()
+        .await
+        .is_ok_and(|response| response.status().is_success());
+    let chain_ready = match playground.chain() {
+        Ok(chain) => chain.finalized_context().await.is_ok(),
+        Err(_) => false,
+    };
+    if compiler_ready && chain_ready {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
     }
 }
 

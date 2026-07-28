@@ -67,8 +67,8 @@ services:
       MINIJAM_BUNDLE_DIR: /data/bundles
       MINIJAM_COMPILER_URL: http://compiler-api:8081
       MINIJAM_RPC_URL: ws://node:9944
-      MINIJAM_GENESIS_HASH: ${MINIJAM_GENESIS_HASH}
-      MINIJAM_RELAYER_URI: ${MINIJAM_RELAYER_URI}
+      MINIJAM_GENESIS_HASH: rpc
+      MINIJAM_RELAYER_URI: ${MINIJAM_RELAYER_URI:-0x9292929292929292929292929292929292929292929292929292929292929292}
     volumes:
       - playground-data:/data
     depends_on:
@@ -109,7 +109,7 @@ services:
       context: ../..
       dockerfile: deploy/local/Dockerfile.web
       args:
-        VITE_MINIJAM_GENESIS_HASH: ${MINIJAM_GENESIS_HASH}
+        VITE_TEST_WALLET: ${MINIJAM_TEST_WALLET:-true}
     depends_on:
       playground-api:
         condition: service_healthy

@@ -84,6 +84,10 @@ impl MiniJamChainClient {
         rpc::finalized_context(&*self.rpc.lock().await).await
     }
 
+    pub async fn genesis_hash(&self) -> Result<Hash, ChainClientError> {
+        rpc::genesis_hash(&*self.rpc.lock().await).await
+    }
+
     pub async fn observe_finality(&self) -> Result<FinalityObservation, ChainClientError> {
         let context = self.finalized_context().await?;
         Ok(FinalityObservation {

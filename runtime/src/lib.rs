@@ -146,7 +146,15 @@ parameter_types! {
 }
 
 ord_parameter_types! {
-    pub const PlaygroundRelayer: AccountId = AccountId::new([0x92; 32]);
+    // Public key derived from the deterministic local seed `0x92` repeated 32
+    // times. Local orchestration owns the seed; the runtime stores the public
+    // account only.
+    pub const PlaygroundRelayer: AccountId = AccountId::new([
+        0x90, 0x15, 0x78, 0xa4, 0x17, 0x30, 0x0a, 0xa0,
+        0xae, 0x53, 0x3b, 0x5b, 0xd0, 0xe9, 0xaf, 0x48,
+        0x9a, 0x4c, 0xc4, 0xa6, 0xf3, 0x89, 0x99, 0xb7,
+        0x62, 0x83, 0x86, 0x70, 0x87, 0x73, 0x82, 0x09,
+    ]);
 }
 
 #[derive_impl(frame_system::config_preludes::SolochainDefaultConfig)]
@@ -354,7 +362,7 @@ mod stage0_economics_tests {
 
     #[test]
     fn state_changing_ingress_accepts_only_playground_relayer() {
-        let relayer = AccountId::new([0x92; 32]);
+        let relayer = PlaygroundRelayer::get();
         let direct_user = AccountId::new([0x93; 32]);
 
         assert!(
@@ -399,7 +407,7 @@ mod stage0_economics_tests {
     #[test]
     fn runtime_dispatch_enforces_system_and_preimage_ingress() {
         runtime_ext().execute_with(|| {
-            let relayer = AccountId::new([0x92; 32]);
+            let relayer = PlaygroundRelayer::get();
             let direct_user = AccountId::new([0x93; 32]);
             let command = SystemCommandV1::CreateService {
                 controller: [0x44; 32],
