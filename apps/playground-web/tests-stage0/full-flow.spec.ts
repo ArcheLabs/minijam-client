@@ -2,8 +2,13 @@ import { expect, test } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { u8aToHex } from "@polkadot/util";
+import { cryptoWaitReady, sr25519PairFromSeed, sr25519Sign } from "@polkadot/util-crypto";
+import { paramsHash } from "../src/actions/hash";
 
 test.describe.configure({ mode: "serial" });
+
+let createdServiceId = 0;
 
 test("Build, signed Create, Work, finalized state, and signed Upgrade cross processes", async ({ page }) => {
   const browserRequests: string[] = [];
@@ -23,6 +28,7 @@ test("Build, signed Create, Work, finalized state, and signed Upgrade cross proc
   const openService = page.getByRole("button", { name: /Open Service/ });
   const serviceId = Number((await openService.textContent())?.match(/\d+/)?.[0]);
   expect(serviceId).toBeGreaterThan(0);
+  createdServiceId = serviceId;
   await openService.click();
 
   await expect(page.getByText("Available")).toBeVisible();
@@ -63,9 +69,69 @@ test("Build, signed Create, Work, finalized state, and signed Upgrade cross proc
   expect(external).toEqual([]);
 });
 
+test("a non-terminal Work survives Playground and Worker restart without a second submission", async ({ page }) => {
+  expect(createdServiceId).toBeGreaterThan(0);
+  await page.goto(`/services/${createdServiceId}`);
+  await page.getByRole("button", { name: "Connect wallet" }).click();
+
+  compose("stop", "worker-1", "worker-2", "worker-3");
+  await page.getByRole("button", { name: "Run Work" }).click();
+  await page.getByRole("button", { name: "Confirm & sign" }).click();
+  await expect(page).toHaveURL(/\/operations\//);
+  const operationUrl = page.url();
+  await expect(page.getByText(/Processing work|Submitted|Preparing/)).toBeVisible();
+
+  compose("restart", "playground-api");
+  compose("restart", "worker-2");
+  compose("start", "worker-1", "worker-3");
+  await page.reload();
+  expect(page.url()).toBe(operationUrl);
+  await expect(page.getByText("Completed")).toBeVisible();
+  await expect(page.getByText("Work ID").locator("..")).toHaveCount(1);
+  await page.getByRole("button", { name: "View finalized Service state" }).click();
+  await page.getByRole("button", { name: "Read finalized value" }).click();
+  await expect(page.getByText("Counter: 2")).toBeVisible();
+
+  const state = composeOutput("exec", "-T", "worker-2", "cat", "/data/state.toml");
+  const workKeys = [...state.matchAll(/work_id\s*=\s*(\d+)/g)].map((match) => match[1]);
+  expect(new Set(workKeys).size).toBe(workKeys.length);
+});
+
+test("a non-controller receives 403 without consuming the relayer nonce", async ({ request }) => {
+  await cryptoWaitReady();
+  const pair = sr25519PairFromSeed(new Uint8Array(32).fill(8));
+  const account = u8aToHex(pair.publicKey);
+  const serviceResponse = await request.get(`/api/v1/services/${createdServiceId}`);
+  const service = await serviceResponse.json() as { codeHash: string };
+  const params = {
+    serviceId: createdServiceId,
+    serviceCodeHash: service.codeHash,
+    payloadBase64: "AQAAAAAAAAA=",
+    extrinsicsBase64: []
+  };
+  const expiry = Math.floor(Date.now() / 1000) + 120;
+  const preparedResponse = await request.post("/api/v1/actions/prepare", {
+    data: { account, action: "work", paramsHash: paramsHash(params), expiry }
+  });
+  expect(preparedResponse.ok()).toBeTruthy();
+  const prepared = await preparedResponse.json() as { actionId: string; signingPayload: string };
+  const payload = Uint8Array.from(prepared.signingPayload.slice(2).match(/.{2}/g)!.map((byte) => Number.parseInt(byte, 16)));
+  const signature = u8aToHex(sr25519Sign(payload, pair));
+  const nonceBefore = await relayerNonce();
+  const response = await request.post("/api/v1/work", {
+    data: { authorization: { actionId: prepared.actionId, signature }, ...params }
+  });
+  expect(response.status()).toBe(403);
+  expect(await relayerNonce()).toBe(nonceBefore);
+});
+
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const composeFile = path.join(repository, "deploy/local/docker-compose.yml");
 const envFile = process.env.MINIJAM_STAGE0_ENV ?? path.join(repository, "deploy/local/.env");
+
+function compose(...args: string[]) {
+  composeOutput(...args);
+}
 
 function composeOutput(...args: string[]) {
   const composeArgs = [
@@ -75,4 +141,19 @@ function composeOutput(...args: string[]) {
   if (process.env.MINIJAM_STAGE0_ENV) composeArgs.push("--env-file", envFile);
   composeArgs.push("-f", composeFile, ...args);
   return execFileSync("docker", composeArgs, { encoding: "utf8", timeout: 120_000 });
+}
+
+async function relayerNonce() {
+  const response = await fetch(`http://127.0.0.1:${process.env.MINIJAM_NODE_PORT ?? "9944"}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      id: 1,
+      jsonrpc: "2.0",
+      method: "system_accountNextIndex",
+      params: ["0x901578a417300aa0ae533b5bd0e9af489a4cc4a6f38999b76283867087738209"]
+    })
+  });
+  const body = await response.json() as { result: number };
+  return body.result;
 }
