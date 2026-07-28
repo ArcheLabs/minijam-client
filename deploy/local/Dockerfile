@@ -41,11 +41,11 @@ RUN cargo build --locked --release --manifest-path ./polkavm-to-jam/Cargo.toml
 FROM debian:bookworm-slim AS compiler
 ARG LLVM_VERSION=20
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release software-properties-common \
     && curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh \
     && chmod +x /tmp/llvm.sh \
     && /tmp/llvm.sh "${LLVM_VERSION}" \
-    && apt-get purge -y curl gnupg lsb-release \
+    && apt-get purge -y curl gnupg lsb-release software-properties-common \
     && apt-get autoremove -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/llvm.sh \
