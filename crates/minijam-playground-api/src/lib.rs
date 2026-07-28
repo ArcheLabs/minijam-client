@@ -12,7 +12,7 @@ use std::{
 use async_trait::async_trait;
 use axum::{
     body::Body,
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -55,6 +55,23 @@ pub trait ChainGateway: Send + Sync {
         block: [u8; 32],
         service_id: u32,
     ) -> Result<Option<[u8; 32]>, ApiError>;
+    async fn service_info_at(
+        &self,
+        block: [u8; 32],
+        service_id: u32,
+    ) -> Result<Option<Vec<u8>>, ApiError>;
+    async fn service_storage_at(
+        &self,
+        block: [u8; 32],
+        service_id: u32,
+        key: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, ApiError>;
+    async fn service_preimage_at(
+        &self,
+        block: [u8; 32],
+        service_id: u32,
+        code_hash: [u8; 32],
+    ) -> Result<Option<Vec<u8>>, ApiError>;
     async fn submit_create(
         &self,
         controller: [u8; 32],
@@ -117,6 +134,38 @@ impl ChainGateway for minijam_chain_client::MiniJamChainClient {
             .try_into()
             .map(Some)
             .map_err(|_| ApiError::Chain("controller is not 32 bytes".into()))
+    }
+
+    async fn service_info_at(
+        &self,
+        block: [u8; 32],
+        service_id: u32,
+    ) -> Result<Option<Vec<u8>>, ApiError> {
+        self.service_info_at(block, service_id)
+            .await
+            .map_err(|error| ApiError::Chain(error.to_string()))
+    }
+
+    async fn service_storage_at(
+        &self,
+        block: [u8; 32],
+        service_id: u32,
+        key: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, ApiError> {
+        self.service_storage_at(block, service_id, &key)
+            .await
+            .map_err(|error| ApiError::Chain(error.to_string()))
+    }
+
+    async fn service_preimage_at(
+        &self,
+        block: [u8; 32],
+        service_id: u32,
+        code_hash: [u8; 32],
+    ) -> Result<Option<Vec<u8>>, ApiError> {
+        self.service_preimage_at(block, service_id, code_hash)
+            .await
+            .map_err(|error| ApiError::Chain(error.to_string()))
     }
 
     async fn submit_create(
@@ -276,6 +325,32 @@ pub struct SubmitWorkRequest {
     pub extrinsics_base64: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceView {
+    pub service_id: u32,
+    pub controller: String,
+    pub code_hash: String,
+    pub code_length: u64,
+    pub preimage_ready: bool,
+    pub finalized_block: String,
+    pub finalized_block_number: u32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct StorageQuery {
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageView {
+    pub service_id: u32,
+    pub key: String,
+    pub value: Option<String>,
+    pub finalized_block: String,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationKind {
@@ -340,6 +415,8 @@ pub enum ApiError {
     Chain(String),
     #[error("account is not the finalized Service Controller")]
     Forbidden,
+    #[error("resource not found")]
+    NotFound,
 }
 
 impl IntoResponse for ApiError {
@@ -350,6 +427,7 @@ impl IntoResponse for ApiError {
             }
             Self::Expired | Self::Replayed => StatusCode::CONFLICT,
             Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::NotFound => StatusCode::NOT_FOUND,
             Self::Storage(_) | Self::Compiler(_) | Self::Chain(_) => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
@@ -641,6 +719,8 @@ impl Playground {
             .route("/api/v1/build", post(build))
             .route("/api/v1/actions/prepare", post(prepare_action))
             .route("/api/v1/services", post(create_service))
+            .route("/api/v1/services/{id}", get(get_service))
+            .route("/api/v1/services/{id}/storage", get(get_service_storage))
             .route("/api/v1/services/{id}/upgrade", post(upgrade_service))
             .route("/api/v1/work", post(submit_work))
             .route("/api/v1/operations/{id}", get(get_operation))
@@ -1048,6 +1128,75 @@ async fn submit_work(
     Ok((StatusCode::ACCEPTED, Json(operation)))
 }
 
+async fn get_service(
+    State(playground): State<Playground>,
+    AxumPath(service_id): AxumPath<u32>,
+) -> Result<Json<ServiceView>, ApiError> {
+    let finalized = playground.chain()?.finalized_context().await?;
+    let controller = playground
+        .chain()?
+        .controller_at(finalized.block_hash, service_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let encoded = playground
+        .chain()?
+        .service_info_at(finalized.block_hash, service_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let value = StateValue::decode(&mut encoded.as_slice())
+        .map_err(|error| ApiError::Chain(error.to_string()))?;
+    let info = jam_codec::Decode::decode(&mut value.into_inner().as_slice())
+        .map_err(|error| ApiError::Chain(format!("invalid finalized ServiceInfo: {error}")))?;
+    let info: jp_core_primitives::types::ServiceInfo = info;
+    let preimage = playground
+        .chain()?
+        .service_preimage_at(finalized.block_hash, service_id, info.code_hash.0)
+        .await?;
+    let code_length = preimage
+        .as_deref()
+        .map(decode_state_value)
+        .transpose()?
+        .map_or(0, |blob| blob.len() as u64);
+    Ok(Json(ServiceView {
+        service_id,
+        controller: hex(&controller),
+        code_hash: hex(&info.code_hash.0),
+        code_length,
+        preimage_ready: preimage.is_some(),
+        finalized_block: hex(&finalized.block_hash),
+        finalized_block_number: finalized.block_number,
+    }))
+}
+
+async fn get_service_storage(
+    State(playground): State<Playground>,
+    AxumPath(service_id): AxumPath<u32>,
+    Query(query): Query<StorageQuery>,
+) -> Result<Json<StorageView>, ApiError> {
+    let key = decode_hex_bytes(&query.key)?;
+    let finalized = playground.chain()?.finalized_context().await?;
+    if playground
+        .chain()?
+        .controller_at(finalized.block_hash, service_id)
+        .await?
+        .is_none()
+    {
+        return Err(ApiError::NotFound);
+    }
+    let value = playground
+        .chain()?
+        .service_storage_at(finalized.block_hash, service_id, key.clone())
+        .await?
+        .map(|encoded| decode_state_value(&encoded))
+        .transpose()?;
+    Ok(Json(StorageView {
+        service_id,
+        key: hex(&key),
+        value: value.as_deref().map(hex),
+        finalized_block: hex(&finalized.block_hash),
+    }))
+}
+
 async fn get_operation(
     State(playground): State<Playground>,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -1199,6 +1348,26 @@ fn decode_array<const N: usize>(value: &str) -> Result<[u8; N], ApiError> {
     Ok(output)
 }
 
+fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, ApiError> {
+    let value = value.strip_prefix("0x").unwrap_or(value);
+    if !value.len().is_multiple_of(2) {
+        return Err(ApiError::Invalid("hex value has odd length".into()));
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&value[index..index + 2], 16)
+                .map_err(|error| ApiError::Invalid(error.to_string()))
+        })
+        .collect()
+}
+
+fn decode_state_value(encoded: &[u8]) -> Result<Vec<u8>, ApiError> {
+    StateValue::decode(&mut encoded.as_ref())
+        .map(StateValue::into_inner)
+        .map_err(|error| ApiError::Chain(error.to_string()))
+}
+
 fn decode_service_blob(encoded: &str, expected_hash: &str) -> Result<Vec<u8>, ApiError> {
     let blob = STANDARD
         .decode(encoded)
@@ -1317,6 +1486,9 @@ mod tests {
         receipt: Mutex<Option<SystemReceiptV1>>,
         work_id: Mutex<Option<u64>>,
         work_terminal: Mutex<Option<Result<[u8; 32], ()>>>,
+        service_info: Mutex<Option<Vec<u8>>>,
+        service_storage: Mutex<Option<Vec<u8>>>,
+        service_preimage: Mutex<Option<Vec<u8>>>,
     }
 
     impl MockChain {
@@ -1330,6 +1502,9 @@ mod tests {
                 receipt: Mutex::new(None),
                 work_id: Mutex::new(None),
                 work_terminal: Mutex::new(None),
+                service_info: Mutex::new(None),
+                service_storage: Mutex::new(None),
+                service_preimage: Mutex::new(None),
             }
         }
 
@@ -1359,6 +1534,32 @@ mod tests {
             _service_id: u32,
         ) -> Result<Option<[u8; 32]>, ApiError> {
             Ok(self.controller)
+        }
+
+        async fn service_info_at(
+            &self,
+            _block: [u8; 32],
+            _service_id: u32,
+        ) -> Result<Option<Vec<u8>>, ApiError> {
+            Ok(self.service_info.lock().unwrap().clone())
+        }
+
+        async fn service_storage_at(
+            &self,
+            _block: [u8; 32],
+            _service_id: u32,
+            _key: Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, ApiError> {
+            Ok(self.service_storage.lock().unwrap().clone())
+        }
+
+        async fn service_preimage_at(
+            &self,
+            _block: [u8; 32],
+            _service_id: u32,
+            _code_hash: [u8; 32],
+        ) -> Result<Option<Vec<u8>>, ApiError> {
+            Ok(self.service_preimage.lock().unwrap().clone())
         }
 
         async fn submit_create(
@@ -1467,6 +1668,44 @@ mod tests {
         let decoded = jambda_refine::MiniJamWorkBundleV1::decode(&mut encoded).unwrap();
         assert!(encoded.is_empty());
         assert!(decoded.package_hash_matches());
+    }
+
+    #[tokio::test]
+    async fn service_reads_are_bound_to_one_finalized_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let controller = [21; 32];
+        let chain = Arc::new(MockChain::new(Some(controller)));
+        let mut info = jp_core_primitives::types::ServiceInfo::default();
+        info.code_hash = jp_core_primitives::crypto::OpaqueHash([22; 32]);
+        let info_value = StateValue::try_from(jam_codec::Encode::encode(&info)).unwrap();
+        *chain.service_info.lock().unwrap() = Some(parity_scale_codec::Encode::encode(&info_value));
+        let preimage_value = StateValue::try_from(b"service-code".to_vec()).unwrap();
+        *chain.service_preimage.lock().unwrap() =
+            Some(parity_scale_codec::Encode::encode(&preimage_value));
+        let storage_value = StateValue::try_from(vec![1, 2, 3]).unwrap();
+        *chain.service_storage.lock().unwrap() =
+            Some(parity_scale_codec::Encode::encode(&storage_value));
+        let playground =
+            playground(&temp.path().join("playground.sqlite")).with_chain(chain.clone());
+
+        let Json(service) = get_service(State(playground.clone()), AxumPath(7))
+            .await
+            .unwrap();
+        let Json(storage) = get_service_storage(
+            State(playground),
+            AxumPath(7),
+            Query(StorageQuery { key: "0x01".into() }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(service.controller, hex(&controller));
+        assert_eq!(service.code_hash, hex(&[22; 32]));
+        assert_eq!(service.code_length, 12);
+        assert!(service.preimage_ready);
+        assert_eq!(service.finalized_block, hex(&[8; 32]));
+        assert_eq!(storage.value, Some("0x010203".into()));
+        assert_eq!(storage.finalized_block, service.finalized_block);
     }
 
     #[test]
