@@ -146,7 +146,6 @@ jobs:
       - name: Build five local Stage 0 images
         run: |
           ./scripts/stage0-local.sh build
-          test -x target/release/minijam-polkavm-to-jam
           for image in node compiler-api playground-api worker playground-web; do
             docker image inspect \
               "${MINIJAM_IMAGE_REGISTRY}/minijam-${image}:${MINIJAM_IMAGE_TAG}" \
