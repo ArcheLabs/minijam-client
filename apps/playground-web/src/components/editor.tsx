@@ -1,4 +1,7 @@
-import Editor, { type OnMount } from "@monaco-editor/react";
+import Editor, { loader, type OnMount } from "@monaco-editor/react";
+import * as monaco from "monaco-editor";
+
+loader.config({ monaco });
 
 interface CodeEditorProps {
   language: "c" | "cpp";

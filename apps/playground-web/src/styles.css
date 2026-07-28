@@ -1,9 +1,7 @@
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
-
 :root {
   color: #e9eadf;
   background: #11130f;
-  font-family: "DM Sans", system-ui, sans-serif;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
   font-synthesis: none;
   --ink: #e9eadf;
   --muted: #979d8d;
