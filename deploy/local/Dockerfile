@@ -1,11 +1,13 @@
 FROM rust:1.88-bookworm AS rust-builder
 WORKDIR /src
+ENV RUSTUP_MAX_RETRIES=10
 RUN apt-get update \
     && apt-get install -y --no-install-recommends clang libclang-dev protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/usr/local/rustup \
     --mount=type=cache,target=/src/target \
     cargo build --locked --release \
     -p minijam-node \
