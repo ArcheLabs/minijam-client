@@ -1,8 +1,8 @@
 FROM rust:1.88-bookworm AS rust-builder
 WORKDIR /src
 ENV RUSTUP_MAX_RETRIES=10
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends clang libclang-dev protobuf-compiler \
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends clang libclang-dev protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
@@ -20,8 +20,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && install -D target/release/minijam-worker /out/minijam-worker
 
 FROM debian:bookworm-slim AS rust-runtime
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --create-home --shell /usr/sbin/nologin minijam
 
@@ -52,8 +52,8 @@ RUN cargo build --locked --release --manifest-path ./polkavm-to-jam/Cargo.toml
 
 FROM debian:bookworm-slim AS compiler
 ARG LLVM_VERSION=20
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release software-properties-common \
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates curl gnupg lsb-release software-properties-common \
     && curl --http1.1 --retry 5 --retry-all-errors -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh \
     && chmod +x /tmp/llvm.sh \
     && /tmp/llvm.sh "${LLVM_VERSION}" \
