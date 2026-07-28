@@ -28,6 +28,7 @@ RUN apt-get -o Acquire::Retries=5 update \
 
 FROM rust-runtime AS node
 COPY --from=rust-builder /out/minijam-node /usr/local/bin/
+RUN install -d -o minijam -g minijam /data
 USER minijam
 ENTRYPOINT ["minijam-node"]
 
