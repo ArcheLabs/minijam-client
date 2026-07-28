@@ -11,8 +11,9 @@ use std::{
 
 use async_trait::async_trait;
 use axum::{
-    extract::State,
-    http::StatusCode,
+    body::Body,
+    extract::{Path as AxumPath, State},
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -86,10 +87,7 @@ pub trait ChainGateway: Send + Sync {
         &self,
         package_hash: [u8; 32],
     ) -> Result<Option<u64>, ApiError>;
-    async fn work_terminal(
-        &self,
-        work_id: u64,
-    ) -> Result<Option<Result<[u8; 32], ()>>, ApiError>;
+    async fn work_terminal(&self, work_id: u64) -> Result<Option<Result<[u8; 32], ()>>, ApiError>;
 }
 
 #[async_trait]
@@ -197,10 +195,7 @@ impl ChainGateway for minijam_chain_client::MiniJamChainClient {
             .map_err(|error| ApiError::Chain(error.to_string()))
     }
 
-    async fn work_terminal(
-        &self,
-        work_id: u64,
-    ) -> Result<Option<Result<[u8; 32], ()>>, ApiError> {
+    async fn work_terminal(&self, work_id: u64) -> Result<Option<Result<[u8; 32], ()>>, ApiError> {
         let Some(work) = self
             .work_status::<pallet_minijam::WorkRecord<minijam_runtime::Runtime>>(work_id)
             .await
@@ -566,10 +561,7 @@ impl Playground {
                     .to_bytes()
                     .try_into()
                     .map_err(|_| ApiError::Invalid("CID exceeds protocol bounds".into()))?,
-                content_hash: decode_array::<32>(json_string(
-                    &operation.request,
-                    "bundleHash",
-                )?)?,
+                content_hash: decode_array::<32>(json_string(&operation.request, "bundleHash")?)?,
                 size: json_u64(&operation.request, "bundleSize")?,
             };
             let submission = self
@@ -623,7 +615,10 @@ impl Playground {
         if minijam_protocol::blake2_256(bytes) != expected_hash {
             return Err(ApiError::Invalid("bundle hash mismatch".into()));
         }
-        let path = self.config.bundle_dir.join(hex_without_prefix(&expected_hash));
+        let path = self
+            .config
+            .bundle_dir
+            .join(hex_without_prefix(&expected_hash));
         if path.exists() {
             let existing =
                 std::fs::read(path).map_err(|error| ApiError::Storage(error.to_string()))?;
@@ -649,6 +644,7 @@ impl Playground {
             .route("/api/v1/services/{id}/upgrade", post(upgrade_service))
             .route("/api/v1/work", post(submit_work))
             .route("/api/v1/operations/{id}", get(get_operation))
+            .route("/ipfs/{cid}", get(get_bundle))
             .route("/health/live", get(|| async { StatusCode::NO_CONTENT }))
             .route("/health/ready", get(ready))
             .with_state(self)
@@ -1062,6 +1058,46 @@ async fn get_operation(
         .ok_or_else(|| ApiError::Invalid("operation not found".into()))
 }
 
+async fn get_bundle(
+    State(playground): State<Playground>,
+    AxumPath(value): AxumPath<String>,
+) -> Result<Response, ApiError> {
+    let cid =
+        cid::Cid::try_from(value.as_str()).map_err(|error| ApiError::Invalid(error.to_string()))?;
+    if cid.version() != cid::Version::V1
+        || cid.codec() != 0x55
+        || cid.hash().code() != 0xb220
+        || cid.hash().digest().len() != 32
+    {
+        return Err(ApiError::Invalid(
+            "expected CIDv1 raw Blake2b-256 content identifier".into(),
+        ));
+    }
+    let content_hash: [u8; 32] = cid
+        .hash()
+        .digest()
+        .try_into()
+        .map_err(|_| ApiError::Invalid("CID digest is not 32 bytes".into()))?;
+    let bytes = std::fs::read(
+        playground
+            .config
+            .bundle_dir
+            .join(hex_without_prefix(&content_hash)),
+    )
+    .map_err(|error| ApiError::Storage(error.to_string()))?;
+    if minijam_protocol::blake2_256(&bytes) != content_hash {
+        return Err(ApiError::Storage(
+            "stored bundle does not match requested CID".into(),
+        ));
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_LENGTH, bytes.len().to_string())
+        .body(Body::from(bytes))
+        .map_err(|error| ApiError::Storage(error.to_string()))
+}
+
 async fn prepare_action(
     State(playground): State<Playground>,
     Json(request): Json<PrepareActionRequest>,
@@ -1256,7 +1292,9 @@ fn decode_operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Operation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jam_codec::Decode as _;
     use std::sync::atomic::AtomicUsize;
+    use tower::ServiceExt;
 
     fn playground(path: &Path) -> Playground {
         Playground::open(
@@ -1383,6 +1421,52 @@ mod tests {
         ) -> Result<Option<Result<[u8; 32], ()>>, ApiError> {
             Ok(*self.work_terminal.lock().unwrap())
         }
+    }
+
+    #[tokio::test]
+    async fn bundle_gateway_returns_verified_decodable_bundle() {
+        let temp = tempfile::tempdir().unwrap();
+        let playground = playground(&temp.path().join("playground.sqlite"));
+        let built = minijam_work_package_builder::build_work_package(
+            minijam_work_package_builder::BuildWorkInput {
+                service_id: 7,
+                service_code_hash: [1; 32],
+                payload: b"payload".to_vec(),
+                extrinsics: vec![b"extrinsic".to_vec()],
+                anchor_hash: [2; 32],
+                state_root: [3; 32],
+                lookup_anchor_slot: 4,
+            },
+        )
+        .unwrap();
+        playground
+            .save_bundle(&built.bundle_bytes, built.content_ref.content_hash)
+            .unwrap();
+        let cid = cid::Cid::read_bytes(built.content_ref.cid_v1.as_slice()).unwrap();
+        let response = playground
+            .router()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/ipfs/{cid}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_LENGTH],
+            built.bundle_bytes.len().to_string()
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), built.bundle_bytes);
+        let mut encoded = bytes.as_ref();
+        let decoded = jambda_refine::MiniJamWorkBundleV1::decode(&mut encoded).unwrap();
+        assert!(encoded.is_empty());
+        assert!(decoded.package_hash_matches());
     }
 
     #[test]

@@ -5311,6 +5311,7 @@ dependencies = [
  "base64",
  "cid",
  "jam-codec",
+ "jambda-refine",
  "jp-core-primitives",
  "minijam-chain-client",
  "minijam-compiler-api",

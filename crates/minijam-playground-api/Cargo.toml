@@ -27,6 +27,7 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+jambda-refine = { path = "../../external/jambda/crates/refine" }
 tempfile.workspace = true
 tower = { version = "0.5.2", features = ["util"] }
 
