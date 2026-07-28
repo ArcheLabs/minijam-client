@@ -34,7 +34,7 @@ ENTRYPOINT ["minijam-node"]
 
 FROM rust-runtime AS playground
 COPY --from=rust-builder /out/minijam-playground-api /usr/local/bin/
-RUN install -d -o minijam -g minijam /data/bundles
+RUN install -d -o minijam -g minijam /data /data/bundles
 USER minijam
 ENTRYPOINT ["minijam-playground-api"]
 
