@@ -1813,6 +1813,25 @@ mod tests {
         }
     }
 
+    struct FailingProtocolStateSource;
+
+    impl ProtocolStateSource for FailingProtocolStateSource {
+        fn validate_finalized_context(
+            &self,
+            _context: stage0::RefineContextV1,
+        ) -> Result<(), WorkerError> {
+            Err(WorkerError::Chain("historical state unavailable".into()))
+        }
+
+        fn protocol_state_value_at(
+            &self,
+            _block_hash: [u8; 32],
+            _key: [u8; 31],
+        ) -> Result<Option<Vec<u8>>, WorkerError> {
+            Err(WorkerError::Chain("historical state unavailable".into()))
+        }
+    }
+
     #[derive(Default)]
     struct TrackingProtocolStateSource {
         anchors: Mutex<Vec<[u8; 32]>>,
@@ -2279,6 +2298,120 @@ mod tests {
     }
 
     #[test]
+    fn independently_refined_mismatched_candidate_is_opposed() {
+        let pair = sr25519::Pair::from_seed(&[2; 32]);
+        let (mut task, bundle) = refine_vote_task(44, vec![1, 2, 3], Vec::new());
+        let (other_bundle, other_hash) = refine_bundle(45);
+        let other_work = refine_task(44, 1, other_hash, &other_bundle);
+        let other_candidate = prepare_candidate_envelope(
+            &EmptyProtocolStateSource,
+            [42; 32],
+            0,
+            &other_work,
+            &other_bundle,
+        )
+        .unwrap()
+        .envelope;
+        task.candidate_report = other_candidate.canonical_report.into_inner();
+        task.candidate_report_hash = other_candidate.canonical_report_hash;
+
+        let submission = prepare_refine_backed_vote(
+            &EmptyProtocolStateSource,
+            2,
+            &pair,
+            [42; 32],
+            0,
+            &task,
+            &bundle,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            submission.vote.verdict,
+            Verdict::Oppose(OpposeReason::InvalidRefine)
+        );
+    }
+
+    #[test]
+    fn failed_independent_refine_cannot_create_support_vote() {
+        let pair = sr25519::Pair::from_seed(&[3; 32]);
+        let (task, bundle) = refine_vote_task(46, vec![1, 2, 3], Vec::new());
+
+        let result = prepare_refine_backed_vote(
+            &FailingProtocolStateSource,
+            2,
+            &pair,
+            [42; 32],
+            0,
+            &task,
+            &bundle,
+        );
+
+        assert!(matches!(result, Err(WorkerError::Chain(_))));
+    }
+
+    #[test]
+    fn three_distinct_worker_identities_produce_and_verify_independently() {
+        let producer = sr25519::Pair::from_seed(&[10; 32]);
+        let verifier_one = sr25519::Pair::from_seed(&[11; 32]);
+        let verifier_two = sr25519::Pair::from_seed(&[12; 32]);
+        let (bundle, package_hash) = refine_bundle(50);
+        let work = refine_task(50, 1, package_hash, &bundle);
+        let candidate =
+            prepare_candidate_envelope(&EmptyProtocolStateSource, [42; 32], 0, &work, &bundle)
+                .unwrap();
+        let signed_candidate =
+            prepare_signed_candidate_submission(&producer, 0, [9; 32], candidate.envelope.clone());
+        let task = VoteTask {
+            work_id: 50,
+            round: 1,
+            assignment_epoch: 7,
+            candidate_report_hash: candidate.envelope.canonical_report_hash,
+            candidate_report: candidate.envelope.canonical_report.into_inner(),
+            deadline: 100,
+            assigned_workers: vec![0, 1, 2],
+            submitted_votes: Vec::new(),
+            package_hash,
+            canonical_work_package: work.canonical_work_package,
+            bundle_ref: work.bundle_ref,
+        };
+
+        let first = prepare_refine_backed_vote(
+            &EmptyProtocolStateSource,
+            1,
+            &verifier_one,
+            [42; 32],
+            0,
+            &task,
+            &bundle,
+        )
+        .unwrap()
+        .unwrap();
+        let second = prepare_refine_backed_vote(
+            &EmptyProtocolStateSource,
+            2,
+            &verifier_two,
+            [42; 32],
+            0,
+            &task,
+            &bundle,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(first.vote.verdict, Verdict::Support);
+        assert_eq!(second.vote.verdict, Verdict::Support);
+        assert_ne!(producer.public(), verifier_one.public());
+        assert_ne!(verifier_one.public(), verifier_two.public());
+        assert_ne!(first.signature, second.signature);
+        assert_eq!(
+            signed_candidate.envelope.canonical_report_hash,
+            first.vote.candidate_report_hash
+        );
+    }
+
+    #[test]
     fn runner_submits_refine_backed_vote_for_assigned_unsubmitted_worker() {
         let pair = sr25519::Pair::from_seed(&[1u8; 32]);
         let submitted = Arc::new(Mutex::new(Vec::new()));
@@ -2300,6 +2433,40 @@ mod tests {
         assert!(metrics
             .render_prometheus()
             .contains("minijam_worker_vote_tasks_seen_total 2"));
+    }
+
+    #[test]
+    fn vote_restart_skips_worker_already_recorded_on_chain() {
+        let pair = sr25519::Pair::from_seed(&[4; 32]);
+        let submitted = Arc::new(Mutex::new(Vec::new()));
+        let (task, _) = refine_vote_task(47, vec![1, 2, 3], vec![2]);
+        let chain = TestVoteSubmitChainSource {
+            vote_tasks: vec![task],
+            submitted: Arc::clone(&submitted),
+        };
+        let runner = WorkerRunner::stage0(chain, MemoryContentFetcher::new(), 4096);
+
+        let hashes = block_on(runner.submit_refine_votes(2, &pair, [42; 32], 0, None)).unwrap();
+
+        assert!(hashes.is_empty());
+        assert!(submitted.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn missing_bundle_never_submits_support() {
+        let pair = sr25519::Pair::from_seed(&[5; 32]);
+        let submitted = Arc::new(Mutex::new(Vec::new()));
+        let (task, _) = refine_vote_task(48, vec![1, 2, 3], Vec::new());
+        let chain = TestVoteSubmitChainSource {
+            vote_tasks: vec![task],
+            submitted: Arc::clone(&submitted),
+        };
+        let runner = WorkerRunner::stage0(chain, MemoryContentFetcher::new(), 4096);
+
+        let result = block_on(runner.submit_refine_votes(2, &pair, [42; 32], 0, None));
+
+        assert!(matches!(result, Err(WorkerError::Fetch(_))));
+        assert!(submitted.lock().unwrap().is_empty());
     }
 
     #[test]
