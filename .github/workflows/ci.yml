@@ -81,7 +81,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang-18 \
             llvm-18-dev \
-            libclang-18-dev
+            libclang-18-dev \
+            protobuf-compiler
 
           LLVM_CONFIG_PATH="$(command -v llvm-config-18)"
           LIBCLANG_PATH="$("${LLVM_CONFIG_PATH}" --libdir)"
@@ -89,6 +90,7 @@ jobs:
 
           test -x "${LLVM_CONFIG_PATH}"
           test -x "${CLANG_PATH}"
+          protoc --version
           find "${LIBCLANG_PATH}" -maxdepth 1 \
             \( -name 'libclang.so' -o -name 'libclang.so.*' \) \
             -print -quit | grep -q .
