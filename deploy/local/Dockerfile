@@ -42,7 +42,7 @@ FROM debian:bookworm-slim AS compiler
 ARG LLVM_VERSION=20
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release software-properties-common \
-    && curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh \
+    && curl --http1.1 --retry 5 --retry-all-errors -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh \
     && chmod +x /tmp/llvm.sh \
     && /tmp/llvm.sh "${LLVM_VERSION}" \
     && apt-get purge -y curl gnupg lsb-release software-properties-common \
