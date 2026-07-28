@@ -99,12 +99,22 @@ standalone auth crate, build/job-event/bundle databases, garbage collection,
 multi-instance leases, metrics, OpenAPI, WebSockets, full IPFS, and the
 Playground Web UI.
 
-## M7: Worker and deployment hardening
+## M7: Independent Worker verification and deployment
 
-- [ ] Candidate producer selection avoids multi-Worker races.
-- [ ] Votes independently rerun Refine and can Support or Oppose.
-- [ ] Worker key files and Stage 0 metrics are implemented.
-- [ ] Three configured Workers complete the Candidate/Vote lifecycle.
+- [x] Only the assigned Candidate producer downloads, verifies, independently
+      Refines, signs, and submits a Candidate.
+- [x] Assigned validators independently repeat Refine against the lookup anchor
+      before submitting Support or Oppose.
+- [x] Bundle, historical-state, or VM failure cannot produce Support.
+- [x] Non-assigned and already-submitted Worker identities are skipped using
+      finalized chain tasks as the recovery source of truth.
+- [x] Three distinct signing identities cover producer and validator execution.
+- [x] A single non-root Worker image, seed-file configuration, independent data
+      directories, and live/ready health endpoints are documented.
+
+Complex Worker databases, dynamic Worker sets, multi-Core execution, economic
+extensions, Kubernetes, full Compose, and the complete product E2E remain
+outside this milestone. Full stack deployment belongs to M9.
 
 ## M8: Browser Playground
 
