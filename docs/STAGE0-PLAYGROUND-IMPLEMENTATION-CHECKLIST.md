@@ -81,14 +81,23 @@ Evidence:
 - [x] Compiler isolation and resource limits are tested.
 - [x] Compiler output is deterministic and accepted by Jambda.
 
-## M6: Auth, orchestration, and Bundle gateway
+## M6: Minimal Playground orchestration API
 
-- [ ] MultiSignature challenge authentication prevents expiry and replay attacks.
-- [ ] Opaque sessions and SQLite migrations are implemented.
-- [ ] Public build and protected create/upgrade/work routes are implemented.
-- [ ] Authorization reads the finalized on-chain Controller.
-- [ ] Jobs recover after API restart without duplicate Work.
-- [ ] Content-addressed Bundle gateway is safe and Worker-compatible.
+- [x] Signed actions bind account, action, parameters, domain, genesis, and expiry,
+      and are single-use.
+- [x] SQLite persists only signed actions and operations.
+- [x] Public build and signed create/upgrade/work routes are implemented.
+- [x] Upgrade and Work authorization read the finalized on-chain Controller.
+- [x] Create and Work operations recover after restart without duplicate chain
+      submission.
+- [x] Content-addressed Bundle files are validated and Worker-readable through
+      `/ipfs/:cid`.
+- [x] Liveness and readiness endpoints are implemented.
+
+This minimal milestone intentionally excludes sessions, bearer tokens, a
+standalone auth crate, build/job-event/bundle databases, garbage collection,
+multi-instance leases, metrics, OpenAPI, WebSockets, full IPFS, and the
+Playground Web UI.
 
 ## M7: Worker and deployment hardening
 
