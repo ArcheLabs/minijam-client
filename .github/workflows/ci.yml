@@ -17,7 +17,7 @@ jobs:
   trusted-checks:
     name: Trusted checks
     if: github.repository == 'ArcheLabs/minijam-client'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout MiniJAM
@@ -73,6 +73,29 @@ jobs:
 
       - name: Install Rust toolchain
         run: rustup show
+
+      - name: Install native build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 \
+            llvm-18-dev \
+            libclang-18-dev
+
+          LLVM_CONFIG_PATH="$(command -v llvm-config-18)"
+          LIBCLANG_PATH="$("${LLVM_CONFIG_PATH}" --libdir)"
+          CLANG_PATH="$(command -v clang-18)"
+
+          test -x "${LLVM_CONFIG_PATH}"
+          test -x "${CLANG_PATH}"
+          find "${LIBCLANG_PATH}" -maxdepth 1 \
+            \( -name 'libclang.so' -o -name 'libclang.so.*' \) \
+            -print -quit | grep -q .
+
+          echo "LLVM_CONFIG_PATH=${LLVM_CONFIG_PATH}" >> "${GITHUB_ENV}"
+          echo "LIBCLANG_PATH=${LIBCLANG_PATH}" >> "${GITHUB_ENV}"
+          echo "CLANG_PATH=${CLANG_PATH}" >> "${GITHUB_ENV}"
 
       - name: Check submodule pin
         run: ./scripts/check-submodule.sh
