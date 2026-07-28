@@ -1,9 +1,32 @@
-#include <cstdint>
+// SPDX-License-Identifier: Apache-2.0
+#include <minijam/minijam.h>
+#include <stdint.h>
 
-// MiniJAM Stage 0 Counter, expressed as restricted C++.
-namespace counter {
-struct State { std::uint64_t value; };
+namespace {
+constexpr char kCounterKey[] = "counter";
 }
 
-extern "C" void refine() {}
-extern "C" void accumulate() {}
+extern "C" MINIJAM_REFINE {
+  int64_t increment = 0;
+  size_t size = 0;
+  if (minijam_payload(&increment, sizeof(increment), &size) == MINIJAM_OK &&
+      size == sizeof(increment))
+    return minijam_refine_ok(&increment, sizeof(increment));
+  return minijam_refine_error(1);
+}
+
+extern "C" MINIJAM_ACCUMULATE {
+  int64_t increment = 0;
+  int64_t counter = 0;
+  size_t size = 0;
+  if (minijam_result(0, &increment, sizeof(increment), &size) != MINIJAM_OK ||
+      size != sizeof(increment))
+    return;
+  if (minijam_storage_read(kCounterKey, sizeof(kCounterKey) - 1, &counter,
+                           sizeof(counter), &size) != MINIJAM_OK)
+    counter = 0;
+  counter += increment;
+  (void)minijam_storage_write(kCounterKey, sizeof(kCounterKey) - 1, &counter,
+                              sizeof(counter));
+  minijam_yield(nullptr, 0);
+}

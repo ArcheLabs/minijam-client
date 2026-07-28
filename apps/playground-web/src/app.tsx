@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { PlaygroundPage } from "./pages/playground";
 import { OperationPage } from "./pages/operation";
 import { ServicePage } from "./pages/service";
@@ -8,11 +9,19 @@ export function navigate(path: string) {
 }
 
 export function App() {
+  const [, setRoute] = useState(window.location.pathname);
+  useEffect(() => {
+    const update = () => setRoute(window.location.pathname);
+    addEventListener("popstate", update);
+    return () => removeEventListener("popstate", update);
+  }, []);
   const path = window.location.pathname;
   const operation = path.match(/^\/operations\/([^/]+)$/);
   const service = path.match(/^\/services\/(\d+)$/);
 
-  if (operation) return <OperationPage operationId={operation[1]} />;
-  if (service) return <ServicePage serviceId={Number(service[1])} />;
-  return <PlaygroundPage />;
+  let page = <PlaygroundPage />;
+  if (operation) page = <OperationPage operationId={operation[1]} />;
+  if (service) page = <ServicePage serviceId={Number(service[1])} />;
+  return <WalletProvider>{page}</WalletProvider>;
 }
+import { WalletProvider } from "./wallet/context";

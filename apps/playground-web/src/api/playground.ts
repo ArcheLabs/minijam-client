@@ -5,18 +5,12 @@ export interface BuildRequest {
 }
 
 export interface BuildArtifact {
-  blobBase64: string;
-  codeHash: string;
-  codeLength: number;
-  toolchain: string;
-  diagnostics: CompilerDiagnostic[];
-}
-
-export interface CompilerDiagnostic {
-  message: string;
-  severity?: "error" | "warning" | "info";
-  line?: number;
-  column?: number;
+  success: boolean;
+  blobBase64?: string;
+  codeHash?: string;
+  codeLength?: number;
+  toolchain: { clang: string; polkavm: string; converter: string; sdk: string };
+  diagnostics: string[];
 }
 
 export interface PreparedAction {
