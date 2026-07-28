@@ -1609,6 +1609,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upgrade_reaches_receipt_and_submits_new_preimage() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("playground.sqlite");
+        let controller = [12; 32];
+        let chain = Arc::new(MockChain::new(Some(controller)));
+        let instance = playground(&path).with_chain(chain.clone());
+        let blob = b"new service code".to_vec();
+        let request = serde_json::json!({
+            "serviceId": 27,
+            "blobBase64": STANDARD.encode(&blob),
+            "codeHash": hex(&minijam_protocol::blake2_256(&blob)),
+            "minItemGas": 30,
+            "minMemoGas": 31,
+        });
+        let operation = instance
+            .insert_operation(OperationKind::Upgrade, controller, [13; 32], &request)
+            .unwrap();
+        let operation_id = operation.operation_id.clone();
+
+        instance.process_service_operation(operation).await.unwrap();
+        assert_eq!(chain.upgrade_calls.load(Ordering::Relaxed), 1);
+        *chain.receipt.lock().unwrap() = Some(SystemReceiptV1::ServiceUpgraded {
+            service_id: 27,
+            controller,
+            code_hash: minijam_protocol::blake2_256(&blob),
+        });
+        let waiting = instance.operation(&operation_id).unwrap().unwrap();
+        instance.process_service_operation(waiting).await.unwrap();
+
+        assert_eq!(chain.preimage_calls.load(Ordering::Relaxed), 1);
+        let completed = instance.operation(&operation_id).unwrap().unwrap();
+        assert_eq!(completed.status, OperationStatus::Succeeded);
+        assert_eq!(completed.result.unwrap()["serviceId"], 27);
+    }
+
+    #[tokio::test]
+    async fn work_recovery_tracks_package_hash_without_duplicate_submission() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("playground.sqlite");
+        let chain = Arc::new(MockChain::new(Some([14; 32])));
+        let instance = playground(&path).with_chain(chain.clone());
+        let built = minijam_work_package_builder::build_work_package(
+            minijam_work_package_builder::BuildWorkInput {
+                service_id: 28,
+                service_code_hash: [15; 32],
+                payload: b"work".to_vec(),
+                extrinsics: Vec::new(),
+                anchor_hash: [16; 32],
+                state_root: [17; 32],
+                lookup_anchor_slot: 18,
+            },
+        )
+        .unwrap();
+        instance
+            .save_bundle(&built.bundle_bytes, built.content_ref.content_hash)
+            .unwrap();
+        let cid = cid::Cid::read_bytes(built.content_ref.cid_v1.as_slice()).unwrap();
+        let request = serde_json::json!({
+            "packageHash": hex(&built.package_hash),
+            "canonicalWorkPackage": STANDARD.encode(&built.canonical_work_package),
+            "bundleCid": cid.to_string(),
+            "bundleHash": hex(&built.content_ref.content_hash),
+            "bundleSize": built.content_ref.size,
+        });
+        let operation = instance
+            .insert_operation(OperationKind::Work, [14; 32], [19; 32], &request)
+            .unwrap();
+        let operation_id = operation.operation_id.clone();
+        instance.process_work_operation(operation).await.unwrap();
+        assert_eq!(chain.work_calls.load(Ordering::Relaxed), 1);
+
+        *chain.work_id.lock().unwrap() = Some(29);
+        let restarted = playground(&path).with_chain(chain.clone());
+        let tracking = restarted.operation(&operation_id).unwrap().unwrap();
+        restarted.process_work_operation(tracking).await.unwrap();
+        assert_eq!(chain.work_calls.load(Ordering::Relaxed), 1);
+        *chain.work_terminal.lock().unwrap() = Some(Ok([20; 32]));
+        let tracking = restarted.operation(&operation_id).unwrap().unwrap();
+        restarted.process_work_operation(tracking).await.unwrap();
+
+        let completed = restarted.operation(&operation_id).unwrap().unwrap();
+        assert_eq!(completed.status, OperationStatus::Succeeded);
+        assert_eq!(completed.result.unwrap()["workId"], 29);
+        assert_eq!(chain.work_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
     async fn non_controller_upgrade_is_forbidden_before_chain_submission() {
         let temp = tempfile::tempdir().unwrap();
         let chain = Arc::new(MockChain::new(Some([99; 32])));
