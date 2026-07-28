@@ -140,12 +140,26 @@ Sessions, account pages, Service discovery, multisig, browser compilation or
 Refine, WorkPackage/Bundle construction, Worker dashboards, WebSockets, and
 full-stack deployment remain outside this minimal milestone.
 
-## M9: Docker and cross-process E2E
+## M9: Local Stage 0 full stack and cross-process E2E
 
-- [ ] Development and Stage 0 Compose stacks are operational.
-- [ ] Health and readiness checks cover all required dependencies.
-- [ ] All 24 cross-process scenarios have executable evidence.
-- [ ] Local Docker completes Build → Deploy → Work → Accumulate → Upgrade.
+- [ ] One Compose project starts Node, Compiler API, persistent Playground API,
+      three independently keyed Workers, and Playground Web.
+- [ ] Dependency-aware readiness covers Node RPC, Compiler, Playground
+      database/chain/compiler, Worker identity/RPC/Bundle gateway, and Web.
+- [ ] The browser reaches Node, Compiler, Workers, and Bundle storage only
+      through same-origin Playground API routes.
+- [ ] Playwright proves Build, signed Create, finalized Preimage, Bundle fetch,
+      Candidate, independent Vote, Accumulate, finalized Storage, and signed
+      Upgrade across real processes.
+- [ ] Recovery E2E restarts a non-terminal Playground operation and one Worker,
+      then verifies the same Work completes without duplicate recovery entries.
+- [ ] Owner mismatch returns 403 without changing the relayer nonce.
+- [ ] `build`, `up`, `down`, `reset`, and `test` are provided, with
+      automatic Compose status and log capture on failure.
+
+Multiple Nodes or Playgrounds, external databases, full IPFS, Kubernetes,
+production TLS, monitoring stacks, load testing, and image publishing remain
+outside this local integration milestone.
 
 ## M10: CI and release
 
