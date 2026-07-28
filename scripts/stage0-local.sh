@@ -54,27 +54,6 @@ case "${command}" in
     "${compose[@]}" pull --policy always
     ;;
   build)
-    required=(
-      minijam-node
-      minijam-compiler-api
-      minijam-playground-api
-      minijam-worker
-    )
-    for binary in "${required[@]}"; do
-      if [[ ! -x "${repository}/target/release/${binary}" ]]; then
-        echo "missing target/release/${binary}; build release binaries on the host or in CI first" >&2
-        exit 2
-      fi
-    done
-    converter="${repository}/target/release/minijam-polkavm-to-jam"
-    if [[ ! -x "${converter}" ]]; then
-      nested_converter="${repository}/service-toolchain/compiler/polkavm-to-jam/target/release/minijam-polkavm-to-jam"
-      if [[ ! -x "${nested_converter}" ]]; then
-        echo "missing release minijam-polkavm-to-jam converter" >&2
-        exit 2
-      fi
-      install -m 0755 "${nested_converter}" "${converter}"
-    fi
     "${compose[@]}" build
     ;;
   up)
