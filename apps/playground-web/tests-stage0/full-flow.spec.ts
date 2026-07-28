@@ -95,6 +95,8 @@ test("a non-terminal Work survives Playground and Worker restart without a secon
   const state = composeOutput("exec", "-T", "worker-2", "cat", "/data/state.toml");
   const workKeys = [...state.matchAll(/work_id\s*=\s*(\d+)/g)].map((match) => match[1]);
   expect(new Set(workKeys).size).toBe(workKeys.length);
+  const recoveryLogs = composeOutput("logs", "--no-color", "playground-api", "worker-1", "worker-2", "worker-3");
+  expect(recoveryLogs).not.toMatch(/duplicate (work|candidate|vote)|already (submitted|voted)/i);
 });
 
 test("a non-controller receives 403 without consuming the relayer nonce", async ({ request }) => {
