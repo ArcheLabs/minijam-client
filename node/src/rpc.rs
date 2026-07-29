@@ -89,7 +89,10 @@ where
             let work_id: WorkId = params.one()?;
             let encoded = client
                 .runtime_api()
-                .get_work(best_hash(&client), work_id)
+                // A terminal Work result is consumed alongside finalized Service
+                // state. Reporting it from the best block can make an operation
+                // appear complete before its Accumulate writes are finalized.
+                .get_work(finalized_hash(&client), work_id)
                 .map_err(runtime_api_error)?;
             Ok(encoded.map(|bytes| hex_encode(&bytes)))
         }
