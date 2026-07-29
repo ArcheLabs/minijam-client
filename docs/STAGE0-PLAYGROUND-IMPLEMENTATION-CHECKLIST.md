@@ -142,19 +142,19 @@ full-stack deployment remain outside this minimal milestone.
 
 ## M9: Local Stage 0 full stack and cross-process E2E
 
-- [ ] One Compose project starts Node, Compiler API, persistent Playground API,
+- [x] One Compose project starts Node, Compiler API, persistent Playground API,
       three independently keyed Workers, and Playground Web.
-- [ ] Dependency-aware readiness covers Node RPC, Compiler, Playground
+- [x] Dependency-aware readiness covers Node RPC, Compiler, Playground
       database/chain/compiler, Worker identity/RPC/Bundle gateway, and Web.
-- [ ] The browser reaches Node, Compiler, Workers, and Bundle storage only
+- [x] The browser reaches Node, Compiler, Workers, and Bundle storage only
       through same-origin Playground API routes.
-- [ ] Playwright proves Build, signed Create, finalized Preimage, Bundle fetch,
+- [x] Playwright proves Build, signed Create, finalized Preimage, Bundle fetch,
       Candidate, independent Vote, Accumulate, finalized Storage, and signed
       Upgrade across real processes.
-- [ ] Recovery E2E restarts a non-terminal Playground operation and one Worker,
+- [x] Recovery E2E restarts a non-terminal Playground operation and one Worker,
       then verifies the same Work completes without duplicate recovery entries.
-- [ ] Owner mismatch returns 403 without changing the relayer nonce.
-- [ ] `build`, `up`, `down`, `reset`, and `test` are provided, with
+- [x] Owner mismatch returns 403 without changing the relayer nonce.
+- [x] `build`, `up`, `down`, `reset`, and `test` are provided, with
       automatic Compose status and log capture on failure.
 
 Multiple Nodes or Playgrounds, external databases, full IPFS, Kubernetes,
