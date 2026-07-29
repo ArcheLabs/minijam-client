@@ -312,7 +312,7 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{fs, io::Write, os::unix::fs::PermissionsExt};
 
     fn service() -> CompilerService {
         CompilerService::new(CompilerConfig {
@@ -392,11 +392,12 @@ mod tests {
     fn fake_service(script_body: &str, timeout: Duration) -> (tempfile::TempDir, CompilerService) {
         let temp = tempfile::tempdir().unwrap();
         let script = temp.path().join("docker");
-        fs::write(
-            &script,
-            format!("#!/usr/bin/env bash\nset -eu\n{script_body}\n"),
-        )
-        .unwrap();
+        {
+            let mut file = fs::File::create(&script).unwrap();
+            file.write_all(format!("#!/usr/bin/env bash\nset -eu\n{script_body}\n").as_bytes())
+                .unwrap();
+            file.sync_all().unwrap();
+        }
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         let service = CompilerService::new(CompilerConfig {
             repository: PathBuf::from("/repo"),
