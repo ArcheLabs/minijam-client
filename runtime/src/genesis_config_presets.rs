@@ -448,6 +448,38 @@ mod tests {
     }
 
     #[test]
+    fn empty_block_executes_through_real_jambda_executor() {
+        let input = MiniJamExecutionInput {
+            protocol_version: PROTOCOL_VERSION_V1,
+            slot: 1,
+            parent_hash: [1u8; 32],
+            parent_state_root: [2u8; 32],
+            entropy: [3u8; 32],
+            reports: Default::default(),
+            preimages: Default::default(),
+            system_ops: Default::default(),
+            max_gas: 20_000_000,
+        };
+        let state = TestProtocolState::from_pairs(system_service_zero_protocol_state());
+
+        let output =
+            <MiniJamExecutive as MiniJamExecutor>::execute(&MiniJamExecutive, input.clone(), &state)
+                .expect("empty block must execute through the MiniJamExecutor trait");
+        for change in &output.ordered_changes {
+            let exists = state.get(&change.key).unwrap().is_some();
+            assert!(
+                matches!(
+                    (change.operation, exists),
+                    (minijam_protocol::StateOperation::Upsert, false)
+                        | (minijam_protocol::StateOperation::Update, true)
+                        | (minijam_protocol::StateOperation::Remove, true)
+                ),
+                "empty block change operation must match persisted genesis state"
+            );
+        }
+    }
+
+    #[test]
     fn stage0_genesis_uses_fixed_non_development_network_accounts() {
         let patch = stage0_config_genesis();
         let aura = field(
