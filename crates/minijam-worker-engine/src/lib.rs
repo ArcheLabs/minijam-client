@@ -201,7 +201,7 @@ pub mod fetch {
     #[async_trait::async_trait]
     impl<C: HttpBytesClient> ContentFetcher for IpfsGatewayFetcher<C> {
         async fn fetch(&self, reference: &ContentRef) -> Result<Vec<u8>, FetchError> {
-            let cid = core::str::from_utf8(reference.cid_v1.as_slice())
+            let cid = cid::Cid::try_from(reference.cid_v1.as_slice())
                 .map_err(|_| FetchError::InvalidReference)?;
             self.client
                 .get_bytes(&format!("{}/ipfs/{}", self.gateway, cid))
@@ -734,11 +734,14 @@ mod tests {
     #[test]
     fn ipfs_fetcher_builds_gateway_url_from_cid() {
         let bytes = b"bundle".to_vec();
-        let reference = content_ref_with_location(&bytes, b"bafy-test");
+        let cid: cid::Cid = "bafk2bzacec76aht7e3ngewvy5k4mzhbksmn2dn5536dodvmc4f7arlrlldixy"
+            .parse()
+            .unwrap();
+        let reference = content_ref_with_location(&bytes, &cid.to_bytes());
         let fetcher = IpfsGatewayFetcher::new(
             TestHttpClient {
                 responses: BTreeMap::from([(
-                    "http://127.0.0.1:8080/ipfs/bafy-test".into(),
+                    format!("http://127.0.0.1:8080/ipfs/{cid}"),
                     bytes.clone(),
                 )]),
             },
@@ -753,7 +756,7 @@ mod tests {
         let fetcher = IpfsGatewayFetcher::new(
             TestHttpClient {
                 responses: BTreeMap::from([(
-                    "http://127.0.0.1:8080/ipfs/bafy-test".into(),
+                    format!("http://127.0.0.1:8080/ipfs/{cid}"),
                     bytes.clone(),
                 )]),
             },

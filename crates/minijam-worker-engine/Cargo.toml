@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 async-trait = { workspace = true, optional = true }
 bounded-collections.workspace = true
+cid = { workspace = true, optional = true }
 jam-codec = { version = "0.1.1", default-features = false, optional = true }
 jambda-refine = { path = "../../external/jambda/crates/refine", default-features = false, optional = true }
 jp-core-primitives = { path = "../../external/jambda/crates/core-primitives", default-features = false, optional = true }
@@ -21,6 +22,7 @@ futures.workspace = true
 default = ["std"]
 std = [
   "dep:async-trait",
+  "dep:cid",
   "dep:jam-codec",
   "dep:jambda-refine",
   "dep:jp-core-primitives",
