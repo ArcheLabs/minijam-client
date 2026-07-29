@@ -13,7 +13,7 @@ use std::time::Duration;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use minijam_protocol::{CanonicalPreimageBytes, ContentRef, Hash, SystemCommandV1, WorkId};
 use minijam_runtime::RuntimeCall;
-use parity_scale_codec::Decode;
+use parity_scale_codec::{Decode, Encode};
 use sp_core::{
     crypto::{AccountId32, Ss58Codec},
     sr25519, Pair,
@@ -291,9 +291,8 @@ impl MiniJamChainClient {
         command: SystemCommandV1,
     ) -> Result<PreparedSystemOperation, ChainClientError> {
         let _system_op = self.system_op_lock.lock().await;
-        let sender = sp_runtime::MultiSigner::Sr25519(self.signer.public())
-            .into_account()
-            .into();
+        let account = sp_runtime::MultiSigner::Sr25519(self.signer.public()).into_account();
+        let sender = system_op_sender(&account);
         let mut next_system_nonce = self.next_system_op_nonce.lock().await;
         let system_nonce = match *next_system_nonce {
             Some(nonce) => nonce,
@@ -494,6 +493,10 @@ impl MiniJamChainClient {
     }
 }
 
+fn system_op_sender(account: &AccountId32) -> Hash {
+    minijam_protocol::blake2_256(&account.encode())
+}
+
 #[derive(Default)]
 struct NonceCursor {
     next: Option<u32>,
@@ -518,7 +521,7 @@ impl NonceCursor {
 
 #[cfg(test)]
 mod tests {
-    use super::NonceCursor;
+    use super::{system_op_sender, AccountId32, NonceCursor};
 
     #[test]
     fn nonce_cursor_allocates_once_and_resynchronizes_after_failure() {
@@ -530,5 +533,15 @@ mod tests {
         cursor.invalidate();
         assert_eq!(cursor.take(), None);
         assert_eq!(cursor.initialize(20), 20);
+    }
+
+    #[test]
+    fn system_op_sender_matches_runtime_account_derivation() {
+        let account = AccountId32::new([0x92; 32]);
+        assert_eq!(
+            system_op_sender(&account),
+            minijam_protocol::blake2_256(account.as_ref())
+        );
+        assert_ne!(system_op_sender(&account), <[u8; 32]>::from(account));
     }
 }
