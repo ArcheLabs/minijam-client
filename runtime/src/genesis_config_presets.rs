@@ -270,6 +270,28 @@ mod tests {
                     .collect(),
             )
         }
+
+        fn apply(&mut self, output: &minijam_jamcore_api::MiniJamExecutionOutput) {
+            for change in &output.ordered_changes {
+                match change.operation {
+                    minijam_protocol::StateOperation::Upsert
+                    | minijam_protocol::StateOperation::Update => {
+                        self.0.insert(
+                            change.key,
+                            change
+                                .value
+                                .as_ref()
+                                .expect("validated state write has a value")
+                                .clone()
+                                .into_inner(),
+                        );
+                    }
+                    minijam_protocol::StateOperation::Remove => {
+                        self.0.remove(&change.key);
+                    }
+                }
+            }
+        }
     }
 
     impl ProtocolStateReader for TestProtocolState {
@@ -448,37 +470,40 @@ mod tests {
     }
 
     #[test]
-    fn empty_block_executes_through_real_jambda_executor() {
-        let input = MiniJamExecutionInput {
-            protocol_version: PROTOCOL_VERSION_V1,
-            slot: 1,
-            parent_hash: [1u8; 32],
-            parent_state_root: [2u8; 32],
-            entropy: [3u8; 32],
-            reports: Default::default(),
-            preimages: Default::default(),
-            system_ops: Default::default(),
-            max_gas: 20_000_000,
-        };
-        let state = TestProtocolState::from_pairs(system_service_zero_protocol_state());
+    fn empty_blocks_cross_epoch_through_real_jambda_executor() {
+        let mut state = TestProtocolState::from_pairs(system_service_zero_protocol_state());
 
-        let output = <MiniJamExecutive as MiniJamExecutor>::execute(
-            &MiniJamExecutive,
-            input.clone(),
-            &state,
-        )
-        .expect("empty block must execute through the MiniJamExecutor trait");
-        for change in &output.ordered_changes {
-            let exists = state.get(&change.key).unwrap().is_some();
-            assert!(
-                matches!(
-                    (change.operation, exists),
-                    (minijam_protocol::StateOperation::Upsert, false)
-                        | (minijam_protocol::StateOperation::Update, true)
-                        | (minijam_protocol::StateOperation::Remove, true)
-                ),
-                "empty block change operation must match persisted genesis state"
-            );
+        for slot in 1..=13 {
+            let input = MiniJamExecutionInput {
+                protocol_version: PROTOCOL_VERSION_V1,
+                slot,
+                parent_hash: [slot as u8; 32],
+                parent_state_root: [(slot + 1) as u8; 32],
+                entropy: [(slot + 2) as u8; 32],
+                reports: Default::default(),
+                preimages: Default::default(),
+                system_ops: Default::default(),
+                max_gas: 20_000_000,
+            };
+
+            let output =
+                <MiniJamExecutive as MiniJamExecutor>::execute(&MiniJamExecutive, input, &state)
+                    .unwrap_or_else(|error| {
+                        panic!("empty block at slot {slot} must execute: {error:?}")
+                    });
+            for change in &output.ordered_changes {
+                let exists = state.get(&change.key).unwrap().is_some();
+                assert!(
+                    matches!(
+                        (change.operation, exists),
+                        (minijam_protocol::StateOperation::Upsert, false)
+                            | (minijam_protocol::StateOperation::Update, true)
+                            | (minijam_protocol::StateOperation::Remove, true)
+                    ),
+                    "empty block change operation must match persisted state at slot {slot}"
+                );
+            }
+            state.apply(&output);
         }
     }
 
