@@ -47,6 +47,7 @@ pub struct WorkerConfig {
     pub key: Option<String>,
     pub worker_id: Option<WorkerId>,
     pub chain_id: Hash,
+    pub expected_genesis_hash: Option<Hash>,
     pub core_index: u16,
     pub submit_candidates: bool,
     pub submit_support_votes: bool,
@@ -65,7 +66,8 @@ impl Default for WorkerConfig {
             rpc_url: "http://127.0.0.1:9944".into(),
             key: None,
             worker_id: None,
-            chain_id: [0; 32],
+            chain_id: [77; 32],
+            expected_genesis_hash: None,
             core_index: 0,
             submit_candidates: false,
             submit_support_votes: false,
@@ -156,9 +158,11 @@ impl WorkerConfigFile {
             if let Some(genesis_hash) = node.genesis_hash {
                 let bytes =
                     decode_hex(&genesis_hash).map_err(|_| ConfigFileError::InvalidGenesisHash)?;
-                config.chain_id = bytes
-                    .try_into()
-                    .map_err(|_| ConfigFileError::InvalidGenesisHash)?;
+                config.expected_genesis_hash = Some(
+                    bytes
+                        .try_into()
+                        .map_err(|_| ConfigFileError::InvalidGenesisHash)?,
+                );
             }
         }
         if let Some(worker) = self.worker {

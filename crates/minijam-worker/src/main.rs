@@ -150,7 +150,7 @@ fn build_config(cli: &Cli) -> Result<WorkerConfig, String> {
 fn main() {
     let cli = Cli::parse();
     let once = cli.once;
-    let mut config = match build_config(&cli) {
+    let config = match build_config(&cli) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("{error}");
@@ -237,15 +237,6 @@ fn main() {
             std::process::exit(2);
         }
     };
-    if config.chain_id == [0; 32] {
-        config.chain_id = match chain.genesis_hash() {
-            Ok(hash) => hash,
-            Err(error) => {
-                eprintln!("failed to resolve worker chain genesis hash: {error:?}");
-                std::process::exit(2);
-            }
-        };
-    }
     refresh_health(&health, &config, signing_pair.as_ref());
     let fetcher = IpfsGatewayFetcher::new(BlockingHttpBytesClient, config.ipfs_gateway.clone());
     let mut runner = WorkerRunner::with_statuses(
@@ -303,10 +294,11 @@ fn refresh_health(
                 .registered_session_key(worker_id)
                 .is_ok_and(|key| key == Some(pair.public().0))
         });
-    let dependencies_ready = chain
-        .genesis_hash()
-        .is_ok_and(|hash| hash == config.chain_id)
-        && check_bundle_gateway_ready(&config.ipfs_gateway).is_ok();
+    let dependencies_ready = chain.genesis_hash().is_ok_and(|hash| {
+        config
+            .expected_genesis_hash
+            .is_none_or(|expected| hash == expected)
+    }) && check_bundle_gateway_ready(&config.ipfs_gateway).is_ok();
     health.set_ready(identity_ready && dependencies_ready);
 }
 
