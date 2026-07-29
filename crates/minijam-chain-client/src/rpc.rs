@@ -77,9 +77,12 @@ pub async fn events_at(
 }
 
 pub async fn account_nonce(rpc: &WsClient, account: [u8; 32]) -> Result<u32, ChainClientError> {
-    rpc.request("system_accountNextIndex", rpc_params![hex(&account)])
-        .await
-        .map_err(map_rpc)
+    rpc.request(
+        "system_accountNextIndex",
+        rpc_params![crate::account_id_rpc_param(account)],
+    )
+    .await
+    .map_err(map_rpc)
 }
 
 pub async fn system_op_nonce(rpc: &WsClient, sender: [u8; 32]) -> Result<u64, ChainClientError> {
@@ -166,5 +169,17 @@ mod tests {
     fn hex_decoder_rejects_malformed_responses() {
         assert!(decode_hex("0x0").is_err());
         assert!(decode_hash("0x00").is_err());
+    }
+
+    #[test]
+    fn standard_account_rpc_param_is_ss58() {
+        use sp_core::crypto::Ss58Codec;
+
+        let encoded = crate::account_id_rpc_param([0x61; 32]);
+        assert_eq!(
+            sp_core::crypto::AccountId32::from_ss58check(&encoded).unwrap(),
+            [0x61; 32].into()
+        );
+        assert!(!encoded.starts_with("0x"));
     }
 }

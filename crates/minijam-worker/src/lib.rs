@@ -682,7 +682,7 @@ impl WorkerSignedTxContext for BlockingHttpWorkerChainSource {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "system_accountNextIndex",
-                "params": [hex_encode(&account)],
+                "params": [minijam_chain_client::account_id_rpc_param(account)],
             })
             .to_string(),
         )

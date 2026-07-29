@@ -14,7 +14,10 @@ use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use minijam_protocol::{CanonicalPreimageBytes, ContentRef, Hash, SystemCommandV1, WorkId};
 use minijam_runtime::RuntimeCall;
 use parity_scale_codec::Decode;
-use sp_core::{sr25519, Pair};
+use sp_core::{
+    crypto::{AccountId32, Ss58Codec},
+    sr25519, Pair,
+};
 use sp_runtime::traits::IdentifyAccount;
 use thiserror::Error;
 
@@ -43,6 +46,10 @@ pub struct PreparedSystemOperation {
     pub submitted_nonce: u32,
     pub system_op_nonce: u64,
     pub correlation: Hash,
+}
+
+pub fn account_id_rpc_param(account: [u8; 32]) -> String {
+    AccountId32::new(account).to_ss58check()
 }
 
 pub struct MiniJamChainClient {
