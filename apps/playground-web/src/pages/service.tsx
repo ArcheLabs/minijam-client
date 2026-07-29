@@ -9,6 +9,7 @@ import { ConfirmAction } from "../components/confirm-action";
 import { useWallet } from "../wallet/context";
 import { signAction } from "../actions/signed-action";
 import { errorMessage } from "../lib/errors";
+import { STAGE0_ACCUMULATE_GAS_LIMIT } from "../lib/protocol";
 
 type Pending =
   | { kind: "upgrade"; params: Record<string, unknown> }
@@ -63,7 +64,7 @@ export function ServicePage({ serviceId }: { serviceId: number }) {
         serviceId,
         blobBase64: artifact.blobBase64,
         codeHash: artifact.codeHash,
-        minItemGas: 1,
+        minItemGas: STAGE0_ACCUMULATE_GAS_LIMIT,
         minMemoGas: 1
       }
     });

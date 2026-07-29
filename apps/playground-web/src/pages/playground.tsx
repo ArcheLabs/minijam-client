@@ -10,6 +10,7 @@ import { useWallet } from "../wallet/context";
 import { signAction } from "../actions/signed-action";
 import { navigate } from "../app";
 import { errorMessage } from "../lib/errors";
+import { STAGE0_ACCUMULATE_GAS_LIMIT } from "../lib/protocol";
 import { SR25519_ONLY_ERROR } from "../wallet/adapter";
 
 type Language = "c" | "cpp";
@@ -75,7 +76,7 @@ export function PlaygroundPage() {
         params: {
           blobBase64: artifact.blobBase64,
           codeHash: artifact.codeHash,
-          minItemGas: 1,
+          minItemGas: STAGE0_ACCUMULATE_GAS_LIMIT,
           minMemoGas: 1
         }
       });

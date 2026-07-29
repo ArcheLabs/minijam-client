@@ -1,0 +1,1 @@
+export const STAGE0_ACCUMULATE_GAS_LIMIT = 10_000_000;
