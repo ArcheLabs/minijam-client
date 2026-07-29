@@ -24,7 +24,12 @@ MINIJAM_ACCUMULATE {
   if (minijam_storage_read(COUNTER_KEY, sizeof(COUNTER_KEY) - 1, &counter,
                            sizeof(counter), &size) != MINIJAM_OK)
     counter = 0;
-  counter += increment;
+  if (increment > 0 && counter > INT64_MAX - increment)
+    counter = INT64_MAX;
+  else if (increment < 0 && counter < INT64_MIN - increment)
+    counter = INT64_MIN;
+  else
+    counter += increment;
   (void)minijam_storage_write(COUNTER_KEY, sizeof(COUNTER_KEY) - 1, &counter,
                               sizeof(counter));
   minijam_yield(0, 0);
