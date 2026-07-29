@@ -65,7 +65,7 @@ impl Default for WorkerConfig {
             rpc_url: "http://127.0.0.1:9944".into(),
             key: None,
             worker_id: None,
-            chain_id: [77; 32],
+            chain_id: [0; 32],
             core_index: 0,
             submit_candidates: false,
             submit_support_votes: false,
@@ -1206,13 +1206,22 @@ fn read_http_body(mut stream: TcpStream) -> Result<Vec<u8>, HttpError> {
         .position(|window| window == b"\r\n\r\n")
         .ok_or_else(|| HttpError("HTTP response did not contain a header/body separator".into()))?;
     let headers = String::from_utf8_lossy(&response[..separator]);
-    if !headers.starts_with("HTTP/1.1 200") && !headers.starts_with("HTTP/1.0 200") {
+    if !http_response_is_success(&headers) {
         return Err(HttpError(format!(
             "HTTP request failed: {}",
             headers.lines().next().unwrap_or_else(|| headers.as_ref())
         )));
     }
     Ok(response[(separator + 4)..].to_vec())
+}
+
+fn http_response_is_success(headers: &str) -> bool {
+    headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|status| status.parse::<u16>().ok())
+        .is_some_and(|status| (200..300).contains(&status))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1721,6 +1730,15 @@ mod tests {
     #[test]
     fn default_worker_config_is_valid() {
         WorkerConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn http_success_accepts_no_content_readiness_response() {
+        assert!(http_response_is_success("HTTP/1.1 200 OK\r\n"));
+        assert!(http_response_is_success("HTTP/1.1 204 No Content\r\n"));
+        assert!(!http_response_is_success(
+            "HTTP/1.1 503 Service Unavailable\r\n"
+        ));
     }
 
     #[test]
