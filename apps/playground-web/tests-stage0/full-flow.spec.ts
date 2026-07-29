@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { u8aToHex } from "@polkadot/util";
@@ -51,8 +52,12 @@ test("Build, signed Create, Work, finalized state, and signed Upgrade cross proc
 
   const editor = page.locator(".monaco-editor");
   await editor.click();
-  await page.keyboard.press("Control+End");
-  await page.keyboard.type("\n/* stage0-upgrade */");
+  const upgradedSource = readFileSync(
+    path.join(repository, "apps/playground-web/src/examples/counter.c"),
+    "utf8"
+  ).replace("minijam_refine_error(1)", "minijam_refine_error(2)");
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(upgradedSource);
   await page.getByRole("button", { name: "Build upgrade" }).click();
   const upgradedCodeHash = page.locator(".upgrade-actions .mono");
   await expect(upgradedCodeHash).not.toHaveText("No upgraded artifact yet");
