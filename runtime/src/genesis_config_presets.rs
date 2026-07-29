@@ -153,7 +153,7 @@ fn stage0_endowed_accounts() -> Vec<AccountId> {
         .collect()
 }
 
-fn system_service_zero_protocol_state() -> Vec<(Vec<u8>, Vec<u8>)> {
+pub(crate) fn system_service_zero_protocol_state() -> Vec<(Vec<u8>, Vec<u8>)> {
     system_service_genesis_state(SystemServiceGenesisConfig {
         code_blob: SYSTEM_SERVICE_BLOB.to_vec(),
         initial_balance: 1_000_000_000_000,
@@ -505,6 +505,54 @@ mod tests {
             }
             state.apply(&output);
         }
+    }
+
+    #[test]
+    fn create_service_executes_after_epoch_transitions() {
+        let mut state = TestProtocolState::from_pairs(system_service_zero_protocol_state());
+        for slot in 1..=121 {
+            let input = MiniJamExecutionInput {
+                protocol_version: PROTOCOL_VERSION_V1,
+                slot,
+                parent_hash: [slot as u8; 32],
+                parent_state_root: [(slot + 1) as u8; 32],
+                entropy: [(slot + 2) as u8; 32],
+                reports: Default::default(),
+                preimages: Default::default(),
+                system_ops: Default::default(),
+                max_gas: 20_000_000,
+            };
+            let output =
+                <MiniJamExecutive as MiniJamExecutor>::execute(&MiniJamExecutive, input, &state)
+                    .unwrap_or_else(|error| panic!("empty block at slot {slot} failed: {error:?}"));
+            state.apply(&output);
+        }
+
+        let sender = [0x5a; 32];
+        let op = SystemOpV1::new(
+            sender,
+            0,
+            SystemCommandV1::CreateService {
+                controller: sender,
+                code_hash: [0x9b; 32],
+                code_len: 27,
+                min_item_gas: 2,
+                min_memo_gas: 3,
+            },
+        );
+        let input = MiniJamExecutionInput {
+            protocol_version: PROTOCOL_VERSION_V1,
+            slot: 122,
+            parent_hash: [122; 32],
+            parent_state_root: [123; 32],
+            entropy: [124; 32],
+            reports: Default::default(),
+            preimages: Default::default(),
+            system_ops: vec![op].try_into().unwrap(),
+            max_gas: 20_000_000,
+        };
+        <MiniJamExecutive as MiniJamExecutor>::execute(&MiniJamExecutive, input, &state)
+            .expect("CreateService must execute after epoch transitions");
     }
 
     #[test]

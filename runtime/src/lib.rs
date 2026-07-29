@@ -338,7 +338,10 @@ mod runtime {
 #[cfg(test)]
 mod stage0_economics_tests {
     use super::*;
-    use frame_support::{assert_noop, assert_ok, traits::EnsureOrigin};
+    use frame_support::{
+        assert_noop, assert_ok,
+        traits::{EnsureOrigin, Hooks},
+    };
     use minijam_protocol::SystemCommandV1;
     use sp_runtime::{BuildStorage, DispatchError};
 
@@ -347,6 +350,32 @@ mod stage0_economics_tests {
             .build_storage()
             .expect("runtime system genesis builds");
         storage.into()
+    }
+
+    #[test]
+    fn real_pallet_executes_create_after_epoch_transitions() {
+        runtime_ext().execute_with(|| {
+            for (key, value) in crate::genesis_config_presets::system_service_zero_protocol_state()
+            {
+                pallet_minijam::ProtocolState::<Runtime>::insert(
+                    <[u8; 31]>::try_from(key).unwrap(),
+                    minijam_protocol::StateValue::try_from(value).unwrap(),
+                );
+            }
+            let controller = [0x5a; 32];
+            assert_ok!(MiniJam::submit_system_op(
+                RuntimeOrigin::signed(PlaygroundRelayer::get()),
+                Box::new(SystemCommandV1::CreateService {
+                    controller,
+                    code_hash: [0x9b; 32],
+                    code_len: 27,
+                    min_item_gas: 2,
+                    min_memo_gas: 3,
+                }),
+            ));
+            System::set_block_number(122);
+            MiniJam::on_finalize(122);
+        });
     }
 
     #[test]
