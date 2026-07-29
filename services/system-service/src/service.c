@@ -11,6 +11,9 @@
 #define REJECT_NONCE 4u
 #define REJECT_COMMAND 5u
 #define REJECT_NEW 6u
+#define REJECT_TRANSFER 7u
+#define STAGE0_SERVICE_BALANCE 1024u
+#define TRANSFER_MEMO_SIZE 128u
 
 static const uint8_t LAST_NONCE_PREFIX[] = "system/last-nonce/";
 static const uint8_t RECEIPT_PREFIX[] = "system/receipt/";
@@ -18,6 +21,7 @@ static const uint8_t CONTROLLER_PREFIX[] = "system/controller/";
 static const uint8_t SERVICES_PREFIX[] = "system/services/";
 static const uint8_t REQUEST_DOMAIN[] = "minijam/system-op/v1";
 static uint8_t input[SYSTEM_INPUT_MAX];
+static const uint8_t transfer_memo[TRANSFER_MEMO_SIZE];
 
 static uint32_t load_u32(const uint8_t *p) {
   return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 |
@@ -145,6 +149,13 @@ static void create_service(const uint8_t request_id[32],
       min_memo_gas, 0, UINT64_MAX);
   if (sid > UINT32_MAX) {
     write_rejected(request_id, REJECT_NEW);
+    return;
+  }
+  uint64_t transfer = minijam_host_call6(
+      MINIJAM_HOST_TRANSFER, sid, STAGE0_SERVICE_BALANCE, min_memo_gas,
+      (uintptr_t)transfer_memo, 0, 0);
+  if (transfer != 0) {
+    write_rejected(request_id, REJECT_TRANSFER);
     return;
   }
 
