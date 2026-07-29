@@ -18,6 +18,7 @@ use sp_blockchain::{Error as BlockChainError, HeaderBackend, HeaderMetadata};
 use sp_runtime::traits::{Block as BlockT, Header as HeaderT};
 
 #[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct FinalizedContextV1 {
     block_hash: String,
     block_number: u32,
@@ -526,4 +527,26 @@ fn hex_encode(bytes: &[u8]) -> String {
         output.push(HEX[(byte & 0x0f) as usize] as char);
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finalized_context_uses_chain_client_field_names() {
+        let value = serde_json::to_value(FinalizedContextV1 {
+            block_hash: "0x01".into(),
+            block_number: 2,
+            state_root: "0x03".into(),
+            slot: 4,
+        })
+        .expect("finalized context serializes");
+
+        assert_eq!(value["blockHash"], "0x01");
+        assert_eq!(value["blockNumber"], 2);
+        assert_eq!(value["stateRoot"], "0x03");
+        assert_eq!(value["slot"], 4);
+        assert!(value.get("block_hash").is_none());
+    }
 }
