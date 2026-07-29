@@ -280,7 +280,7 @@ impl pallet_minijam::Config for Runtime {
     type MaxCandidateRounds = ConstU8<3>;
     type MaxPendingWorks = ConstU32<64>;
     type MaxExecutionReports = ConstU32<4>;
-    type MaxExecutionGas = ConstU64<10_000_000>;
+    type MaxExecutionGas = ConstU64<20_000_000>;
     type MaxWorkPackageBytes = ConstU32<1_048_576>;
     type MaxBundleBytes = ConstU64<16_777_216>;
     type MaxServicesPerWork = ConstU32<64>;
@@ -340,7 +340,7 @@ mod stage0_economics_tests {
     use super::*;
     use frame_support::{
         assert_noop, assert_ok,
-        traits::{EnsureOrigin, Hooks},
+        traits::{EnsureOrigin, Get, Hooks},
     };
     use minijam_protocol::SystemCommandV1;
     use sp_runtime::{BuildStorage, DispatchError};
@@ -387,6 +387,15 @@ mod stage0_economics_tests {
         assert_eq!(TimelyVoteReward::get(), 0);
         assert_eq!(RefineGasPrice::get(), 0);
         assert_eq!(AccumulateGasPrice::get(), 0);
+    }
+
+    #[test]
+    fn stage0_execution_gas_covers_refine_and_accumulate_limits() {
+        assert!(
+            <<Runtime as pallet_minijam::Config>::MaxExecutionGas as Get<u64>>::get()
+                >= minijam_protocol::stage0::REFINE_GAS_LIMIT
+                    .saturating_add(minijam_protocol::stage0::ACCUMULATE_GAS_LIMIT)
+        );
     }
 
     #[test]
