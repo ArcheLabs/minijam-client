@@ -462,9 +462,12 @@ mod tests {
         };
         let state = TestProtocolState::from_pairs(system_service_zero_protocol_state());
 
-        let output =
-            <MiniJamExecutive as MiniJamExecutor>::execute(&MiniJamExecutive, input.clone(), &state)
-                .expect("empty block must execute through the MiniJamExecutor trait");
+        let output = <MiniJamExecutive as MiniJamExecutor>::execute(
+            &MiniJamExecutive,
+            input.clone(),
+            &state,
+        )
+        .expect("empty block must execute through the MiniJamExecutor trait");
         for change in &output.ordered_changes {
             let exists = state.get(&change.key).unwrap().is_some();
             assert!(
