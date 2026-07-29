@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+scenario=""
+out=""
+for arg in "$@"; do
+  case "${arg}" in
+    minijam-compiler:test-*)
+      scenario="${arg#minijam-compiler:test-}"
+      ;;
+    type=bind,src=*,dst=/output)
+      out="${arg#type=bind,src=}"
+      out="${out%,dst=/output}"
+      ;;
+  esac
+done
+
+case "${scenario}" in
+  success)
+    printf 'deterministic-jam-blob' > "${out}/service.blob"
+    ;;
+  diagnostics)
+    printf 'syntax error' >&2
+    exit 1
+    ;;
+  timeout)
+    sleep 2
+    ;;
+  oversized)
+    dd if=/dev/zero of="${out}/service.blob" bs=4194305 count=1 status=none
+    ;;
+  *)
+    printf 'fake-docker: unknown scenario: %s\n' "${scenario}" >&2
+    exit 3
+    ;;
+esac

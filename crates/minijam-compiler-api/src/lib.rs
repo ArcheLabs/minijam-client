@@ -312,7 +312,6 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, io::Write, os::unix::fs::PermissionsExt};
 
     fn service() -> CompilerService {
         CompilerService::new(CompilerConfig {
@@ -389,41 +388,16 @@ mod tests {
         assert!(response.diagnostics[0].contains("256 KiB"));
     }
 
-    fn fake_service(script_body: &str, timeout: Duration) -> (tempfile::TempDir, CompilerService) {
-        let temp = tempfile::tempdir().unwrap();
-        let script = temp.path().join("docker");
-        {
-            let mut file = fs::File::create(&script).unwrap();
-            file.write_all(format!("#!/usr/bin/env bash\nset -eu\n{script_body}\n").as_bytes())
-                .unwrap();
-            file.sync_all().unwrap();
-        }
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-        let service = CompilerService::new(CompilerConfig {
+    fn fake_service(scenario: &str, timeout: Duration) -> CompilerService {
+        CompilerService::new(CompilerConfig {
             repository: PathBuf::from("/repo"),
-            image: "minijam-compiler:test".into(),
-            docker_binary: script,
+            image: format!("minijam-compiler:test-{scenario}"),
+            docker_binary: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/fake-docker"),
             direct: false,
             timeout,
             concurrency: 2,
-        });
-        (temp, service)
-    }
-
-    fn successful_fake() -> &'static str {
-        r#"
-for arg in "$@"; do
-  case "$arg" in
-    type=bind,src=*,dst=/output)
-      out="${arg#type=bind,src=}"
-      out="${out%,dst=/output}"
-      printf 'deterministic-jam-blob' > "${out}/service.blob"
-      exit 0
-      ;;
-  esac
-done
-exit 3
-"#
+        })
     }
 
     fn request() -> CompileRequest {
@@ -436,7 +410,7 @@ exit 3
 
     #[tokio::test]
     async fn identical_compiles_return_identical_blob_and_hash() {
-        let (_temp, service) = fake_service(successful_fake(), Duration::from_secs(1));
+        let service = fake_service("success", Duration::from_secs(1));
         let first = service.execute(request()).await;
         let second = service.execute(request()).await;
 
@@ -447,8 +421,7 @@ exit 3
 
     #[tokio::test]
     async fn compiler_diagnostics_are_bounded_and_returned() {
-        let (_temp, service) =
-            fake_service("printf 'syntax error' >&2\nexit 1", Duration::from_secs(1));
+        let service = fake_service("diagnostics", Duration::from_secs(1));
         let response = service.execute(request()).await;
 
         assert!(!response.success);
@@ -457,7 +430,7 @@ exit 3
 
     #[tokio::test]
     async fn compiler_process_is_killed_at_timeout() {
-        let (_temp, service) = fake_service("sleep 2", Duration::from_millis(20));
+        let service = fake_service("timeout", Duration::from_millis(20));
         let response = service.execute(request()).await;
 
         assert!(!response.success);
@@ -466,11 +439,7 @@ exit 3
 
     #[tokio::test]
     async fn oversized_compiler_output_is_rejected() {
-        let script = successful_fake().replace(
-            "printf 'deterministic-jam-blob' > \"${out}/service.blob\"",
-            "dd if=/dev/zero of=\"${out}/service.blob\" bs=4194305 count=1 status=none",
-        );
-        let (_temp, service) = fake_service(&script, Duration::from_secs(2));
+        let service = fake_service("oversized", Duration::from_secs(2));
         let response = service.execute(request()).await;
 
         assert!(!response.success);
