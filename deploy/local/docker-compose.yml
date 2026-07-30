@@ -1,5 +1,10 @@
 name: minijam-stage0
 
+x-build-labels: &build-labels
+  org.opencontainers.image.revision: ${MINIJAM_GIT_COMMIT:-unknown}
+  org.opencontainers.image.source: https://github.com/ArcheLabs/minijam-client
+  io.minijam.jambda.revision: ${MINIJAM_JAMBDA_COMMIT:-unknown}
+
 x-worker: &worker
   image: ${MINIJAM_IMAGE_REGISTRY:-ghcr.io/archelabs}/minijam-worker:${MINIJAM_IMAGE_TAG:?set MINIJAM_IMAGE_TAG}
   pull_policy: never
@@ -7,6 +12,7 @@ x-worker: &worker
     context: ../..
     dockerfile: deploy/local/Dockerfile
     target: worker
+    labels: *build-labels
   restart: unless-stopped
   depends_on:
     node:
@@ -28,6 +34,7 @@ services:
       context: ../..
       dockerfile: deploy/local/Dockerfile
       target: node
+      labels: *build-labels
     command:
       - --dev
       - --alice
@@ -55,6 +62,7 @@ services:
       context: ../..
       dockerfile: deploy/local/Dockerfile
       target: compiler
+      labels: *build-labels
     environment:
       MINIJAM_COMPILER_DIRECT: "true"
     healthcheck:
@@ -75,6 +83,7 @@ services:
       context: ../..
       dockerfile: deploy/local/Dockerfile
       target: playground
+      labels: *build-labels
     environment:
       MINIJAM_PLAYGROUND_BIND: 0.0.0.0:8080
       MINIJAM_PLAYGROUND_DB: /data/playground.sqlite
@@ -124,6 +133,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/local/Dockerfile.web
+      labels: *build-labels
       args:
         VITE_TEST_WALLET: ${MINIJAM_TEST_WALLET:-true}
     depends_on:
