@@ -1,4 +1,4 @@
-import { u8aToHex } from "@polkadot/util";
+import { u8aToHex, u8aWrapBytes } from "@polkadot/util";
 import { cryptoWaitReady, sr25519PairFromSeed, sr25519Sign } from "@polkadot/util-crypto";
 import type { WalletAccount, WalletAdapter } from "./adapter";
 
@@ -17,7 +17,7 @@ export class TestWalletAdapter implements WalletAdapter {
     await cryptoWaitReady();
     this.pair ??= sr25519PairFromSeed(this.seed);
     const payload = Uint8Array.from(payloadHex.slice(2).match(/.{2}/g)!.map((byte) => Number.parseInt(byte, 16)));
-    return u8aToHex(sr25519Sign(payload, this.pair));
+    return u8aToHex(sr25519Sign(u8aWrapBytes(payload), this.pair));
   }
 
   disconnect() {

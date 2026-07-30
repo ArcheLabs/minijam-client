@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { u8aToHex } from "@polkadot/util";
+import { u8aToHex, u8aWrapBytes } from "@polkadot/util";
 import { cryptoWaitReady, sr25519PairFromSeed, sr25519Sign } from "@polkadot/util-crypto";
 import { paramsHash } from "../src/actions/hash";
 
@@ -26,7 +26,7 @@ test.beforeEach(async ({ page }) => {
     const payload = Uint8Array.from(
       payloadHex.slice(2).match(/.{2}/g)!.map((byte) => Number.parseInt(byte, 16))
     );
-    return u8aToHex(sr25519Sign(payload, pair));
+    return u8aToHex(sr25519Sign(u8aWrapBytes(payload), pair));
   });
   await page.addInitScript(({ injectedAddress }) => {
     const target = window as typeof window & {
@@ -136,7 +136,7 @@ test("Build, signed Create, Work, finalized state, and signed Upgrade cross proc
   expect(preparedResponse.ok()).toBeTruthy();
   const prepared = await preparedResponse.json() as { actionId: string; signingPayload: string };
   const payload = Uint8Array.from(prepared.signingPayload.slice(2).match(/.{2}/g)!.map((byte) => Number.parseInt(byte, 16)));
-  const signature = u8aToHex(sr25519Sign(payload, nonController));
+  const signature = u8aToHex(sr25519Sign(u8aWrapBytes(payload), nonController));
   const nonceBefore = await relayerNonce();
   const forbidden = await page.request.post("/api/v1/work", {
     data: { authorization: { actionId: prepared.actionId, signature }, ...params }

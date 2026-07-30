@@ -928,9 +928,10 @@ impl Playground {
             genesis,
             row.4,
         ));
+        let signing_message = wrap_signing_bytes(&signing_hash);
         if !sr25519::Pair::verify(
             &sr25519::Signature::from_raw(signature),
-            &signing_hash,
+            &signing_message,
             &sr25519::Public::from_raw(account),
         ) {
             return Err(ApiError::InvalidSignature);
@@ -1443,6 +1444,14 @@ fn action_payload(
         .encode()
 }
 
+fn wrap_signing_bytes(payload: &[u8]) -> Vec<u8> {
+    let mut wrapped = Vec::with_capacity(b"<Bytes>".len() + payload.len() + b"</Bytes>".len());
+    wrapped.extend_from_slice(b"<Bytes>");
+    wrapped.extend_from_slice(payload);
+    wrapped.extend_from_slice(b"</Bytes>");
+    wrapped
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1623,6 +1632,24 @@ mod tests {
     use jam_codec::Decode as _;
     use std::sync::atomic::AtomicUsize;
     use tower::ServiceExt;
+
+    fn sign_prepared(pair: &sr25519::Pair, prepared: PreparedAction) -> ActionAuthorization {
+        let signing_hash = decode_array::<32>(&prepared.signing_payload).unwrap();
+        ActionAuthorization {
+            action_id: prepared.action_id,
+            signature: hex(&pair.sign(&wrap_signing_bytes(&signing_hash)).0),
+        }
+    }
+
+    #[test]
+    fn signing_hash_is_wrapped_like_polkadot_bytes() {
+        let signing_hash = [0x5a; 32];
+        let wrapped = wrap_signing_bytes(&signing_hash);
+
+        assert_eq!(&wrapped[..7], b"<Bytes>");
+        assert_eq!(&wrapped[7..39], &signing_hash);
+        assert_eq!(&wrapped[39..], b"</Bytes>");
+    }
 
     #[test]
     fn rust_params_hash_matches_shared_playground_vectors() {
@@ -1927,11 +1954,7 @@ mod tests {
                 expiry: now() + 60,
             })
             .unwrap();
-        let signing_hash = decode_array::<32>(&prepared.signing_payload).unwrap();
-        let authorization = ActionAuthorization {
-            action_id: prepared.action_id,
-            signature: hex(&pair.sign(&signing_hash).0),
-        };
+        let authorization = sign_prepared(&pair, prepared);
 
         assert_eq!(
             playground
@@ -1958,11 +1981,7 @@ mod tests {
                 expiry: now() + 60,
             })
             .unwrap();
-        let signing_hash = decode_array::<32>(&prepared.signing_payload).unwrap();
-        let authorization = ActionAuthorization {
-            action_id: prepared.action_id,
-            signature: hex(&pair.sign(&signing_hash).0),
-        };
+        let authorization = sign_prepared(&pair, prepared);
 
         assert!(matches!(
             playground.consume_action(&authorization, "work", [2; 32]),
@@ -1971,6 +1990,118 @@ mod tests {
         assert!(playground
             .consume_action(&authorization, "work", [1; 32])
             .is_ok());
+    }
+
+    #[test]
+    fn signed_action_rejects_raw_payload_signature() {
+        let temp = tempfile::tempdir().unwrap();
+        let playground = playground(&temp.path().join("playground.sqlite"));
+        let pair = sr25519::Pair::from_seed(&[14; 32]);
+        let params_hash = [15; 32];
+        let prepared = playground
+            .prepare(PrepareActionRequest {
+                account: hex(&pair.public().0),
+                action: "work".into(),
+                params_hash: hex(&params_hash),
+                expiry: now() + 60,
+            })
+            .unwrap();
+        let signing_hash = decode_array::<32>(&prepared.signing_payload).unwrap();
+        let authorization = ActionAuthorization {
+            action_id: prepared.action_id,
+            signature: hex(&pair.sign(&signing_hash).0),
+        };
+
+        assert!(matches!(
+            playground.consume_action(&authorization, "work", params_hash),
+            Err(ApiError::InvalidSignature)
+        ));
+    }
+
+    #[test]
+    fn signed_action_rejects_signature_from_another_account() {
+        let temp = tempfile::tempdir().unwrap();
+        let playground = playground(&temp.path().join("playground.sqlite"));
+        let account_pair = sr25519::Pair::from_seed(&[16; 32]);
+        let wrong_pair = sr25519::Pair::from_seed(&[17; 32]);
+        let params_hash = [18; 32];
+        let prepared = playground
+            .prepare(PrepareActionRequest {
+                account: hex(&account_pair.public().0),
+                action: "upgrade_service".into(),
+                params_hash: hex(&params_hash),
+                expiry: now() + 60,
+            })
+            .unwrap();
+        let authorization = sign_prepared(&wrong_pair, prepared);
+
+        assert!(matches!(
+            playground.consume_action(&authorization, "upgrade_service", params_hash),
+            Err(ApiError::InvalidSignature)
+        ));
+    }
+
+    #[test]
+    fn signed_action_rejects_substituted_action_genesis_and_expiry() {
+        for field in ["action", "genesis_hash", "expiry"] {
+            let temp = tempfile::tempdir().unwrap();
+            let playground = playground(&temp.path().join("playground.sqlite"));
+            let pair = sr25519::Pair::from_seed(&[19; 32]);
+            let params_hash = [20; 32];
+            let prepared = playground
+                .prepare(PrepareActionRequest {
+                    account: hex(&pair.public().0),
+                    action: "work".into(),
+                    params_hash: hex(&params_hash),
+                    expiry: now() + 60,
+                })
+                .unwrap();
+            let action_id = decode_array::<32>(&prepared.action_id).unwrap();
+            let authorization = sign_prepared(&pair, prepared);
+            let expected_action = if field == "action" {
+                playground
+                    .db
+                    .lock()
+                    .unwrap()
+                    .execute(
+                        "UPDATE signed_actions SET action = 'upgrade_service' WHERE action_id = ?1",
+                        params![action_id.as_slice()],
+                    )
+                    .unwrap();
+                "upgrade_service"
+            } else {
+                if field == "genesis_hash" {
+                    playground
+                        .db
+                        .lock()
+                        .unwrap()
+                        .execute(
+                            "UPDATE signed_actions SET genesis_hash = ?2 WHERE action_id = ?1",
+                            params![action_id.as_slice(), [21_u8; 32].as_slice()],
+                        )
+                        .unwrap();
+                } else {
+                    playground
+                        .db
+                        .lock()
+                        .unwrap()
+                        .execute(
+                            "UPDATE signed_actions SET expiry = ?2 WHERE action_id = ?1",
+                            params![action_id.as_slice(), (now() + 120) as i64],
+                        )
+                        .unwrap();
+                }
+                "work"
+            };
+
+            assert!(
+                matches!(
+                    playground.consume_action(&authorization, expected_action, params_hash),
+                    Err(ApiError::InvalidSignature)
+                ),
+                "{field} substitution must invalidate the signature"
+            );
+        }
     }
 
     #[test]
@@ -2281,12 +2412,8 @@ mod tests {
                 expiry: now() + 60,
             })
             .unwrap();
-        let signing_hash = decode_array::<32>(&prepared.signing_payload).unwrap();
         let request = UpgradeServiceRequest {
-            authorization: ActionAuthorization {
-                action_id: prepared.action_id,
-                signature: hex(&pair.sign(&signing_hash).0),
-            },
+            authorization: sign_prepared(&pair, prepared),
             service_id: 9,
             blob_base64: params["blobBase64"].as_str().unwrap().into(),
             code_hash: params["codeHash"].as_str().unwrap().into(),
