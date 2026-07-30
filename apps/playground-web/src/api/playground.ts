@@ -51,6 +51,15 @@ export interface ServiceView {
   finalizedBlockNumber: number;
 }
 
+export type FaucetStatus = "requesting" | "broadcasting" | "broadcasted" | "included" | "succeeded" | "limited" | "over-cap" | "unavailable" | "failed";
+
+export interface FaucetEvent {
+  status: FaucetStatus;
+  hash?: string;
+  blockHash?: string;
+  error?: string;
+}
+
 export class PlaygroundApiError extends Error {
   constructor(
     public readonly status: number,
@@ -97,5 +106,55 @@ export const playgroundApi = {
   getServiceStorage: (serviceId: number, key: string) =>
     request<{ serviceId: number; key: string; value?: string; finalizedBlock: string }>(
       `/api/v1/services/${serviceId}/storage?key=${encodeURIComponent(key)}`
+    ),
+  getFaucetBalance: (address: string) =>
+    request<{ transferable: string; reserved: string; overCap: boolean }>(
+      `/faucet/balance/${encodeURIComponent(address)}`
     )
 };
+
+export async function requestFaucet(
+  body: { address: string; signature: string; message: string },
+  onEvent: (event: FaucetEvent) => void
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch("/faucet/drip/web", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+  } catch {
+    onEvent({ status: "unavailable", error: "The faucet API is unavailable." });
+    return;
+  }
+  if (!response.ok || !response.body) {
+    onEvent({ status: "unavailable", error: `Faucet request failed with status ${response.status}.` });
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  const reader = response.body.getReader();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line) as { status?: string; hash?: string; blockHash?: string; error?: string };
+      if (event.error) {
+        const error = event.error;
+        const lowered = error.toLowerCase();
+        onEvent({
+          status: lowered.includes("quota") ? "limited" : lowered.includes("balance cap") ? "over-cap" : "failed",
+          error
+        });
+      } else if (event.status) {
+        onEvent({ status: event.status === "included" ? "succeeded" : event.status as FaucetStatus, hash: event.hash, blockHash: event.blockHash });
+      }
+    }
+  }
+}

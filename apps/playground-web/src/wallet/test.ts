@@ -1,5 +1,5 @@
 import { u8aToHex } from "@polkadot/util";
-import { cryptoWaitReady, sr25519PairFromSeed, sr25519Sign } from "@polkadot/util-crypto";
+import { cryptoWaitReady, encodeAddress, sr25519PairFromSeed, sr25519Sign } from "@polkadot/util-crypto";
 import type { WalletAccount, WalletAdapter } from "./adapter";
 
 export class TestWalletAdapter implements WalletAdapter {
@@ -10,7 +10,12 @@ export class TestWalletAdapter implements WalletAdapter {
   async connect(): Promise<WalletAccount[]> {
     await cryptoWaitReady();
     this.pair = sr25519PairFromSeed(this.seed);
-    return [{ accountId: u8aToHex(this.pair.publicKey), name: "Stage 0 test wallet", type: "sr25519" }];
+    return [{
+      accountId: u8aToHex(this.pair.publicKey),
+      address: encodeAddress(this.pair.publicKey),
+      name: "Stage 0 test wallet",
+      type: "sr25519"
+    }];
   }
 
   async sign(_account: WalletAccount, payloadHex: string): Promise<string> {
