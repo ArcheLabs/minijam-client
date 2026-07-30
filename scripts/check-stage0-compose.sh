@@ -5,7 +5,7 @@ repository="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 scratch="$(mktemp -d)"
 trap 'rm -rf "${scratch}"' EXIT
 
-mkdir -p "${scratch}/keystore"
+touch "${scratch}/keystore.tar.gz"
 touch "${scratch}/worker-1" "${scratch}/worker-2" "${scratch}/worker-3"
 
 digest="sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -17,7 +17,7 @@ config="$(
   MINIJAM_PLAYGROUND_WEB_IMAGE="ghcr.io/archelabs/minijam-playground-web@${digest}" \
   MINIJAM_GENESIS_HASH="0x0000000000000000000000000000000000000000000000000000000000000000" \
   MINIJAM_RELAYER_URI="runtime-injected-value" \
-  NODE_KEY_OR_SEED_PATH="${scratch}/keystore" \
+  NODE_KEY_OR_SEED_PATH="${scratch}/keystore.tar.gz" \
   WORKER_1_SEED_PATH="${scratch}/worker-1" \
   WORKER_2_SEED_PATH="${scratch}/worker-2" \
   WORKER_3_SEED_PATH="${scratch}/worker-3" \

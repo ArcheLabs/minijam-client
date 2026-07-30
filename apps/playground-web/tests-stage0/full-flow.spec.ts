@@ -11,6 +11,51 @@ test.describe.configure({ mode: "serial" });
 
 let createdServiceId = 0;
 
+test.beforeEach(async ({ page }) => {
+  const seedHex = process.env.MINIJAM_E2E_WALLET_SEED;
+  if (!seedHex) return;
+
+  const seed = Uint8Array.from(
+    seedHex.replace(/^0x/, "").match(/.{2}/g)?.map((byte) => Number.parseInt(byte, 16)) ?? []
+  );
+  if (seed.length !== 32) throw new Error("MINIJAM_E2E_WALLET_SEED must be 32-byte hex");
+  await cryptoWaitReady();
+  const pair = sr25519PairFromSeed(seed);
+  const address = u8aToHex(pair.publicKey);
+  await page.exposeFunction("__minijamE2eSign", (payloadHex: string) => {
+    const payload = Uint8Array.from(
+      payloadHex.slice(2).match(/.{2}/g)!.map((byte) => Number.parseInt(byte, 16))
+    );
+    return u8aToHex(sr25519Sign(payload, pair));
+  });
+  await page.addInitScript(({ injectedAddress }) => {
+    const target = window as typeof window & {
+      injectedWeb3?: Record<string, unknown>;
+      __minijamE2eSign?: (payloadHex: string) => Promise<string>;
+    };
+    target.injectedWeb3 = {
+      minijamE2e: {
+        version: "1",
+        enable: async () => ({
+          accounts: {
+            get: async () => [{
+              address: injectedAddress,
+              name: "Stage 0 E2E wallet",
+              type: "sr25519"
+            }]
+          },
+          signer: {
+            signRaw: async ({ data }: { data: string }) => ({
+              id: 1,
+              signature: await target.__minijamE2eSign!(data)
+            })
+          }
+        })
+      }
+    };
+  }, { injectedAddress: address });
+});
+
 test("Build, signed Create, Work, finalized state, and signed Upgrade cross processes", async ({ page }) => {
   const browserRequests: string[] = [];
   page.on("request", (request) => browserRequests.push(request.url()));
@@ -136,8 +181,10 @@ test("a non-terminal Work survives Playground and Worker restart without a secon
 });
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const composeFile = path.join(repository, "deploy/local/docker-compose.yml");
+const composeFile = process.env.MINIJAM_E2E_COMPOSE_FILE
+  ?? path.join(repository, "deploy/local/docker-compose.yml");
 const envFile = process.env.MINIJAM_STAGE0_ENV ?? path.join(repository, "deploy/local/.env");
+const composeProject = process.env.MINIJAM_E2E_COMPOSE_PROJECT ?? "minijam-stage0";
 
 function compose(...args: string[]) {
   composeOutput(...args);
@@ -146,7 +193,7 @@ function compose(...args: string[]) {
 function composeOutput(...args: string[]) {
   const composeArgs = [
     "compose",
-    "--project-name", "minijam-stage0",
+    "--project-name", composeProject,
   ];
   if (process.env.MINIJAM_STAGE0_ENV) composeArgs.push("--env-file", envFile);
   composeArgs.push("-f", composeFile, ...args);
@@ -154,16 +201,17 @@ function composeOutput(...args: string[]) {
 }
 
 async function relayerNonce() {
-  const response = await fetch(`http://127.0.0.1:${process.env.MINIJAM_NODE_PORT ?? "9944"}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
+  const body = JSON.parse(composeOutput(
+    "exec", "-T", "node", "curl", "-fsS",
+    "-H", "content-type: application/json",
+    "--data",
+    JSON.stringify({
       id: 1,
       jsonrpc: "2.0",
       method: "system_accountNextIndex",
       params: ["0x901578a417300aa0ae533b5bd0e9af489a4cc4a6f38999b76283867087738209"]
-    })
-  });
-  const body = await response.json() as { result: number };
+    }),
+    "http://127.0.0.1:9944"
+  )) as { result: number };
   return body.result;
 }

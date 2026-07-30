@@ -14,8 +14,8 @@ if [[ -e "${output}" ]]; then
   exit 1
 fi
 
-mkdir -p "${output}/node-keystore"
-chmod 700 "${output}" "${output}/node-keystore"
+mkdir -p "${output}/node-runtime/keystore"
+chmod 700 "${output}" "${output}/node-runtime" "${output}/node-runtime/keystore"
 
 generate_seed() {
   local path="$1"
@@ -32,46 +32,50 @@ public_key() {
   awk '/Public key \(hex\):/ { print $4; found = 1 } END { exit !found }' "${inspect}"
 }
 
+generate_seed "${output}/authority-1-aura.seed"
+generate_seed "${output}/authority-1-grandpa.seed"
 for index in 1 2 3; do
-  generate_seed "${output}/authority-${index}-aura.seed"
-  generate_seed "${output}/authority-${index}-grandpa.seed"
   generate_seed "${output}/worker-${index}.seed"
 done
 generate_seed "${output}/e2e-wallet.seed"
 
 authorities='[]'
 workers='[]'
+aura="$(public_key sr25519 "${output}/authority-1-aura.seed")"
+grandpa="$(public_key ed25519 "${output}/authority-1-grandpa.seed")"
+authorities="$(
+  jq -c \
+    --arg aura "${aura}" \
+    --arg grandpa "${grandpa}" \
+    '. + [{aura: $aura, grandpa: $grandpa}]' \
+    <<<"${authorities}"
+)"
+"${node}" key insert \
+  --keystore-path "${output}/node-runtime/keystore" \
+  --key-type aura \
+  --scheme sr25519 \
+  --suri "${output}/authority-1-aura.seed" \
+  >/dev/null
+"${node}" key insert \
+  --keystore-path "${output}/node-runtime/keystore" \
+  --key-type gran \
+  --scheme ed25519 \
+  --suri "${output}/authority-1-grandpa.seed" \
+  >/dev/null
+
 for index in 1 2 3; do
-  aura="$(public_key sr25519 "${output}/authority-${index}-aura.seed")"
-  grandpa="$(public_key ed25519 "${output}/authority-${index}-grandpa.seed")"
   worker="$(public_key sr25519 "${output}/worker-${index}.seed")"
-  authorities="$(
-    jq -c \
-      --arg aura "${aura}" \
-      --arg grandpa "${grandpa}" \
-      '. + [{aura: $aura, grandpa: $grandpa}]' \
-      <<<"${authorities}"
-  )"
   workers="$(
     jq -c \
       --arg account "${worker}" \
       '. + [{account: $account, session_key: $account}]' \
       <<<"${workers}"
   )"
-
-  "${node}" key insert \
-    --keystore-path "${output}/node-keystore" \
-    --key-type aura \
-    --scheme sr25519 \
-    --suri "${output}/authority-${index}-aura.seed" \
-    >/dev/null
-  "${node}" key insert \
-    --keystore-path "${output}/node-keystore" \
-    --key-type gran \
-    --scheme ed25519 \
-    --suri "${output}/authority-${index}-grandpa.seed" \
-    >/dev/null
 done
+
+"${node}" key generate-node-key \
+  --file "${output}/node-runtime/node-key" \
+  2>/dev/null
 
 jq -n \
   --argjson authorities "${authorities}" \
@@ -79,7 +83,7 @@ jq -n \
   '{authorities: $authorities, workers: $workers}' \
   >"${output}/public-identities.json"
 
-tar -czf "${output}/node-keystore.tar.gz" -C "${output}/node-keystore" .
+tar -czf "${output}/node-keystore.tar.gz" -C "${output}/node-runtime" .
 base64 -w0 "${output}/node-keystore.tar.gz" >"${output}/node-keystore.b64"
 printf '\n' >>"${output}/node-keystore.b64"
 chmod 600 "${output}"/*.seed "${output}/node-keystore.tar.gz" "${output}/node-keystore.b64"

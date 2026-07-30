@@ -26,12 +26,12 @@ env:
 
 jobs:
   release:
-    name: Build and publish Stage 0 images
+    name: Release gate and public digest smoke
     if: >-
       github.repository == 'ArcheLabs/minijam-client' &&
       (github.event_name == 'push' || inputs.publish == true)
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Checkout MiniJAM
@@ -88,6 +88,49 @@ jobs:
       - name: Check submodule pin
         run: ./scripts/check-submodule.sh
 
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Install native build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 \
+            llvm-18-dev \
+            libclang-18-dev \
+            protobuf-compiler
+
+          LLVM_CONFIG_PATH="$(command -v llvm-config-18)"
+          LIBCLANG_PATH="$("${LLVM_CONFIG_PATH}" --libdir)"
+          CLANG_PATH="$(command -v clang-18)"
+
+          test -x "${LLVM_CONFIG_PATH}"
+          test -x "${CLANG_PATH}"
+          protoc --version
+          find "${LIBCLANG_PATH}" -maxdepth 1 \
+            \( -name 'libclang.so' -o -name 'libclang.so.*' \) \
+            -print -quit | grep -q .
+
+          {
+            echo "LLVM_CONFIG_PATH=${LLVM_CONFIG_PATH}"
+            echo "LIBCLANG_PATH=${LIBCLANG_PATH}"
+            echo "CLANG_PATH=${CLANG_PATH}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Restore Cargo and Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            service-toolchain/compiler/polkavm-to-jam/target
+          key: stage0-release-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'service-toolchain/compiler/polkavm-to-jam/Cargo.lock') }}
+          restore-keys: |
+            stage0-release-${{ runner.os }}-
+            m9-stage0-${{ runner.os }}-
+
       - name: Resolve immutable image tags
         id: release
         env:
@@ -106,10 +149,81 @@ jobs:
           echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "sha_tag=stage0-${short_sha}" >> "${GITHUB_OUTPUT}"
 
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Test Rust workspace
+        run: cargo test --workspace
+
+      - name: Check Runtime Wasm
+        run: cargo check -p minijam-runtime --no-default-features --target wasm32v1-none
+
+      - name: Build Stage 0 release binaries
+        run: |
+          cargo build --locked --release \
+            -p minijam-node \
+            -p minijam-compiler-api \
+            -p minijam-playground-api \
+            -p minijam-worker
+          cargo build --locked --release \
+            --manifest-path service-toolchain/compiler/polkavm-to-jam/Cargo.toml
+          test -x target/release/minijam-node
+          test -x target/release/minijam-worker
+          test -f target/release/wbuild/minijam-runtime/minijam_runtime.compact.compressed.wasm
+
+      - name: Test isolated Compiler image
+        run: ./scripts/test-compiler-image.sh
+
+      - name: Install Playground Web dependencies
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/playground-web/package-lock.json
+
+      - name: Test and build production Playground Web
+        working-directory: apps/playground-web
+        env:
+          VITE_TEST_WALLET: "false"
+        run: |
+          npm ci
+          npm test
+          npm run build
+          npx playwright install --with-deps chromium
+
+      - name: Check release Compose files
+        run: ./scripts/check-stage0-compose.sh
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build five Stage 0 images
+      - name: Build M9 gate images
+        env:
+          MINIJAM_IMAGE_TAG: gate-${{ github.sha }}
+          MINIJAM_GIT_COMMIT: ${{ github.sha }}
+          MINIJAM_JAMBDA_COMMIT: ${{ steps.jambda-pin.outputs.sha }}
+          MINIJAM_TEST_WALLET: "true"
+        run: ./scripts/stage0-local.sh build
+
+      - name: Start M9 gate stack
+        env:
+          MINIJAM_IMAGE_TAG: gate-${{ github.sha }}
+        run: |
+          ./scripts/stage0-local.sh reset
+          ./scripts/stage0-local.sh up
+
+      - name: Run two real M9 E2E flows
+        env:
+          MINIJAM_IMAGE_TAG: gate-${{ github.sha }}
+        run: ./scripts/stage0-local.sh test
+
+      - name: Stop M9 gate stack
+        if: always()
+        env:
+          MINIJAM_IMAGE_TAG: gate-${{ github.sha }}
+        run: ./scripts/stage0-local.sh down
+
+      - name: Build five production Stage 0 images
         env:
           MINIJAM_IMAGE_TAG: ${{ steps.release.outputs.sha_tag }}
           MINIJAM_GIT_COMMIT: ${{ github.sha }}
@@ -164,10 +278,50 @@ jobs:
             docker pull "${reference}"
           done < stage0-image-digests.txt
 
-      - name: Upload image digest record
+      - name: Create Stage 0 release artifacts
+        run: |
+          ./scripts/create-stage0-release-artifacts.sh \
+            "${{ steps.release.outputs.release_tag }}" \
+            stage0-image-digests.txt \
+            stage0-release
+
+      - name: Run smoke from public image digests
+        env:
+          MINIJAM_RELEASE_NODE_KEYSTORE_B64: ${{ secrets.MINIJAM_RELEASE_NODE_KEYSTORE_B64 }}
+          MINIJAM_RELEASE_RELAYER_URI: ${{ secrets.MINIJAM_RELEASE_RELAYER_URI }}
+          MINIJAM_RELEASE_WORKER_1_URI: ${{ secrets.MINIJAM_RELEASE_WORKER_1_URI }}
+          MINIJAM_RELEASE_WORKER_2_URI: ${{ secrets.MINIJAM_RELEASE_WORKER_2_URI }}
+          MINIJAM_RELEASE_WORKER_3_URI: ${{ secrets.MINIJAM_RELEASE_WORKER_3_URI }}
+          MINIJAM_E2E_WALLET_SEED: ${{ secrets.MINIJAM_RELEASE_E2E_WALLET_SEED }}
+          MINIJAM_RELEASE_DIAGNOSTICS: ${{ github.workspace }}/stage0-release-diagnostics
+        run: ./scripts/test-stage0-release.sh stage0-release
+
+      - name: Collect release failure diagnostics
+        if: failure()
+        run: |
+          mkdir -p stage0-release-diagnostics
+          docker compose --project-name minijam-stage0 \
+            -f deploy/local/docker-compose.yml ps --all \
+            > stage0-release-diagnostics/m9-compose-ps.txt 2>&1 || true
+          docker compose --project-name minijam-stage0 \
+            -f deploy/local/docker-compose.yml logs --no-color \
+            > stage0-release-diagnostics/m9-compose.log 2>&1 || true
+          cp -R apps/playground-web/playwright-report stage0-release-diagnostics/ 2>/dev/null || true
+          cp -R apps/playground-web/test-results stage0-release-diagnostics/ 2>/dev/null || true
+
+      - name: Upload release failure diagnostics
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: stage0-image-digests-${{ steps.release.outputs.release_tag }}
-          path: stage0-image-digests.txt
+          name: stage0-release-diagnostics-${{ github.sha }}
+          path: stage0-release-diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Stage 0 release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: minijam-${{ steps.release.outputs.release_tag }}
+          path: stage0-release/
           if-no-files-found: error
           retention-days: 30

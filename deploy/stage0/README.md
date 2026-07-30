@@ -38,10 +38,14 @@ Provision runtime credentials as described in
 secrets directory are ignored by Git. Do not copy credentials into the Compose
 file or an image.
 
-The release chain spec contains three authority identities. A single local Node
-can run the complete resettable chain when its external keystore contains all
-matching Aura and GRANDPA keys. A public testnet operator may instead deploy
-one Node per authority using the same Node image and raw chain spec.
+The minimal release chain spec contains one authority identity, matching the
+single M9 Node service. Its external keystore must contain the matching Aura
+and GRANDPA keys. The same resettable topology may be deployed as the public
+Stage 0 testnet; multi-authority/high-availability operation is outside M10.
+
+Stage 0 can be reset at any time, its assets have no real economic value, Sudo
+remains enabled, and state or API permanence is not promised. Never place
+mainnet funds or production credentials in this configuration.
 
 ## Pull and start
 
@@ -99,3 +103,6 @@ MINIJAM_IMAGE_TAG="$(git rev-parse HEAD)" \
 ```
 
 `compose.dev.yml` is not a release deployment input.
+
+See `deploy/stage0/TROUBLESHOOTING.md` for startup failures and
+`deploy/stage0/RELEASING.md` for the maintainer release gate.

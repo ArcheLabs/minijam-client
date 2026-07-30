@@ -11,6 +11,7 @@ x-worker: &worker
     - --poll-interval-ms=1000
     - --state-db=/data/state.toml
     - --health-bind=0.0.0.0:8082
+    - --metrics-bind=0.0.0.0:9616
     - --ipfs-gateway=http://playground-api:8080
   environment:
     MINIJAM_WORKER_SEED_FILE: /run/secrets/worker-seed
@@ -31,19 +32,31 @@ services:
     image: ${MINIJAM_NODE_IMAGE:?set MINIJAM_NODE_IMAGE to a published digest}
     pull_policy: always
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "-ec"]
     command:
-      - --chain=/chain-specs/stage0-raw.json
-      - --validator
-      - --name=stage0
-      - --base-path=/data
-      - --keystore-path=/run/stage0-keystore
-      - --rpc-external
-      - --rpc-cors=all
-      - --rpc-methods=unsafe
+      - |
+        install -d -m 0700 /data/release-secrets
+        tar -xzf /run/secrets/node-keystore -C /data/release-secrets
+        exec minijam-node \
+          --chain=/chain-specs/stage0-raw.json \
+          --validator \
+          --force-authoring \
+          --name=stage0 \
+          --base-path=/data \
+          --keystore-path=/data/release-secrets/keystore \
+          --node-key-file=/data/release-secrets/node-key \
+          --rpc-external \
+          --rpc-cors=all \
+          --rpc-methods=unsafe
     volumes:
       - node-data:/data
       - ${MINIJAM_CHAIN_SPEC_PATH:-./chain-specs/stage0-raw.json}:/chain-specs/stage0-raw.json:ro
-      - ${NODE_KEY_OR_SEED_PATH:?set NODE_KEY_OR_SEED_PATH to the authority keystore directory}:/run/stage0-keystore:ro
+    secrets:
+      - source: node-keystore
+        target: node-keystore
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
     healthcheck:
       test:
         - CMD-SHELL
@@ -116,12 +129,16 @@ services:
       - --poll-interval-ms=1000
       - --state-db=/data/state.toml
       - --health-bind=0.0.0.0:8082
+      - --metrics-bind=0.0.0.0:9616
       - --ipfs-gateway=http://playground-api:8080
     volumes:
       - worker-1-data:/data
     secrets:
       - source: worker-1-seed
         target: worker-seed
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
 
   worker-2:
     <<: *worker
@@ -133,12 +150,16 @@ services:
       - --poll-interval-ms=1000
       - --state-db=/data/state.toml
       - --health-bind=0.0.0.0:8082
+      - --metrics-bind=0.0.0.0:9616
       - --ipfs-gateway=http://playground-api:8080
     volumes:
       - worker-2-data:/data
     secrets:
       - source: worker-2-seed
         target: worker-seed
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
 
   worker-3:
     <<: *worker
@@ -150,12 +171,16 @@ services:
       - --poll-interval-ms=1000
       - --state-db=/data/state.toml
       - --health-bind=0.0.0.0:8082
+      - --metrics-bind=0.0.0.0:9616
       - --ipfs-gateway=http://playground-api:8080
     volumes:
       - worker-3-data:/data
     secrets:
       - source: worker-3-seed
         target: worker-seed
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
 
   playground-web:
     image: ${MINIJAM_PLAYGROUND_WEB_IMAGE:?set MINIJAM_PLAYGROUND_WEB_IMAGE to a published digest}
@@ -174,6 +199,8 @@ services:
     networks: [stage0]
 
 secrets:
+  node-keystore:
+    file: ${NODE_KEY_OR_SEED_PATH:?set NODE_KEY_OR_SEED_PATH to the authority keystore tar.gz}
   worker-1-seed:
     file: ${WORKER_1_SEED_PATH:?set WORKER_1_SEED_PATH}
   worker-2-seed:
