@@ -1,0 +1,193 @@
+name: minijam-stage0-release
+
+x-worker: &worker
+  image: ${MINIJAM_WORKER_IMAGE:?set MINIJAM_WORKER_IMAGE to a published digest}
+  pull_policy: always
+  restart: unless-stopped
+  command:
+    - --rpc-url=http://node:9944
+    - --submit-candidates
+    - --submit-support-votes
+    - --poll-interval-ms=1000
+    - --state-db=/data/state.toml
+    - --health-bind=0.0.0.0:8082
+    - --ipfs-gateway=http://playground-api:8080
+  environment:
+    MINIJAM_WORKER_SEED_FILE: /run/secrets/worker-seed
+  depends_on:
+    node:
+      condition: service_healthy
+    playground-api:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8082/health/ready"]
+    interval: 2s
+    timeout: 2s
+    retries: 90
+  networks: [stage0]
+
+services:
+  node:
+    image: ${MINIJAM_NODE_IMAGE:?set MINIJAM_NODE_IMAGE to a published digest}
+    pull_policy: always
+    restart: unless-stopped
+    command:
+      - --chain=/chain-specs/stage0-raw.json
+      - --validator
+      - --name=stage0
+      - --base-path=/data
+      - --keystore-path=/run/stage0-keystore
+      - --rpc-external
+      - --rpc-cors=all
+      - --rpc-methods=unsafe
+    volumes:
+      - node-data:/data
+      - ${MINIJAM_CHAIN_SPEC_PATH:-./chain-specs/stage0-raw.json}:/chain-specs/stage0-raw.json:ro
+      - ${NODE_KEY_OR_SEED_PATH:?set NODE_KEY_OR_SEED_PATH to the authority keystore directory}:/run/stage0-keystore:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'curl -fsS -H "content-type: application/json" --data "{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"system_health\",\"params\":[]}" http://127.0.0.1:9944 >/dev/null'
+      interval: 2s
+      timeout: 2s
+      retries: 90
+    networks: [stage0]
+
+  compiler-api:
+    image: ${MINIJAM_COMPILER_IMAGE:?set MINIJAM_COMPILER_IMAGE to a published digest}
+    pull_policy: always
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 2
+    environment:
+      MINIJAM_COMPILER_DIRECT: "true"
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/8081; printf "GET /health/ready HTTP/1.0\r\n\r\n" >&3; grep -q "204 No Content" <&3'
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    networks: [stage0]
+
+  playground-api:
+    image: ${MINIJAM_PLAYGROUND_API_IMAGE:?set MINIJAM_PLAYGROUND_API_IMAGE to a published digest}
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      MINIJAM_PLAYGROUND_BIND: 0.0.0.0:8080
+      MINIJAM_COMPILER_URL: http://compiler-api:8081
+      MINIJAM_RPC_URL: ws://node:9944
+      MINIJAM_BUNDLE_DIR: /data/bundles
+      MINIJAM_PLAYGROUND_DB: /data/playground.sqlite
+      MINIJAM_GENESIS_HASH: ${MINIJAM_GENESIS_HASH:?set MINIJAM_GENESIS_HASH from the release manifest}
+      MINIJAM_RELAYER_URI: ${MINIJAM_RELAYER_URI:?set MINIJAM_RELAYER_URI in the untracked Stage 0 env file}
+    volumes:
+      - playground-data:/data
+      - bundle-data:/data/bundles
+    depends_on:
+      node:
+        condition: service_healthy
+      compiler-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 90
+    networks: [stage0]
+
+  worker-1:
+    <<: *worker
+    command:
+      - --rpc-url=http://node:9944
+      - --worker-id=0
+      - --submit-candidates
+      - --submit-support-votes
+      - --poll-interval-ms=1000
+      - --state-db=/data/state.toml
+      - --health-bind=0.0.0.0:8082
+      - --ipfs-gateway=http://playground-api:8080
+    volumes:
+      - worker-1-data:/data
+    secrets:
+      - source: worker-1-seed
+        target: worker-seed
+
+  worker-2:
+    <<: *worker
+    command:
+      - --rpc-url=http://node:9944
+      - --worker-id=1
+      - --submit-candidates
+      - --submit-support-votes
+      - --poll-interval-ms=1000
+      - --state-db=/data/state.toml
+      - --health-bind=0.0.0.0:8082
+      - --ipfs-gateway=http://playground-api:8080
+    volumes:
+      - worker-2-data:/data
+    secrets:
+      - source: worker-2-seed
+        target: worker-seed
+
+  worker-3:
+    <<: *worker
+    command:
+      - --rpc-url=http://node:9944
+      - --worker-id=2
+      - --submit-candidates
+      - --submit-support-votes
+      - --poll-interval-ms=1000
+      - --state-db=/data/state.toml
+      - --health-bind=0.0.0.0:8082
+      - --ipfs-gateway=http://playground-api:8080
+    volumes:
+      - worker-3-data:/data
+    secrets:
+      - source: worker-3-seed
+        target: worker-seed
+
+  playground-web:
+    image: ${MINIJAM_PLAYGROUND_WEB_IMAGE:?set MINIJAM_PLAYGROUND_WEB_IMAGE to a published digest}
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      playground-api:
+        condition: service_healthy
+    ports:
+      - "${MINIJAM_WEB_BIND:-127.0.0.1}:${MINIJAM_WEB_PORT:-4173}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/health/live"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    networks: [stage0]
+
+secrets:
+  worker-1-seed:
+    file: ${WORKER_1_SEED_PATH:?set WORKER_1_SEED_PATH}
+  worker-2-seed:
+    file: ${WORKER_2_SEED_PATH:?set WORKER_2_SEED_PATH}
+  worker-3-seed:
+    file: ${WORKER_3_SEED_PATH:?set WORKER_3_SEED_PATH}
+
+volumes:
+  node-data:
+  playground-data:
+  bundle-data:
+  worker-1-data:
+  worker-2-data:
+  worker-3-data:
+
+networks:
+  stage0:

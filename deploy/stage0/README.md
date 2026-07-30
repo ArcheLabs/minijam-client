@@ -1,161 +1,101 @@
-# MiniJAM Stage-0 Deployment
+# MiniJAM Stage 0 release stack
 
-This directory contains operator templates for a public Stage-0 testnet.
+The release stack reuses the M9 topology: one Node, one Compiler API, one
+Playground API (including the bundle gateway), three independent Workers, and
+one production Playground Web. It pulls five public MiniJAM images and does not
+build source code.
 
-## Artifacts
+Only Playground Web is published by default. Node RPC, Compiler API,
+Playground API, bundle routes, and Worker health endpoints remain on the
+private Compose network. Web proxies `/api/` and `/ipfs/` to Playground API.
 
-Build and export before deployment:
+## Requirements
 
-```bash
-cargo build --release -p minijam-node -p minijam-worker
-./scripts/export-stage0-chain-specs.sh ./target/release/minijam-node chain-specs
-```
+- Docker Engine with the Compose plugin;
+- a Stage 0 release manifest and its matching `stage0-raw.json`;
+- runtime credentials matching the public authority, relayer, and Worker
+  identities in that chain spec.
 
-Publish these files to every node host:
+Rust, Cargo, LLVM, Node.js, and access to the Jambda source repository are not
+required.
 
-- `target/release/minijam-node`
-- `target/release/minijam-worker`
-- `chain-specs/stage0-raw.json`
+## Configure
 
-## Topology
-
-- 3 authority nodes run `minijam-node --validator --chain stage0-raw.json`.
-- 1 or more public RPC full nodes run without `--validator`.
-- 3 worker daemons connect to finalized chain state through the public RPC or a private full node.
-- Prometheus scrapes node and worker hosts through private networking.
-
-Authority nodes must not expose RPC to the public internet. Public RPC nodes should expose only safe methods and should not hold authority session keys.
-
-## Docker Compose
-
-`docker-compose.yml` is a topology template. It expects these images unless overridden:
-
-- `MINIJAM_NODE_IMAGE=ghcr.io/archelabs/minijam-node:stage0`
-- `MINIJAM_WORKER_IMAGE=ghcr.io/archelabs/minijam-worker:stage0`
-
-It also expects:
-
-- `../../chain-specs/stage0-raw.json`
-- `./secrets/authority-*/node-key`
-- `.env` copied from `.env.example`, with `AUTHORITY_1_PEER_ID` set after generating the authority-1 node key.
-- `./worker-*.toml`, edited with real worker keys when candidate submission is enabled.
-
-Start a single-host smoke topology:
+Copy the public template:
 
 ```bash
-docker compose -f deploy/stage0/docker-compose.yml up -d
+cp deploy/stage0/.env.example deploy/stage0/.env
 ```
 
-## Systemd
+Fill every image value from the `images` section of the matching
+`release-manifest.json`. Use the complete
+`ghcr.io/archelabs/<name>@sha256:<digest>` reference, never a mutable tag.
+Set `MINIJAM_GENESIS_HASH` from the same manifest and keep the matching raw
+chain spec at `chain-specs/stage0-raw.json`.
 
-Install binaries under `/usr/local/bin`, chain spec under `/etc/minijam/stage0-raw.json`, and data under `/var/lib/minijam`.
+Provision runtime credentials as described in
+`deploy/stage0/secrets/README.md`. The `.env` file and all files below the
+secrets directory are ignored by Git. Do not copy credentials into the Compose
+file or an image.
 
-Authority:
+The release chain spec contains three authority identities. A single local Node
+can run the complete resettable chain when its external keystore contains all
+matching Aura and GRANDPA keys. A public testnet operator may instead deploy
+one Node per authority using the same Node image and raw chain spec.
+
+## Pull and start
+
+Run the release stack from the repository root:
 
 ```bash
-sudo install -m 0644 deploy/stage0/systemd/minijam-authority.service /etc/systemd/system/
-sudo systemctl enable --now minijam-authority
+docker compose \
+  --env-file deploy/stage0/.env \
+  -f compose.stage0.yml \
+  pull
+
+docker compose \
+  --env-file deploy/stage0/.env \
+  -f compose.stage0.yml \
+  up -d
 ```
 
-Public RPC:
+Wait until all seven services are healthy:
 
 ```bash
-sudo install -m 0644 deploy/stage0/systemd/minijam-public-rpc.service /etc/systemd/system/
-sudo systemctl enable --now minijam-public-rpc
+docker compose \
+  --env-file deploy/stage0/.env \
+  -f compose.stage0.yml \
+  ps
 ```
 
-Worker:
+Open `http://127.0.0.1:4173` unless `MINIJAM_WEB_BIND` or
+`MINIJAM_WEB_PORT` was changed. For an explicitly public Stage 0 host, set
+`MINIJAM_WEB_BIND=0.0.0.0` and put an operator-managed TLS reverse proxy in
+front of this single port.
+
+## Reset
+
+Stage 0 is intentionally resettable. This command deletes Node, Playground,
+bundle, and Worker state volumes:
 
 ```bash
-sudo install -m 0644 deploy/stage0/systemd/minijam-worker.service /etc/systemd/system/
-sudo systemctl enable --now minijam-worker
+docker compose \
+  --env-file deploy/stage0/.env \
+  -f compose.stage0.yml \
+  down --volumes --remove-orphans
 ```
 
-## Public RPC Safety Profile
+The chain can only be restarted from the same genesis by reusing the exact raw
+chain spec and release manifest. Do not combine databases, binaries, images, or
+chain specs from different releases.
 
-Use a public RPC node, not an authority node, for internet-facing JSON-RPC:
+## Development stack
+
+Repository contributors continue to use the M9 build-capable topology:
 
 ```bash
-minijam-node \
-  --chain /etc/minijam/stage0-raw.json \
-  --name stage0-public-rpc-1 \
-  --base-path /var/lib/minijam/public-rpc \
-  --rpc-external \
-  --rpc-methods safe \
-  --rpc-rate-limit 600 \
-  --rpc-max-request-size 8 \
-  --rpc-max-response-size 64 \
-  --rpc-cors https://polkadot.js.org \
-  --prometheus-external
+MINIJAM_IMAGE_TAG="$(git rev-parse HEAD)" \
+  docker compose -f compose.dev.yml build
 ```
 
-Do not pass `--unsafe-rpc-external` or `--rpc-methods unsafe` on public nodes.
-
-Authority RPC should stay loopback-only:
-
-```bash
-minijam-node \
-  --chain /etc/minijam/stage0-raw.json \
-  --validator \
-  --rpc-methods safe
-```
-
-Expose authority metrics only on a private network or through a node-local collector.
-
-## Backup and Restore
-
-Back up each host before runtime upgrades, validator key rotation, or storage maintenance. Keep authority secrets out of shared operator channels.
-
-Systemd host backup:
-
-```bash
-sudo systemctl stop minijam-authority minijam-public-rpc minijam-worker
-sudo install -d -m 0700 /var/backups/minijam
-sudo tar -C / -czf /var/backups/minijam/stage0-$(date -u +%Y%m%dT%H%M%SZ).tgz \
-  etc/minijam \
-  var/lib/minijam \
-  usr/local/bin/minijam-node \
-  usr/local/bin/minijam-worker
-sudo systemctl start minijam-authority minijam-public-rpc minijam-worker
-```
-
-Docker Compose backup:
-
-```bash
-docker compose -f deploy/stage0/docker-compose.yml stop
-tar -czf stage0-compose-$(date -u +%Y%m%dT%H%M%SZ).tgz \
-  chain-specs/stage0-raw.json \
-  deploy/stage0/*.toml \
-  deploy/stage0/secrets \
-  deploy/stage0/.env
-docker run --rm \
-  -v minijam-client_authority-1-data:/authority-1:ro \
-  -v minijam-client_authority-2-data:/authority-2:ro \
-  -v minijam-client_authority-3-data:/authority-3:ro \
-  -v minijam-client_public-rpc-data:/public-rpc:ro \
-  -v minijam-client_worker-1-data:/worker-1:ro \
-  -v minijam-client_worker-2-data:/worker-2:ro \
-  -v minijam-client_worker-3-data:/worker-3:ro \
-  -v "$PWD:/backup" alpine \
-  tar -czf /backup/stage0-volumes-$(date -u +%Y%m%dT%H%M%SZ).tgz \
-    /authority-1 /authority-2 /authority-3 /public-rpc /worker-1 /worker-2 /worker-3
-docker compose -f deploy/stage0/docker-compose.yml start
-```
-
-Restore onto a replacement systemd host:
-
-```bash
-sudo systemctl stop minijam-authority minijam-public-rpc minijam-worker || true
-sudo tar -C / -xzf /var/backups/minijam/stage0-YYYYMMDDTHHMMSSZ.tgz
-sudo systemctl daemon-reload
-sudo systemctl start minijam-authority minijam-public-rpc minijam-worker
-```
-
-Restore Compose state by stopping the stack, restoring `chain-specs/`, `deploy/stage0/`, and the Docker volumes from the matching archives, then starting the stack again. Do not mix node databases from one chain spec with a different `stage0-raw.json`.
-
-## Runtime Upgrade Rehearsal
-
-Before a public testnet runtime upgrade, run the rehearsal procedure in
-`docs/stage0-runtime-upgrade-rehearsal.md` on a private rehearsal network with
-the same topology. Copy the command transcript, artifact hashes, upgrade
-extrinsic hash, and post-upgrade checks into `docs/STAGE0-RELEASE-CHECKLIST.md`.
+`compose.dev.yml` is not a release deployment input.
