@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - m9-stage0-local-e2e
+      - m10-minimal-release
   workflow_dispatch:
 
 permissions:
