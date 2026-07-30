@@ -2,7 +2,9 @@
 set -euo pipefail
 
 repository="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-artifacts="${1:?usage: $0 RELEASE_ARTIFACT_DIR}"
+artifacts_input="${1:?usage: $0 RELEASE_ARTIFACT_DIR}"
+test -d "${artifacts_input}"
+artifacts="$(cd -- "${artifacts_input}" && pwd -P)"
 manifest="${artifacts}/release-manifest.json"
 raw="${artifacts}/stage0-raw.json"
 compose_file="${repository}/compose.stage0.yml"
