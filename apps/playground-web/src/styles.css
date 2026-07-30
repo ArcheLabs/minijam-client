@@ -61,10 +61,6 @@ select, input, textarea { width: 100%; color: var(--ink); background: #10120e; b
 .empty-state p { max-width: 250px; font-size: 12px; line-height: 1.5; }
 .empty-icon { color: var(--acid); font-size: 28px; margin-bottom: 12px; }
 .divider { height: 1px; background: var(--line); margin: 5px 0 28px; }
-.faucet-strip { display: flex; align-items: center; justify-content: space-between; gap: 24px; border: 1px solid var(--line); background: #151812; padding: 18px 22px; margin-bottom: 24px; }
-.faucet-strip strong { display: block; margin-top: 5px; }
-.faucet-strip p { margin: 4px 0 0; color: var(--muted); }
-.faucet-button { width: auto; min-width: 160px; }
 .work-form { display: grid; gap: 14px; margin-top: 20px; }
 .artifact { display: grid; gap: 0; margin: 22px 0; }
 .artifact > div { display: grid; grid-template-columns: 90px minmax(0,1fr); gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
@@ -126,8 +122,6 @@ dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
   h1 { font-size: 42px; }
   .toolbar { align-items: stretch; height: auto; padding: 10px; gap: 8px; flex-direction: column; }
   .editor-shell { height: 420px; }
-  .faucet-strip { align-items: stretch; flex-direction: column; }
-  .faucet-button { width: 100%; }
   .control-panel { padding: 20px; }
   .data-grid > div { grid-template-columns: 1fr; gap: 7px; }
   .wallet-connected > span, .wallet-connected select { display: none; }

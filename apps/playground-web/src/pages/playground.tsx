@@ -6,7 +6,6 @@ import { ErrorPanel } from "../components/error-panel";
 import { WalletButton } from "../components/wallet-button";
 import { ConfirmAction } from "../components/confirm-action";
 import { playgroundApi, type BuildArtifact } from "../api/playground";
-import { requestFaucet, type FaucetEvent } from "../api/playground";
 import { useWallet } from "../wallet/context";
 import { signAction } from "../actions/signed-action";
 import { navigate } from "../app";
@@ -33,7 +32,6 @@ export function PlaygroundPage() {
   const [increment, setIncrement] = useState("1");
   const [pending, setPending] = useState<PendingAction>();
   const [submitting, setSubmitting] = useState(false);
-  const [faucet, setFaucet] = useState<FaucetEvent>();
 
   function selectExample(next: Language) {
     setLanguage(next);
@@ -133,26 +131,6 @@ export function PlaygroundPage() {
     }
   }
 
-  async function getMini() {
-    try {
-      const account = requireWritableAccount();
-      const address = account.address;
-      if (!address) throw new Error("Reconnect the wallet before requesting test MINI.");
-      const message = `faucet:${address}:${Date.now()}`;
-      const payload = `0x${[...new TextEncoder().encode(message)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-      setFaucet({ status: "requesting" });
-      const signature = await wallet.adapter.sign(account, payload);
-      await requestFaucet({ address, signature, message }, async (event) => {
-        setFaucet(event);
-        if (event.status === "succeeded") {
-          await playgroundApi.getFaucetBalance(address).catch(() => undefined);
-        }
-      });
-    } catch (cause) {
-      setFaucet({ status: "failed", error: errorMessage(cause) });
-    }
-  }
-
   const toolchain = artifact
     ? `${artifact.toolchain.clang} · ${artifact.toolchain.polkavm}`
     : "";
@@ -176,16 +154,6 @@ export function PlaygroundPage() {
       </section>
 
       <ErrorPanel message={error} />
-      <section className="faucet-strip" aria-live="polite">
-        <div>
-          <span className="eyebrow">Test funds</span>
-          <strong>Get test MINI</strong>
-          <p>{faucetLabel(faucet)}</p>
-        </div>
-        <button className="secondary-button faucet-button" disabled={!wallet.account || faucet?.status === "requesting"} onClick={() => void getMini()}>
-          {faucet?.status === "requesting" ? "Requesting..." : "Get test MINI"}
-        </button>
-      </section>
       <section className="builder-grid">
         <div className="code-panel">
           <div className="toolbar">
@@ -260,18 +228,6 @@ export function PlaygroundPage() {
       )}
     </main>
   );
-}
-
-function faucetLabel(event?: FaucetEvent) {
-  if (!event) return "Uses the connected wallet account and Stage 0 faucet limits.";
-  if (event.status === "requesting") return "Requesting wallet signature and sending the faucet request.";
-  if (event.status === "broadcasting") return "Faucet transfer is being broadcast.";
-  if (event.status === "broadcasted") return "Faucet transfer was broadcast.";
-  if (event.status === "succeeded") return `Faucet transfer included${event.blockHash ? ` in ${event.blockHash}` : ""}.`;
-  if (event.status === "limited") return "This address has already used its daily faucet request.";
-  if (event.status === "over-cap") return "This address is already above the faucet balance cap.";
-  if (event.status === "unavailable") return "Faucet is unavailable.";
-  return event.error ?? "Faucet request failed.";
 }
 
 function bytesToBase64(bytes: Uint8Array) {

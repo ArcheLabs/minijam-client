@@ -198,52 +198,6 @@ services:
       retries: 60
     networks: [stage0]
 
-  faucet-db:
-    image: postgres:15
-    pull_policy: always
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${FAUCET_DB_USERNAME:-postgres}
-      POSTGRES_PASSWORD: ${FAUCET_DB_PASSWORD:?set FAUCET_DB_PASSWORD in the untracked Stage 0 env file}
-      POSTGRES_DB: ${FAUCET_DB_DATABASE_NAME:-faucet}
-    volumes:
-      - faucet-db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
-      interval: 2s
-      timeout: 5s
-      retries: 30
-    networks: [stage0]
-
-  faucet-api:
-    image: ${FAUCET_API_IMAGE:?set FAUCET_API_IMAGE to the local MiniJAM faucet image}
-    pull_policy: never
-    restart: unless-stopped
-    environment:
-      NETWORK: minijam
-      MINIJAM_RPC_URL: ws://node:9944
-      FAUCET_ACCOUNT_MNEMONIC: ${FAUCET_ACCOUNT_MNEMONIC:?set FAUCET_ACCOUNT_MNEMONIC in the untracked faucet env file}
-      DB_HOST: faucet-db
-      DB_PORT: 5432
-      DB_USERNAME: ${FAUCET_DB_USERNAME:-postgres}
-      DB_PASSWORD: ${FAUCET_DB_PASSWORD:?set FAUCET_DB_PASSWORD in the untracked Stage 0 env file}
-      DB_DATABASE_NAME: ${FAUCET_DB_DATABASE_NAME:-faucet}
-      RECAPTCHA_SECRET: ${RECAPTCHA_SECRET:-}
-      PORT: 5555
-    depends_on:
-      node:
-        condition: service_healthy
-      faucet-db:
-        condition: service_healthy
-    ports:
-      - "${FAUCET_BIND:-127.0.0.1}:${FAUCET_PORT:-5555}:5555"
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:5555/ready"]
-      interval: 2s
-      timeout: 5s
-      retries: 60
-    networks: [stage0]
-
 secrets:
   node-keystore:
     file: ${NODE_KEY_OR_SEED_PATH:?set NODE_KEY_OR_SEED_PATH to the authority keystore tar.gz}
@@ -261,7 +215,6 @@ volumes:
   worker-1-data:
   worker-2-data:
   worker-3-data:
-  faucet-db-data:
 
 networks:
   stage0:

@@ -13,7 +13,7 @@ export class ExtensionWalletAdapter implements WalletAdapter {
     return accounts.map(({ address, meta, type }) => {
       const accountId = u8aToHex(decodeAddress(address));
       extensionAddresses.set(accountId, address);
-      return { accountId, address, name: meta.name ?? "Wallet account", type: type ?? "unknown" };
+      return { accountId, name: meta.name ?? "Wallet account", type: type ?? "unknown" };
     });
   }
 

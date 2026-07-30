@@ -3,7 +3,6 @@ export const SR25519_ONLY_ERROR =
 
 export interface WalletAccount {
   accountId: string;
-  address?: string;
   name: string;
   type: string;
 }

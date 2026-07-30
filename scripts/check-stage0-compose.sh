@@ -15,11 +15,8 @@ config="$(
   MINIJAM_COMPILER_IMAGE="ghcr.io/archelabs/minijam-compiler-api@${digest}" \
   MINIJAM_PLAYGROUND_API_IMAGE="ghcr.io/archelabs/minijam-playground-api@${digest}" \
   MINIJAM_PLAYGROUND_WEB_IMAGE="ghcr.io/archelabs/minijam-playground-web@${digest}" \
-  FAUCET_API_IMAGE="polkadot-testnet-faucet:minijam-local" \
   MINIJAM_GENESIS_HASH="0x0000000000000000000000000000000000000000000000000000000000000000" \
   MINIJAM_RELAYER_URI="runtime-injected-value" \
-  FAUCET_ACCOUNT_MNEMONIC="runtime-injected-value" \
-  FAUCET_DB_PASSWORD="runtime-injected-value" \
   NODE_KEY_OR_SEED_PATH="${scratch}/keystore.tar.gz" \
   WORKER_1_SEED_PATH="${scratch}/worker-1" \
   WORKER_2_SEED_PATH="${scratch}/worker-2" \
@@ -30,8 +27,6 @@ config="$(
 jq -e '
   (.services | keys) == [
     "compiler-api",
-    "faucet-api",
-    "faucet-db",
     "node",
     "playground-api",
     "playground-web",
@@ -40,13 +35,13 @@ jq -e '
     "worker-3"
   ]
   and all(.services[]; has("build") | not)
-  and all(.services[]; .pull_policy == "always" or .pull_policy == "never")
-  and all([.services.node, .services["worker-1"], .services["worker-2"], .services["worker-3"], .services["compiler-api"], .services["playground-api"], .services["playground-web"]][]; .image | test(
+  and all(.services[]; .pull_policy == "always")
+  and all(.services[]; .image | test(
     "^ghcr\\.io/archelabs/minijam-[a-z-]+@sha256:[0-9a-f]{64}$"
   ))
   and (
     [.services | to_entries[] | select(.value | has("ports")) | .key]
-    == ["faucet-api", "playground-web"]
+    == ["playground-web"]
   )
   and (.services["playground-api"].environment.MINIJAM_COMPILER_URL
     == "http://compiler-api:8081")
@@ -54,8 +49,6 @@ jq -e '
     == "ws://node:9944")
   and (.services["worker-1"].environment.MINIJAM_WORKER_SEED_FILE
     == "/run/secrets/worker-seed")
-  and (.services["faucet-api"].environment.NETWORK == "minijam")
-  and (.services["faucet-api"].environment.MINIJAM_RPC_URL == "ws://node:9944")
 ' >/dev/null <<<"${config}"
 
 MINIJAM_IMAGE_TAG=static-check \
