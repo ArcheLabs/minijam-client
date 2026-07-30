@@ -28,8 +28,14 @@ const STAGE0_WORKER_ACCOUNTS: [[u8; 32]; 5] =
     [[0x61; 32], [0x62; 32], [0x63; 32], [0x64; 32], [0x65; 32]];
 const STAGE0_WORKER_SESSION_KEYS: [[u8; 32]; 5] =
     [[0x71; 32], [0x72; 32], [0x73; 32], [0x74; 32], [0x75; 32]];
-const STAGE0_SUDO_ACCOUNT: [u8; 32] = [0x81; 32];
-const STAGE0_FAUCET_ACCOUNT: [u8; 32] = [0x91; 32];
+pub(crate) const STAGE0_FAUCET_ACCOUNT: [u8; 32] = [
+    0x1a, 0x69, 0x04, 0x44, 0xd1, 0x60, 0xa1, 0xf6, 0x32, 0x81, 0x20, 0x3e, 0xde, 0x44, 0x9b, 0xa9,
+    0x96, 0xc5, 0x60, 0xb7, 0x98, 0x0e, 0x40, 0x43, 0x75, 0x76, 0x5f, 0x2a, 0xea, 0xcd, 0x88, 0x6a,
+];
+const STAGE0_SUDO_ACCOUNT: [u8; 32] = [
+    0x64, 0xda, 0x53, 0x90, 0x20, 0xcd, 0x74, 0x3f, 0xed, 0x81, 0xed, 0x5d, 0xe9, 0x22, 0xf0, 0xb3,
+    0xe7, 0x76, 0x9b, 0xf3, 0xb7, 0x7a, 0x95, 0x3a, 0xf3, 0xc0, 0x77, 0x9e, 0xce, 0xfd, 0x7f, 0x23,
+];
 
 fn testnet_genesis(
     initial_authorities: Vec<(AuraId, GrandpaId)>,
@@ -312,6 +318,17 @@ mod tests {
             .get(snake)
             .or_else(|| section.get(camel))
             .unwrap_or_else(|| panic!("missing genesis field {snake}/{camel}"))
+    }
+
+    fn contains_value(value: &Value, expected: &Value) -> bool {
+        value == expected
+            || match value {
+                Value::Array(values) => values.iter().any(|value| contains_value(value, expected)),
+                Value::Object(values) => {
+                    values.values().any(|value| contains_value(value, expected))
+                }
+                _ => false,
+            }
     }
 
     #[test]
@@ -602,6 +619,55 @@ mod tests {
                 !development_accounts.contains(account),
                 "stage0 worker accounts must not use development keyring accounts"
             );
+        }
+    }
+
+    #[test]
+    fn stage0_genesis_uses_release_faucet_and_sudo_accounts() {
+        const EXPECTED_FAUCET: [u8; 32] = [
+            0x1a, 0x69, 0x04, 0x44, 0xd1, 0x60, 0xa1, 0xf6, 0x32, 0x81, 0x20, 0x3e, 0xde, 0x44,
+            0x9b, 0xa9, 0x96, 0xc5, 0x60, 0xb7, 0x98, 0x0e, 0x40, 0x43, 0x75, 0x76, 0x5f, 0x2a,
+            0xea, 0xcd, 0x88, 0x6a,
+        ];
+        const EXPECTED_SUDO: [u8; 32] = [
+            0x64, 0xda, 0x53, 0x90, 0x20, 0xcd, 0x74, 0x3f, 0xed, 0x81, 0xed, 0x5d, 0xe9, 0x22,
+            0xf0, 0xb3, 0xe7, 0x76, 0x9b, 0xf3, 0xb7, 0x7a, 0x95, 0x3a, 0xf3, 0xc0, 0x77, 0x9e,
+            0xce, 0xfd, 0x7f, 0x23,
+        ];
+
+        assert_eq!(STAGE0_FAUCET_ACCOUNT, EXPECTED_FAUCET);
+        assert_eq!(STAGE0_SUDO_ACCOUNT, EXPECTED_SUDO);
+        assert_eq!(crate::FaucetAccount::get(), AccountId::new(EXPECTED_FAUCET));
+
+        let patch = stage0_config_genesis();
+        let sudo = section(&patch, "sudo", "sudo");
+        assert_eq!(
+            field(sudo, "key", "key"),
+            &serde_json::to_value(AccountId::new(EXPECTED_SUDO)).unwrap()
+        );
+
+        let balances = field(
+            section(&patch, "balances", "balances"),
+            "balances",
+            "balances",
+        )
+        .as_array()
+        .expect("balances must be a JSON array");
+        for expected in [EXPECTED_FAUCET, EXPECTED_SUDO] {
+            let account = serde_json::to_value(AccountId::new(expected)).unwrap();
+            assert!(balances.iter().any(|entry| {
+                entry.as_array().is_some_and(|pair| {
+                    pair.first() == Some(&account)
+                        && pair.get(1) == Some(&Value::from(1_000_000 * UNIT))
+                })
+            }));
+        }
+
+        for old in [[0x81; 32], [0x91; 32]] {
+            assert!(!contains_value(
+                &patch,
+                &serde_json::to_value(AccountId::new(old)).unwrap()
+            ));
         }
     }
 

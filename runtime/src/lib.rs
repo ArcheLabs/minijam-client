@@ -128,7 +128,8 @@ parameter_types! {
     pub const MiniJamChainId: [u8; 32] = [77; 32];
     pub RewardPoolAccount: AccountId = AccountId::new([9; 32]);
     pub FuelEscrowAccount: AccountId = AccountId::new([7; 32]);
-    pub FaucetAccount: AccountId = AccountId::new([0x91; 32]);
+    pub FaucetAccount: AccountId =
+        AccountId::new(genesis_config_presets::STAGE0_FAUCET_ACCOUNT);
     pub BridgeEscrowAccount: AccountId = AccountId::new([8; 32]);
     pub const MinimumWorkerStake: Balance = 1_000 * UNIT;
     pub const TimelyVoteReward: Balance = 0;
