@@ -144,10 +144,10 @@ export function PlaygroundPage() {
         <div className="code-panel">
           <div className="toolbar">
             <div className="segmented" aria-label="Example language">
-              <button className={language === "c" ? "active" : ""} onClick={() => selectExample("c")}>Counter C</button>
-              <button className={language === "cpp" ? "active" : ""} onClick={() => selectExample("cpp")}>Counter C++</button>
+              <button className={language === "c" ? "active" : ""} onClick={() => selectExample("c")}> C </button>
+              <button className={language === "cpp" ? "active" : ""} onClick={() => selectExample("cpp")}> C++ </button>
             </div>
-            <button className="text-button" onClick={() => selectExample(language)}>Reset example</button>
+            <button className="text-button" onClick={() => selectExample(language)}>Reset</button>
           </div>
           <CodeEditor language={language} value={source} onChange={(next) => {
             setSource(next);

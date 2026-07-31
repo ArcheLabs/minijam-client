@@ -42,7 +42,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .eyebrow { color: var(--acid); text-transform: uppercase; font: 500 11px "IBM Plex Mono"; letter-spacing: .14em; }
 h1 { margin: 12px 0 0; font-size: clamp(42px, 5vw, 76px); line-height: .98; letter-spacing: -.055em; }
 .hero-copy { color: #b7bcad; line-height: 1.65; max-width: 430px; margin: 0 0 5px; }
-.builder-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .75fr); align-items: stretch; min-height: 610px; border: 1px solid var(--line); }
+.builder-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .75fr); align-items: stretch; min-height: 800px; border: 1px solid var(--line); }
 .code-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
 .toolbar { flex: 0 0 58px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border-bottom: 1px solid var(--line); background: #151812; }
 .segmented { display: flex; gap: 4px; }
@@ -107,7 +107,7 @@ dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
 .storage-result { display: grid; gap: 10px; margin-top: 14px; padding: 14px; background: #10120e; overflow-wrap: anywhere; }
 .storage-result small { color: var(--muted); }
 .upgrade-section { margin-top: 20px; border: 1px solid var(--line); background: var(--panel); padding: 28px; }
-.upgrade-section .editor-shell { flex: none; height: 440px; min-height: 440px; border: 1px solid var(--line); }
+.upgrade-section .editor-shell { flex: none; height: 750px; min-height: 750px; border: 1px solid var(--line); }
 .upgrade-actions { display: grid; grid-template-columns: 180px minmax(0,1fr) auto; align-items: center; gap: 18px; margin-top: 18px; }
 .upgrade-actions > span { overflow-wrap: anywhere; color: var(--muted); }
 .services-page h1 { margin-bottom: 24px; }

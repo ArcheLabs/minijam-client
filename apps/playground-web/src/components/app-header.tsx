@@ -11,7 +11,7 @@ export function AppHeader() {
           alt="MiniJAM"
           style={{ width: 34, height: 34, objectFit: "contain" }}
         />
-        <span>MiniJAM <b>Playground</b></span>
+        <span><b>Playground</b></span>
       </a>
       <WalletButton />
     </header>
