@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { PlaygroundPage } from "./pages/playground";
 import { OperationPage } from "./pages/operation";
 import { ServicePage } from "./pages/service";
+import { ServicesPage } from "./pages/services";
 
 export function navigate(path: string) {
   history.pushState({}, "", path);
@@ -21,6 +22,7 @@ export function App() {
 
   let page = <PlaygroundPage />;
   if (operation) page = <OperationPage operationId={operation[1]} />;
+  if (path === "/services") page = <ServicesPage />;
   if (service) page = <ServicePage serviceId={Number(service[1])} />;
   return <WalletProvider>{page}</WalletProvider>;
 }

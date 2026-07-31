@@ -29,10 +29,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .wallet-button, .primary-button { border: 0; cursor: pointer; background: var(--acid); color: var(--acid-ink); font-weight: 700; padding: 12px 18px; }
 .wallet-button:hover, .primary-button:hover { background: #32a3ff; }
 .wallet-button:disabled, .primary-button:disabled, .secondary-button:disabled { cursor: not-allowed; opacity: .45; }
-.wallet-connected { display: flex; align-items: center; gap: 12px; }
-.wallet-connected > span { display: grid; text-align: right; font-size: 12px; }
-.wallet-connected small { color: var(--muted); margin-top: 3px; }
-.wallet-connected select { width: auto; padding: 7px; }
+.wallet-menu { position: relative; }
+.wallet-account-button { display: flex; align-items: center; gap: 12px; color: var(--ink); background: #20241c; border: 1px solid var(--line); cursor: pointer; padding: 8px 12px; }
+.wallet-account-button > span:first-child { display: grid; text-align: right; font-size: 12px; }
+.wallet-account-button small { color: var(--muted); margin-top: 3px; }
+.wallet-dropdown { position: absolute; z-index: 50; top: calc(100% + 8px); right: 0; width: 230px; display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line); background: #20241c; box-shadow: 0 18px 50px rgba(0,0,0,.4); }
+.wallet-dropdown label { padding: 5px; }
+.wallet-dropdown select { padding: 8px; }
+.wallet-dropdown button { border: 0; background: transparent; color: var(--ink); text-align: left; cursor: pointer; padding: 10px; }
+.wallet-dropdown button:hover { color: var(--acid); background: #292d25; }
 .hero { display: grid; grid-template-columns: 1.45fr .55fr; align-items: end; gap: 50px; padding: 64px 0 48px; }
 .eyebrow { color: var(--acid); text-transform: uppercase; font: 500 11px "IBM Plex Mono"; letter-spacing: .14em; }
 h1 { margin: 12px 0 0; font-size: clamp(42px, 5vw, 76px); line-height: .98; letter-spacing: -.055em; }
@@ -99,11 +104,21 @@ dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
 .action-stack { display: grid; align-content: start; gap: 16px; }
 .action-stack h2 { margin-bottom: 4px; }
 .permission-note { margin: -24px 0 30px; padding: 12px 16px; background: rgba(255,141,123,.08); border: 1px solid #53332e; color: #ffc1b7; }
-.storage-result { display: flex; justify-content: space-between; gap: 16px; margin-top: 14px; padding: 14px; background: #10120e; overflow-wrap: anywhere; }
+.storage-result { display: grid; gap: 10px; margin-top: 14px; padding: 14px; background: #10120e; overflow-wrap: anywhere; }
+.storage-result small { color: var(--muted); }
 .upgrade-section { margin-top: 20px; border: 1px solid var(--line); background: var(--panel); padding: 28px; }
 .upgrade-section .editor-shell { height: 440px; border: 1px solid var(--line); }
 .upgrade-actions { display: grid; grid-template-columns: 180px minmax(0,1fr) auto; align-items: center; gap: 18px; margin-top: 18px; }
 .upgrade-actions > span { overflow-wrap: anywhere; color: var(--muted); }
+.services-page h1 { margin-bottom: 24px; }
+.services-empty { color: var(--muted); }
+.services-empty .wallet-button { width: auto; margin-top: 12px; }
+.services-list { display: grid; gap: 14px; margin-top: 28px; }
+.service-list-item { display: grid; grid-template-columns: 120px minmax(0,1fr) auto; align-items: center; gap: 24px; }
+.service-list-item h2 { margin: 0; font-size: 32px; }
+.service-list-item .data-grid { margin: 0; }
+.service-list-item .data-grid > div { grid-template-columns: 120px minmax(0,1fr); padding: 10px 0; }
+.unavailable { color: var(--danger); }
 
 @media (max-width: 1024px) {
   .workspace { padding-inline: 24px; }
@@ -124,7 +139,8 @@ dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
   .editor-shell { height: 420px; }
   .control-panel { padding: 20px; }
   .data-grid > div { grid-template-columns: 1fr; gap: 7px; }
-  .wallet-connected > span, .wallet-connected select { display: none; }
+  .wallet-account-button small { display: none; }
+  .service-list-item { grid-template-columns: 1fr; }
   .upgrade-actions { grid-template-columns: 1fr; }
   .confirm-details > div { grid-template-columns: 1fr; gap: 6px; }
 }

@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import counterC from "../examples/counter.c?raw";
 import { navigate } from "../app";
-import { playgroundApi, type BuildArtifact, type ServiceView } from "../api/playground";
+import {
+  playgroundApi,
+  type BuildArtifact,
+  type ServiceView,
+  type StorageView
+} from "../api/playground";
 import { ErrorPanel } from "../components/error-panel";
 import { WalletButton } from "../components/wallet-button";
 import { CodeEditor } from "../components/editor";
@@ -25,7 +30,8 @@ export function ServicePage({ serviceId }: { serviceId: number }) {
   const [payload, setPayload] = useState("1");
   const [extrinsics, setExtrinsics] = useState("");
   const [storageKey, setStorageKey] = useState("counter");
-  const [storageValue, setStorageValue] = useState<string>();
+  const [storageResult, setStorageResult] = useState<StorageView>();
+  const [readingStorage, setReadingStorage] = useState(false);
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState<Pending>();
   const [submitting, setSubmitting] = useState(false);
@@ -110,12 +116,16 @@ export function ServicePage({ serviceId }: { serviceId: number }) {
   }
 
   async function readStorage() {
+    setReadingStorage(true);
+    setError(undefined);
     try {
       const key = `0x${[...new TextEncoder().encode(storageKey)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
       const result = await playgroundApi.getServiceStorage(serviceId, key);
-      setStorageValue(result.value);
+      setStorageResult(result);
     } catch (cause) {
       setError(errorMessage(cause));
+    } finally {
+      setReadingStorage(false);
     }
   }
 
@@ -140,9 +150,26 @@ export function ServicePage({ serviceId }: { serviceId: number }) {
             <Row label="Finalized block" value={service?.finalizedBlock} />
           </dl>
           <h3>Observe storage</h3>
-          <label>UTF-8 key<input value={storageKey} onChange={(event) => setStorageKey(event.target.value)} /></label>
-          <button className="secondary-button" onClick={() => void readStorage()}>Read finalized value</button>
-          {storageValue && <div className="storage-result"><span className="mono">{storageValue}</span><b>{decodeCounter(storageValue)}</b></div>}
+          <label>UTF-8 key<input value={storageKey} onChange={(event) => {
+            setStorageKey(event.target.value);
+            setStorageResult(undefined);
+          }} /></label>
+          <button className="secondary-button" disabled={readingStorage} onClick={() => void readStorage()}>
+            {readingStorage ? "Reading…" : "Read finalized value"}
+          </button>
+          {storageResult && (
+            <div className="storage-result">
+              {storageResult.value !== null ? (
+                <>
+                  <span className="mono">{storageResult.value}</span>
+                  <b>{decodeCounter(storageResult.value)}</b>
+                </>
+              ) : (
+                <b>No finalized value exists for this key.</b>
+              )}
+              <small className="mono">Finalized block: {storageResult.finalizedBlock}</small>
+            </div>
+          )}
         </div>
         <div className="panel action-stack">
           <h2>Submit Work</h2>

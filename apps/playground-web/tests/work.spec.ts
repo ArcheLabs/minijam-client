@@ -26,3 +26,14 @@ test("owner mismatch disables Upgrade and Work", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Run Work" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Upgrade Service" })).toBeDisabled();
 });
+
+test("shows an explicit result when finalized storage has no value", async ({ page }) => {
+  const state = initialState();
+  state.storageMissing = true;
+  await mockPlaygroundApi(page, state);
+  await page.goto("/services/7");
+  await page.getByRole("button", { name: "Read finalized value" }).click();
+
+  await expect(page.getByText("No finalized value exists for this key.")).toBeVisible();
+  await expect(page.getByText(`Finalized block: 0x${"77".repeat(32)}`)).toBeVisible();
+});

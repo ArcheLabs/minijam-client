@@ -3,6 +3,7 @@ import { navigate } from "../app";
 import { playgroundApi, type Operation } from "../api/playground";
 import { ErrorPanel } from "../components/error-panel";
 import { errorMessage } from "../lib/errors";
+import { rememberService } from "../lib/service-history";
 
 const statusLabel: Record<Operation["status"], string> = {
   prepared: "Preparing",
@@ -17,7 +18,14 @@ const statusLabel: Record<Operation["status"], string> = {
 
 export function OperationPage({ operationId }: { operationId: string }) {
   const [operation, setOperation] = useState<Operation>();
+  const [genesisHash, setGenesisHash] = useState<string>();
   const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    playgroundApi.getConfig()
+      .then((config) => setGenesisHash(config.genesisHash))
+      .catch((cause) => setError(errorMessage(cause)));
+  }, []);
 
   useEffect(() => {
     let stopped = false;
@@ -44,6 +52,24 @@ export function OperationPage({ operationId }: { operationId: string }) {
       if (timer) clearTimeout(timer);
     };
   }, [operationId]);
+
+  useEffect(() => {
+    const serviceId = operation?.result?.serviceId;
+    if (
+      genesisHash &&
+      operation?.kind === "create" &&
+      operation.status === "succeeded" &&
+      operation.account &&
+      serviceId != null
+    ) {
+      rememberService(genesisHash, operation.account, {
+        serviceId,
+        codeHash: typeof operation.request.codeHash === "string"
+          ? operation.request.codeHash
+          : undefined
+      });
+    }
+  }, [genesisHash, operation]);
 
   const serviceId = operation?.result?.serviceId;
   return (

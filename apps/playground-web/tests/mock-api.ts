@@ -8,6 +8,7 @@ export interface MockState {
   controller?: string;
   operationPolls: Map<string, number>;
   replayAction?: string;
+  storageMissing?: boolean;
 }
 
 export const initialState = (): MockState => ({
@@ -38,6 +39,12 @@ export async function mockPlaygroundApi(page: Page, state: MockState) {
         codeLength: 4,
         diagnostics: [],
         toolchain: { clang: "clang-19", polkavm: "0.24", converter: "v1", sdk: "stage0" }
+      });
+    }
+    if (url.pathname === "/api/v1/config") {
+      return json({
+        genesisHash: `0x${"00".repeat(32)}`,
+        actionDomain: "minijam/playground-action/v1"
       });
     }
     if (url.pathname === "/api/v1/actions/prepare") {
@@ -81,11 +88,20 @@ export async function mockPlaygroundApi(page: Page, state: MockState) {
       const done = polls > 1;
       return json({
         ...operation(id, kind, done ? "succeeded" : kind === "work" ? "tracking_work" : "waiting_receipt"),
+        account: await testAccountId(),
         request: kind === "work" ? { serviceId: 7, packageHash: `0x${"55".repeat(32)}`, bundleCid: "bafk2bzacebundle" } : {},
         result: done ? (kind === "create" ? { serviceId: 7 } : kind === "work" ? { workId: 9, executionReceipt: `0x${"66".repeat(32)}` } : { serviceId: 7 }) : undefined
       });
     }
     if (url.pathname === "/api/v1/services/7/storage") {
+      if (state.storageMissing) {
+        return json({
+          serviceId: 7,
+          key: url.searchParams.get("key"),
+          value: null,
+          finalizedBlock: `0x${"77".repeat(32)}`
+        });
+      }
       const bytes = new Uint8Array(8);
       new DataView(bytes.buffer).setBigInt64(0, state.counter, true);
       return json({ serviceId: 7, key: url.searchParams.get("key"), value: hex(bytes), finalizedBlock: `0x${"77".repeat(32)}` });

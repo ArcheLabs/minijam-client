@@ -31,6 +31,7 @@ export interface Authorization {
 
 export interface Operation {
   operationId: string;
+  account: string;
   kind: "create" | "upgrade" | "work";
   status: "prepared" | "submitted" | "waiting_receipt" | "submitting_preimage" | "waiting_preimage" | "tracking_work" | "succeeded" | "failed";
   request: Record<string, unknown>;
@@ -49,6 +50,13 @@ export interface ServiceView {
   preimageReady: boolean;
   finalizedBlock: string;
   finalizedBlockNumber: number;
+}
+
+export interface StorageView {
+  serviceId: number;
+  key: string;
+  value: string | null;
+  finalizedBlock: string;
 }
 
 export class PlaygroundApiError extends Error {
@@ -95,7 +103,7 @@ export const playgroundApi = {
   getService: (serviceId: number) =>
     request<ServiceView>(`/api/v1/services/${serviceId}`),
   getServiceStorage: (serviceId: number, key: string) =>
-    request<{ serviceId: number; key: string; value?: string; finalizedBlock: string }>(
+    request<StorageView>(
       `/api/v1/services/${serviceId}/storage?key=${encodeURIComponent(key)}`
     )
 };
