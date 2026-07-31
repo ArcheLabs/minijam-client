@@ -42,14 +42,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .eyebrow { color: var(--acid); text-transform: uppercase; font: 500 11px "IBM Plex Mono"; letter-spacing: .14em; }
 h1 { margin: 12px 0 0; font-size: clamp(42px, 5vw, 76px); line-height: .98; letter-spacing: -.055em; }
 .hero-copy { color: #b7bcad; line-height: 1.65; max-width: 430px; margin: 0 0 5px; }
-.builder-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .75fr); border: 1px solid var(--line); min-height: 610px; }
-.code-panel { min-width: 0; border-right: 1px solid var(--line); }
-.toolbar { height: 58px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border-bottom: 1px solid var(--line); background: #151812; }
+.builder-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .75fr); align-items: stretch; min-height: 610px; border: 1px solid var(--line); }
+.code-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
+.toolbar { flex: 0 0 58px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border-bottom: 1px solid var(--line); background: #151812; }
 .segmented { display: flex; gap: 4px; }
 .segmented button, .text-button { color: var(--muted); background: transparent; border: 0; cursor: pointer; padding: 8px 10px; }
 .segmented button.active { color: var(--ink); background: #292d25; }
 .text-button:hover { color: var(--acid); }
-.editor-shell { height: 550px; overflow: hidden; }
+.editor-shell { flex: 1 1 0; min-height: 0; height: auto; overflow: hidden; }
+.editor-shell > * { width: 100%; height: 100%; }
 .control-panel { padding: 28px; background: var(--panel); }
 .step-label { display: flex; align-items: center; gap: 12px; text-transform: uppercase; letter-spacing: .1em; font-size: 12px; font-weight: 700; margin-bottom: 26px; }
 .step-label span { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--acid); color: var(--acid); font: 500 10px "IBM Plex Mono"; }
@@ -73,7 +74,7 @@ select, input, textarea { width: 100%; color: var(--ink); background: #10120e; b
 .success { color: var(--acid); font-weight: 700; }
 .diagnostics { white-space: pre-wrap; max-height: 180px; overflow: auto; background: #0e100c; color: var(--danger); border: 1px solid #4b302c; padding: 12px; font: 12px/1.5 "IBM Plex Mono"; }
 .muted { color: var(--muted); line-height: 1.6; }
-.page { max-width: 1480px; min-height: 100vh; margin: auto; padding: 56px 42px; }
+.page { max-width: 1480px; min-height: 100vh; margin: auto; padding: 0 42px 56px; }
 .page-back { margin: 18px 0 8px; }
 .page h1 { margin-bottom: 48px; }
 .panel, .status-card { border: 1px solid var(--line); background: var(--panel); padding: 28px; }
@@ -106,7 +107,7 @@ dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
 .storage-result { display: grid; gap: 10px; margin-top: 14px; padding: 14px; background: #10120e; overflow-wrap: anywhere; }
 .storage-result small { color: var(--muted); }
 .upgrade-section { margin-top: 20px; border: 1px solid var(--line); background: var(--panel); padding: 28px; }
-.upgrade-section .editor-shell { height: 440px; border: 1px solid var(--line); }
+.upgrade-section .editor-shell { flex: none; height: 440px; min-height: 440px; border: 1px solid var(--line); }
 .upgrade-actions { display: grid; grid-template-columns: 180px minmax(0,1fr) auto; align-items: center; gap: 18px; margin-top: 18px; }
 .upgrade-actions > span { overflow-wrap: anywhere; color: var(--muted); }
 .services-page h1 { margin-bottom: 24px; }
@@ -125,7 +126,6 @@ dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
   .builder-grid { grid-template-columns: 1fr; }
   .service-grid { grid-template-columns: 1fr; }
   .code-panel { border-right: 0; border-bottom: 1px solid var(--line); }
-  .editor-shell { height: 480px; }
 }
 
 @media (max-width: 620px) {
@@ -134,8 +134,7 @@ dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
   .brand > span:last-child { display: none; }
   .hero { padding: 36px 0 30px; gap: 24px; }
   h1 { font-size: 42px; }
-  .toolbar { align-items: stretch; height: auto; padding: 10px; gap: 8px; flex-direction: column; }
-  .editor-shell { height: 420px; }
+  .toolbar { flex: 0 0 auto; align-items: stretch; height: auto; padding: 10px; gap: 8px; flex-direction: column; }
   .control-panel { padding: 20px; }
   .data-grid > div { grid-template-columns: 1fr; gap: 7px; }
   .wallet-account-button small { display: none; }
