@@ -8,7 +8,7 @@ import {
   type StorageView
 } from "../api/playground";
 import { ErrorPanel } from "../components/error-panel";
-import { WalletButton } from "../components/wallet-button";
+import { AppHeader } from "../components/app-header";
 import { CodeEditor } from "../components/editor";
 import { ConfirmAction } from "../components/confirm-action";
 import { useWallet } from "../wallet/context";
@@ -131,10 +131,8 @@ export function ServicePage({ serviceId }: { serviceId: number }) {
 
   return (
     <main className="page service-page">
-      <header className="service-header">
-        <button className="text-button" onClick={() => navigate("/")}>← Playground</button>
-        <WalletButton />
-      </header>
+      <AppHeader />
+      <button className="text-button page-back" onClick={() => navigate("/")}>← Playground</button>
       <p className="eyebrow">Finalized service</p>
       <h1>Service {serviceId}</h1>
       <ErrorPanel message={error} />

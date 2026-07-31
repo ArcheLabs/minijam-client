@@ -6,6 +6,7 @@ import {
   type ServiceView
 } from "../api/playground";
 import { ErrorPanel } from "../components/error-panel";
+import { AppHeader } from "../components/app-header";
 import { WalletButton } from "../components/wallet-button";
 import { errorMessage } from "../lib/errors";
 import {
@@ -73,10 +74,8 @@ export function ServicesPage() {
 
   return (
     <main className="page narrow services-page">
-      <header className="service-header">
-        <button className="text-button" onClick={() => navigate("/")}>← Playground</button>
-        {wallet.account && <WalletButton />}
-      </header>
+      <AppHeader />
+      <button className="text-button page-back" onClick={() => navigate("/")}>← Playground</button>
       <p className="eyebrow">Browser history</p>
       <h1>My Services</h1>
       {!wallet.account ? (

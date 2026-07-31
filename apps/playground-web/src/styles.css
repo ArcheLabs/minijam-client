@@ -73,8 +73,8 @@ select, input, textarea { width: 100%; color: var(--ink); background: #10120e; b
 .success { color: var(--acid); font-weight: 700; }
 .diagnostics { white-space: pre-wrap; max-height: 180px; overflow: auto; background: #0e100c; color: var(--danger); border: 1px solid #4b302c; padding: 12px; font: 12px/1.5 "IBM Plex Mono"; }
 .muted { color: var(--muted); line-height: 1.6; }
-.page { min-height: 100vh; padding: 56px 42px; }
-.page.narrow { max-width: 980px; margin: auto; }
+.page { max-width: 1480px; min-height: 100vh; margin: auto; padding: 56px 42px; }
+.page-back { margin: 18px 0 8px; }
 .page h1 { margin-bottom: 48px; }
 .panel, .status-card { border: 1px solid var(--line); background: var(--panel); padding: 28px; }
 .panel h2 { margin-top: 0; }
@@ -94,7 +94,6 @@ dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
 .confirm-details > div { display: grid; grid-template-columns: 120px 1fr; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--line); }
 .modal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 .modal-actions .primary-button { width: auto; }
-.service-page { max-width: 1380px; margin: auto; }
 .service-header { display: flex; align-items: center; justify-content: space-between; }
 .service-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 20px; }
 .data-grid.compact { margin-bottom: 32px; }
@@ -115,7 +114,7 @@ dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
 .services-empty .wallet-button { width: auto; margin-top: 12px; }
 .services-list { display: grid; gap: 14px; margin-top: 28px; }
 .service-list-item { display: grid; grid-template-columns: 120px minmax(0,1fr) auto; align-items: center; gap: 24px; }
-.service-list-item h2 { margin: 0; font-size: 32px; }
+.service-list-item h2 { margin: 0; font-size: 16px; }
 .service-list-item .data-grid { margin: 0; }
 .service-list-item .data-grid > div { grid-template-columns: 120px minmax(0,1fr); padding: 10px 0; }
 .unavailable { color: var(--danger); }

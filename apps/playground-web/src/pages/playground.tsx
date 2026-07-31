@@ -3,7 +3,7 @@ import counterC from "../examples/counter.c?raw";
 import counterCpp from "../examples/counter.cpp?raw";
 import { CodeEditor } from "../components/editor";
 import { ErrorPanel } from "../components/error-panel";
-import { WalletButton } from "../components/wallet-button";
+import { AppHeader } from "../components/app-header";
 import { ConfirmAction } from "../components/confirm-action";
 import { playgroundApi, type BuildArtifact } from "../api/playground";
 import { useWallet } from "../wallet/context";
@@ -137,13 +137,7 @@ export function PlaygroundPage() {
 
   return (
     <main className="workspace">
-      <header className="topbar">
-        <a className="brand" href="/" aria-label="MiniJAM Playground home">
-          <span className="brand-mark">MJ</span>
-          <span>MiniJAM <b>Playground</b></span>
-        </a>
-        <WalletButton />
-      </header>
+      <AppHeader />
 
       <ErrorPanel message={error} />
       <section className="builder-grid">

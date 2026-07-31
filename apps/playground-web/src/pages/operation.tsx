@@ -4,6 +4,7 @@ import { playgroundApi, type Operation } from "../api/playground";
 import { ErrorPanel } from "../components/error-panel";
 import { errorMessage } from "../lib/errors";
 import { rememberService } from "../lib/service-history";
+import { AppHeader } from "../components/app-header";
 
 const statusLabel: Record<Operation["status"], string> = {
   prepared: "Preparing",
@@ -74,6 +75,7 @@ export function OperationPage({ operationId }: { operationId: string }) {
   const serviceId = operation?.result?.serviceId;
   return (
     <main className="page narrow">
+      <AppHeader />
       <button className="text-button" onClick={() => navigate("/")}>← Playground</button>
       <p className="eyebrow">Finalized operation</p>
       <h1>{operation ? capitalize(operation.kind) : "Operation"}</h1>
