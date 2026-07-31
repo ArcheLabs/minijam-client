@@ -145,14 +145,6 @@ export function PlaygroundPage() {
         <WalletButton />
       </header>
 
-      <section className="hero">
-        <div>
-          <p className="eyebrow">Stage 0 · Refine → Vote → Accumulate</p>
-          <h1>Write a service.<br />Watch consensus execute it.</h1>
-        </div>
-        <p className="hero-copy">Compile deterministic C or C++, deploy with your wallet, and send work through three independently verifying workers.</p>
-      </section>
-
       <ErrorPanel message={error} />
       <section className="builder-grid">
         <div className="code-panel">
@@ -200,11 +192,11 @@ export function PlaygroundPage() {
           <div className="divider" />
           <div className="step-label"><span>02</span> Deploy & run</div>
           <button className="secondary-button" disabled={buildState !== "SUCCEEDED" || submitting} onClick={prepareDeploy}>Deploy service</button>
-          <div className="work-form">
+          {/* <div className="work-form">
             <label>Service ID<input inputMode="numeric" value={serviceId} onChange={(event) => setServiceId(event.target.value)} /></label>
             <label>Counter increment<input inputMode="numeric" value={increment} onChange={(event) => setIncrement(event.target.value)} /></label>
             <button className="secondary-button" disabled={submitting} onClick={() => void prepareWork()}>Run work</button>
-          </div>
+          </div> */}
         </aside>
       </section>
       {pending && wallet.account && (
