@@ -39,9 +39,9 @@ secrets directory are ignored by Git. Do not copy credentials into the Compose
 file or an image.
 
 The minimal release chain spec contains one authority identity, matching the
-single M9 Node service. Its external keystore must contain the matching Aura
-and GRANDPA keys. The same resettable topology may be deployed as the public
-Stage 0 testnet; multi-authority/high-availability operation is outside M10.
+single Node service. Its external keystore must contain the matching Aura and
+GRANDPA keys. The same resettable topology may be deployed as the public Stage
+0 testnet; multi-authority and high-availability operation are outside M10.
 
 Stage 0 can be reset at any time, its assets have no real economic value, Sudo
 remains enabled, and state or API permanence is not promised. Never place
@@ -74,8 +74,9 @@ docker compose \
 
 Open `http://127.0.0.1:4173` unless `MINIJAM_WEB_BIND` or
 `MINIJAM_WEB_PORT` was changed. For an explicitly public Stage 0 host, set
-`MINIJAM_WEB_BIND=0.0.0.0` and put an operator-managed TLS reverse proxy in
-front of this single port.
+`MINIJAM_WEB_BIND=0.0.0.0` and put an operator-managed HTTPS reverse proxy in
+front of this single port. Do not expose Node RPC, Compiler API, Playground
+API, Worker, or metrics ports.
 
 ## Reset
 
@@ -106,3 +107,6 @@ MINIJAM_IMAGE_TAG="$(git rev-parse HEAD)" \
 
 See `deploy/stage0/TROUBLESHOOTING.md` for startup failures and
 `deploy/stage0/RELEASING.md` for the maintainer release gate.
+
+Stage 0 is resettable, non-high-availability infrastructure for testing. It
+does not carry real economic value and does not provide permanence guarantees.

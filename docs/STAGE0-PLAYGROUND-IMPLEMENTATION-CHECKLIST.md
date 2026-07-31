@@ -21,8 +21,7 @@ exist in the repository.
 Evidence:
 
 - `docs/stage0-playground-architecture-decisions.md`
-- `docs/stage0-public-testnet-checklist.md`
-- `docs/STAGE0-RELEASE-CHECKLIST.md`
+- `deploy/stage0/RELEASING.md`
 
 ## M1: Economics, ingress, and Worker permissions
 

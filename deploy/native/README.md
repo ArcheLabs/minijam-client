@@ -15,3 +15,10 @@ The Playground is available at <http://127.0.0.1:4173>.
 ./scripts/stage0-native.sh down
 ./scripts/stage0-native.sh reset
 ```
+
+`up` starts the binaries already produced by `build`; it does not rebuild them.
+After changing the Web sources, run the Web build before starting again. After
+changing Rust sources, run the complete `build` command. Native mode uses the
+deterministic development identities and is intended only for local
+development and human testing. It is not a production or public-server
+deployment method; use the Digest-pinned Stage 0 Compose release instead.

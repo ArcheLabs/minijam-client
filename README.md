@@ -177,6 +177,28 @@ cargo fmt --all -- --check
 cargo test --workspace --exclude minijam-runtime --exclude minijam-node
 ```
 
+## Stage 0 Playground
+
+Stage 0 is a resettable local and public test environment composed of one
+MiniJAM Node, Compiler API, Playground API, three independent Workers, and a
+Playground Web. The release stack uses immutable GHCR image digests and does
+not compile source on the server.
+
+For local development and human testing without Docker, use the native
+launcher:
+
+```bash
+./scripts/stage0-native.sh deps
+./scripts/stage0-native.sh build
+./scripts/stage0-native.sh up
+```
+
+See [deploy/native/README.md](deploy/native/README.md) for lifecycle commands.
+For a published digest-pinned deployment, follow
+[deploy/stage0/README.md](deploy/stage0/README.md). Stage 0 is intentionally
+resettable, non-high-availability, Sudo-enabled test infrastructure with no
+real economic value; Node RPC and internal service ports are not public.
+
 Changes that touch the Runtime execution boundary should also run the Wasm `no_std` checks above.
 
 ## Compatibility and Stability
