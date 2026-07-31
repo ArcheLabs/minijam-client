@@ -1,5 +1,6 @@
 /.agent
 /target
+/.local/stage0-native/
 /deploy/stage0/.env
 /deploy/stage0/secrets/*
 !/deploy/stage0/secrets/README.md
