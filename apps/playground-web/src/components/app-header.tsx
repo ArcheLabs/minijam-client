@@ -12,6 +12,9 @@ export function AppHeader() {
           style={{ width: 34, height: 34, objectFit: "contain" }}
         />
         <span><b>Playground</b></span>
+        {import.meta.env.VITE_LOCAL_DEVELOPMENT === "true" && (
+          <span className="local-development-badge">Local Development</span>
+        )}
       </a>
       <WalletButton />
     </header>

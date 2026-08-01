@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+env_file="${root}/release.env"
+compose=(docker compose --project-name minijam-local --env-file "${env_file}" -f "${root}/compose.yml")
+services=(node compiler-api playground-api worker-1 worker-2 worker-3 playground-web)
+
+die() { echo "minijam-local: $*" >&2; exit 1; }
+loopback() { [[ "$1" == "127.0.0.1" || "$1" == "localhost" ]]; }
+
+load_env() {
+  test -f "${env_file}" || die "missing release.env"
+  # shellcheck disable=SC1090
+  source "${env_file}"
+}
+
+check() {
+  command -v docker >/dev/null || die "Docker CLI is required"
+  docker info >/dev/null 2>&1 || die "Docker daemon is unavailable"
+  docker compose version >/dev/null || die "Docker Compose plugin is required"
+  load_env
+  for image in "${MINIJAM_NODE_IMAGE:-}" "${MINIJAM_WORKER_IMAGE:-}" "${MINIJAM_COMPILER_IMAGE:-}" "${MINIJAM_PLAYGROUND_API_IMAGE:-}" "${MINIJAM_PLAYGROUND_WEB_LOCAL_IMAGE:-}"; do
+    [[ "$image" =~ ^ghcr\.io/archelabs/[a-z0-9-]+@sha256:[0-9a-f]{64}$ ]] || die "invalid immutable image digest"
+  done
+  [[ "${MINIJAM_NODE_IMAGE}" != *replace-with-release-digest* ]] || die "placeholder digest"
+  loopback "${MINIJAM_NODE_BIND:-127.0.0.1}" || die "node binding must be loopback"
+  loopback "${MINIJAM_WEB_BIND:-127.0.0.1}" || die "web binding must be loopback"
+  "${compose[@]}" config >/dev/null
+  ! rg -q '^[[:space:]]*build:|stage0-raw\.json|deploy/stage0/secrets' "${root}/compose.yml" || die "bundle compose violates local-only policy"
+}
+
+case "${1:-}" in
+  check) check ;;
+  pull) check; "${compose[@]}" pull ;;
+  up)
+    check; "${compose[@]}" pull; "${compose[@]}" up -d
+    for _ in $(seq 1 180); do
+      healthy=1
+      for service in "${services[@]}"; do
+        [[ "$("${compose[@]}" ps --format json "${service}" 2>/dev/null | grep -o '"health":"[^"]*"' | head -1)" == '"health":"healthy"' ]] || healthy=0
+      done
+      [[ "$healthy" == 1 ]] && { echo "MiniJAM local network is ready."; echo "Playground: http://127.0.0.1:${MINIJAM_WEB_PORT:-4173}"; echo "Node RPC:   http://127.0.0.1:${MINIJAM_NODE_PORT:-9944}"; exit 0; }
+      sleep 2
+    done
+    "${compose[@]}" ps; "${compose[@]}" logs --tail=200; die "services did not become healthy"
+    ;;
+  status) check; "${compose[@]}" ps ;;
+  logs) check; shift; "${compose[@]}" logs --follow --tail=200 "$@" ;;
+  down) check; "${compose[@]}" down ;;
+  reset)
+    if [[ "${MINIJAM_CONFIRM_RESET:-}" != true ]]; then
+      [[ -t 0 ]] || die "set MINIJAM_CONFIRM_RESET=true for non-interactive reset"
+      read -r -p "This removes all local MiniJAM data. Type reset: " confirmation
+      [[ "$confirmation" == reset ]] || die "reset cancelled"
+    fi
+    check; "${compose[@]}" down --volumes --remove-orphans
+    ;;
+  update) load_env; echo "This bundle is pinned to ${MINIJAM_RELEASE_TAG:-this release}. Download a newer bundle to update." ;;
+  *) echo "usage: $0 {check|pull|up|status|logs|down|reset|update}" >&2; exit 2 ;;
+esac

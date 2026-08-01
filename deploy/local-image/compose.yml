@@ -1,0 +1,100 @@
+name: minijam-local
+
+x-worker: &worker
+  image: ${MINIJAM_WORKER_IMAGE:?missing MINIJAM_WORKER_IMAGE}
+  pull_policy: always
+  restart: unless-stopped
+  depends_on:
+    node: { condition: service_healthy }
+    playground-api: { condition: service_healthy }
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8082/health/ready"]
+    interval: 2s
+    timeout: 2s
+    retries: 90
+  networks: [local]
+
+services:
+  node:
+    image: ${MINIJAM_NODE_IMAGE:?missing MINIJAM_NODE_IMAGE}
+    pull_policy: always
+    restart: unless-stopped
+    command: [--dev, --alice, --base-path=/data, --rpc-external, --rpc-cors=all, --rpc-methods=unsafe]
+    ports: ["${MINIJAM_NODE_BIND:-127.0.0.1}:${MINIJAM_NODE_PORT:-9944}:9944"]
+    volumes: [node-data:/data]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -H 'content-type: application/json' --data '{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"system_health\",\"params\":[]}' http://127.0.0.1:9944 >/dev/null"]
+      interval: 2s
+      timeout: 2s
+      retries: 90
+    networks: [local]
+  compiler-api:
+    image: ${MINIJAM_COMPILER_IMAGE:?missing MINIJAM_COMPILER_IMAGE}
+    pull_policy: always
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp:size=256m,mode=1777]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment: { MINIJAM_COMPILER_DIRECT: "true" }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/health/ready >/dev/null"]
+      interval: 2s
+      timeout: 2s
+      retries: 90
+    networks: [local]
+  playground-api:
+    image: ${MINIJAM_PLAYGROUND_API_IMAGE:?missing MINIJAM_PLAYGROUND_API_IMAGE}
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      MINIJAM_PLAYGROUND_BIND: 0.0.0.0:8080
+      MINIJAM_COMPILER_URL: http://compiler-api:8081
+      MINIJAM_RPC_URL: ws://node:9944
+      MINIJAM_BUNDLE_DIR: /data/bundles
+      MINIJAM_PLAYGROUND_DB: /data/playground.sqlite
+      MINIJAM_GENESIS_HASH: rpc
+      MINIJAM_RELAYER_URI: 0x9292929292929292929292929292929292929292929292929292929292929292
+    volumes: [playground-data:/data, bundle-data:/data/bundles]
+    depends_on:
+      node: { condition: service_healthy }
+      compiler-api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 90
+    networks: [local]
+  worker-1:
+    <<: *worker
+    command: [--rpc-url=http://node:9944, --worker-id=0, --key=//Alice, --submit-candidates, --submit-support-votes, --poll-interval-ms=500, --state-db=/data/state.toml, --health-bind=0.0.0.0:8082, --metrics-bind=0.0.0.0:9616, --ipfs-gateway=http://playground-api:8080]
+    volumes: [worker-1-data:/data]
+  worker-2:
+    <<: *worker
+    command: [--rpc-url=http://node:9944, --worker-id=1, --key=//Bob, --submit-candidates, --submit-support-votes, --poll-interval-ms=500, --state-db=/data/state.toml, --health-bind=0.0.0.0:8082, --metrics-bind=0.0.0.0:9616, --ipfs-gateway=http://playground-api:8080]
+    volumes: [worker-2-data:/data]
+  worker-3:
+    <<: *worker
+    command: [--rpc-url=http://node:9944, --worker-id=2, --key=//Charlie, --submit-candidates, --submit-support-votes, --poll-interval-ms=500, --state-db=/data/state.toml, --health-bind=0.0.0.0:8082, --metrics-bind=0.0.0.0:9616, --ipfs-gateway=http://playground-api:8080]
+    volumes: [worker-3-data:/data]
+  playground-web:
+    image: ${MINIJAM_PLAYGROUND_WEB_LOCAL_IMAGE:?missing MINIJAM_PLAYGROUND_WEB_LOCAL_IMAGE}
+    pull_policy: always
+    restart: unless-stopped
+    depends_on: { playground-api: { condition: service_healthy } }
+    ports: ["${MINIJAM_WEB_BIND:-127.0.0.1}:${MINIJAM_WEB_PORT:-4173}:8080"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/health/live"]
+      interval: 2s
+      timeout: 2s
+      retries: 90
+    networks: [local]
+volumes:
+  node-data: {}
+  playground-data: {}
+  bundle-data: {}
+  worker-1-data: {}
+  worker-2-data: {}
+  worker-3-data: {}
+networks:
+  local: {}

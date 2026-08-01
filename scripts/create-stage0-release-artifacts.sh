@@ -103,6 +103,8 @@ worker_image="$(image minijam-worker)"
 compiler_image="$(image minijam-compiler-api)"
 playground_api_image="$(image minijam-playground-api)"
 playground_web_image="$(image minijam-playground-web)"
+playground_web_local_image="$(image minijam-playground-web-local)"
+relayer_public="${MINIJAM_STAGE0_RELAYER_PUBLIC_KEY:?set release Relayer public key}"
 
 rm -rf "${output}"
 mkdir -p "${output}"
@@ -126,6 +128,8 @@ jq -n \
   --arg compiler_image "${compiler_image}" \
   --arg playground_api_image "${playground_api_image}" \
   --arg playground_web_image "${playground_web_image}" \
+  --arg playground_web_local_image "${playground_web_local_image}" \
+  --arg relayer_public "${relayer_public}" \
   '{
     release: $release,
     minijam_client_commit: $minijam_commit,
@@ -151,12 +155,14 @@ jq -n \
       ss58: "5ELwW5Q5vLgPKqBpRxuQwGcaGwUhYUVzEd9MhfVUzWWdhLTr",
       genesis_balance_mini: "1000000"
     },
+    playground_relayer: { public_key: $relayer_public },
     images: {
       node: $node_image,
       worker: $worker_image,
       compiler: $compiler_image,
       playground_api: $playground_api_image,
-      playground_web: $playground_web_image
+      playground_web: $playground_web_image,
+      playground_web_local: $playground_web_local_image
     }
   }' >"${output}/release-manifest.json"
 

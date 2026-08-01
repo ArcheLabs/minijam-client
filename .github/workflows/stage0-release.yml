@@ -17,12 +17,13 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 env:
   CARGO_TERM_COLOR: always
   MINIJAM_IMAGE_REGISTRY: ghcr.io/archelabs
+  MINIJAM_STAGE0_RELAYER_PUBLIC_KEY: ${{ vars.MINIJAM_RELEASE_RELAYER_PUBLIC_KEY }}
 
 jobs:
   release:
@@ -223,7 +224,7 @@ jobs:
           MINIJAM_IMAGE_TAG: gate-${{ github.sha }}
         run: ./scripts/stage0-local.sh down
 
-      - name: Build five production Stage 0 images
+      - name: Build production Stage 0 images and local Playground image
         env:
           MINIJAM_IMAGE_TAG: ${{ steps.release.outputs.sha_tag }}
           MINIJAM_GIT_COMMIT: ${{ github.sha }}
@@ -231,7 +232,11 @@ jobs:
           MINIJAM_TEST_WALLET: "false"
         run: |
           ./scripts/stage0-local.sh build
-          for image in node compiler-api playground-api worker playground-web; do
+          docker build -f deploy/local/Dockerfile.web \
+            --build-arg VITE_TEST_WALLET=true \
+            --build-arg VITE_LOCAL_DEVELOPMENT=true \
+            -t "${MINIJAM_IMAGE_REGISTRY}/minijam-playground-web-local:${MINIJAM_IMAGE_TAG}" .
+          for image in node compiler-api playground-api worker playground-web playground-web-local; do
             docker image inspect \
               "${MINIJAM_IMAGE_REGISTRY}/minijam-${image}:${MINIJAM_IMAGE_TAG}" \
               >/dev/null
@@ -249,7 +254,7 @@ jobs:
           SHA_TAG: ${{ steps.release.outputs.sha_tag }}
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
         run: |
-          for image in node compiler-api playground-api worker playground-web; do
+          for image in node compiler-api playground-api worker playground-web playground-web-local; do
             repository="${MINIJAM_IMAGE_REGISTRY}/minijam-${image}"
             docker tag "${repository}:${SHA_TAG}" "${repository}:${RELEASE_TAG}"
             docker push "${repository}:${SHA_TAG}"
@@ -261,14 +266,14 @@ jobs:
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
         run: |
           : > stage0-image-digests.txt
-          for image in node compiler-api playground-api worker playground-web; do
+          for image in node compiler-api playground-api worker playground-web playground-web-local; do
             reference="${MINIJAM_IMAGE_REGISTRY}/minijam-${image}:${RELEASE_TAG}"
             docker pull "${reference}" >/dev/null
             docker image inspect \
               --format '{{index .RepoDigests 0}}' \
               "${reference}" >> stage0-image-digests.txt
           done
-          test "$(wc -l < stage0-image-digests.txt)" -eq 5
+          test "$(wc -l < stage0-image-digests.txt)" -eq 6
 
       - name: Verify anonymous digest pulls
         run: |
@@ -284,6 +289,9 @@ jobs:
             "${{ steps.release.outputs.release_tag }}" \
             stage0-image-digests.txt \
             stage0-release
+
+      - name: Create public local image bundle
+        run: ./scripts/create-local-image-bundle.sh "${{ steps.release.outputs.release_tag }}" stage0-release/release-manifest.json stage0-release
 
       - name: Run smoke from public image digests
         env:
