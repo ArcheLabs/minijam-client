@@ -279,7 +279,6 @@ pub fn preset_names() -> Vec<PresetId> {
     vec![
         PresetId::from(sp_genesis_builder::DEV_RUNTIME_PRESET),
         PresetId::from(sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET),
-        PresetId::from(STAGE0_RUNTIME_PRESET),
     ]
 }
 
@@ -743,10 +742,10 @@ mod tests {
     }
 
     #[test]
-    fn stage0_preset_is_registered() {
-        assert!(preset_names()
+    fn stage0_requires_node_supplied_relayer_and_is_not_runtime_preset() {
+        assert!(!preset_names()
             .iter()
             .any(|preset| preset.as_str() == STAGE0_RUNTIME_PRESET));
-        assert!(get_preset(&PresetId::from(STAGE0_RUNTIME_PRESET)).is_some());
+        assert!(get_preset(&PresetId::from(STAGE0_RUNTIME_PRESET)).is_none());
     }
 }

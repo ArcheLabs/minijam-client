@@ -326,10 +326,10 @@ mod stage0_economics_tests {
     use super::*;
     use frame_support::{
         assert_noop, assert_ok,
-        traits::{EnsureOrigin, Get, Hooks},
+        traits::{Get, Hooks},
     };
     use minijam_protocol::SystemCommandV1;
-    use sp_runtime::{BuildStorage, DispatchError};
+    use sp_runtime::BuildStorage;
 
     fn runtime_ext() -> sp_io::TestExternalities {
         let storage = frame_system::GenesisConfig::<Runtime>::default()
@@ -393,18 +393,21 @@ mod stage0_economics_tests {
     }
 
     #[test]
-    fn state_changing_ingress_accepts_only_playground_relayer() {
-        let relayer =
-            AccountId::new(crate::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT);
-        let direct_user = AccountId::new([0x93; 32]);
+    fn runtime_ext_configures_only_local_playground_relayer() {
+        runtime_ext().execute_with(|| {
+            let relayer =
+                AccountId::new(crate::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT);
+            let direct_user = AccountId::new([0x93; 32]);
 
-        assert!(pallet_minijam::IngressRelayer::<Runtime>::get() == Some(relayer.clone()));
-        assert!(pallet_minijam::IngressRelayer::<Runtime>::get() == Some(relayer.clone()));
-        assert!(pallet_minijam::IngressRelayer::<Runtime>::get() == Some(relayer));
-
-        assert!(pallet_minijam::IngressRelayer::<Runtime>::get() != Some(direct_user.clone()));
-        assert!(pallet_minijam::IngressRelayer::<Runtime>::get() != Some(direct_user.clone()));
-        assert!(pallet_minijam::IngressRelayer::<Runtime>::get() != Some(direct_user));
+            assert_eq!(
+                pallet_minijam::IngressRelayer::<Runtime>::get(),
+                Some(relayer)
+            );
+            assert_ne!(
+                pallet_minijam::IngressRelayer::<Runtime>::get(),
+                Some(direct_user)
+            );
+        });
     }
 
     #[test]
@@ -426,7 +429,7 @@ mod stage0_economics_tests {
                     RuntimeOrigin::signed(direct_user.clone()),
                     Box::new(command.clone())
                 ),
-                DispatchError::BadOrigin
+                pallet_minijam::Error::<Runtime>::UnauthorizedIngress
             );
             assert_ok!(MiniJam::submit_system_op(
                 RuntimeOrigin::signed(relayer.clone()),
@@ -440,7 +443,7 @@ mod stage0_economics_tests {
                     RuntimeOrigin::signed(direct_user),
                     malformed_preimage.clone()
                 ),
-                DispatchError::BadOrigin
+                pallet_minijam::Error::<Runtime>::UnauthorizedIngress
             );
             assert_noop!(
                 MiniJam::submit_preimage(RuntimeOrigin::signed(relayer), malformed_preimage),
