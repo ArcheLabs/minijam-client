@@ -133,7 +133,13 @@ jobs:
           cargo build --release -p minijam-worker
 
       - name: Export raw chain spec
+        env:
+          MINIJAM_STAGE0_RELAYER_PUBLIC_KEY: ${{ vars.MINIJAM_RELEASE_RELAYER_PUBLIC_KEY }}
         run: |
+          test -n "${MINIJAM_STAGE0_RELAYER_PUBLIC_KEY}" || {
+            echo "::error::MINIJAM_RELEASE_RELAYER_PUBLIC_KEY repository variable is not configured"
+            exit 1
+          }
           mkdir -p stage0-artifacts
           ./scripts/export-stage0-chain-specs.sh ./target/release/minijam-node chain-specs
           cp chain-specs/stage0*.json stage0-artifacts/
