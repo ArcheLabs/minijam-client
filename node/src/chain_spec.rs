@@ -52,7 +52,7 @@ pub fn stage0_chain_spec_with_relayer(relayer: AccountId) -> Result<ChainSpec, S
     .with_name("MiniJAM Stage-0")
     .with_id("minijam_stage0")
     .with_chain_type(ChainType::Live)
-    .with_genesis_config(stage0_config_genesis(relayer))
+    .with_genesis_config_patch(stage0_config_genesis(relayer))
     .with_properties(chain_properties())
     .build())
 }
@@ -125,21 +125,26 @@ mod tests {
     fn stage0_plain_and_raw_specs_are_isolated_by_relayer() {
         let stage0_relayer = AccountId::new([0x42; 32]);
         let other_relayer = AccountId::new([0x43; 32]);
+        let local_relayer = AccountId::new(
+            minijam_runtime::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT,
+        );
+
+        let patch = stage0_config_genesis(stage0_relayer.clone());
+        let expected = serde_json::to_value(stage0_relayer.clone()).unwrap();
+        let actual = patch
+            .pointer("/mini_jam/ingress_relayer")
+            .or_else(|| patch.pointer("/miniJam/ingressRelayer"))
+            .expect("Stage 0 genesis patch must contain ingress Relayer");
+        assert_eq!(actual, &expected);
+        assert_ne!(actual, &serde_json::to_value(local_relayer).unwrap());
+
         let stage0 = stage0_chain_spec_with_relayer(stage0_relayer.clone()).unwrap();
         let other = stage0_chain_spec_with_relayer(other_relayer).unwrap();
         let plain = stage0.as_json(false).unwrap();
         let raw = stage0.as_json(true).unwrap();
-        let local_hex = format!(
-            "{}",
-            hex_bytes(minijam_runtime::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT)
-        );
-        assert!(plain.contains(&stage0_relayer.to_ss58check()));
-        assert!(!plain.contains(&local_hex));
-        assert_ne!(plain, other.as_json(false).unwrap());
-        assert_ne!(raw, other.as_json(true).unwrap());
-    }
-
-    fn hex_bytes(bytes: [u8; 32]) -> String {
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+        let other_plain = other.as_json(false).unwrap();
+        let other_raw = other.as_json(true).unwrap();
+        assert_ne!(plain, other_plain);
+        assert_ne!(raw, other_raw);
     }
 }
