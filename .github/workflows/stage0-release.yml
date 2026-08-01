@@ -293,6 +293,12 @@ jobs:
       - name: Create public local image bundle
         run: ./scripts/create-local-image-bundle.sh "${{ steps.release.outputs.release_tag }}" stage0-release/release-manifest.json stage0-release
 
+      - name: Validate public local bundle Compose policy
+        run: |
+          bundle="stage0-release/minijam-local-${{ steps.release.outputs.release_tag }}"
+          "${bundle}/minijam-local" check
+          ./scripts/check-local-image-compose.sh "${bundle}"
+
       - name: Run smoke from public image digests
         env:
           MINIJAM_RELEASE_NODE_KEYSTORE_B64: ${{ secrets.MINIJAM_RELEASE_NODE_KEYSTORE_B64 }}
@@ -303,6 +309,26 @@ jobs:
           MINIJAM_E2E_WALLET_SEED: ${{ secrets.MINIJAM_RELEASE_E2E_WALLET_SEED }}
           MINIJAM_RELEASE_DIAGNOSTICS: ${{ github.workspace }}/stage0-release-diagnostics
         run: ./scripts/test-stage0-release.sh stage0-release
+
+      - name: Check release artifact secret hygiene
+        run: ./scripts/check-release-secret-hygiene.sh stage0-release
+
+      - name: Publish GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          assets=(
+            "stage0-release/minijam-local-${RELEASE_TAG}.tar.gz"
+            "stage0-release/minijam-local-${RELEASE_TAG}.tar.gz.sha256"
+            "stage0-release/release-manifest.json"
+          )
+          for asset in "${assets[@]}"; do test -f "${asset}"; done
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
+          else
+            gh release create "${RELEASE_TAG}" "${assets[@]}" --title "MiniJAM ${RELEASE_TAG}" --generate-notes
+          fi
 
       - name: Collect release failure diagnostics
         if: failure()

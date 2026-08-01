@@ -67,6 +67,13 @@ compiler_image="$(jq -er '.images.compiler' "${manifest}")"
 playground_api_image="$(jq -er '.images.playground_api' "${manifest}")"
 playground_web_image="$(jq -er '.images.playground_web' "${manifest}")"
 genesis_hash="$(jq -er '.genesis_hash' "${manifest}")"
+relayer_public="$(jq -er '.playground_relayer.public_key' "${manifest}")"
+relayer_inspection="$("${artifacts}/minijam-node" key inspect --scheme Sr25519 "${MINIJAM_RELEASE_RELAYER_URI}")"
+relayer_derived="$(sed -n 's/^Public key (hex):[[:space:]]*//p' <<<"${relayer_inspection}" | head -n1)"
+[[ "${relayer_derived,,}" == "${relayer_public,,}" ]] || {
+  echo "release Relayer URI does not match the public key in the chain spec" >&2
+  exit 1
+}
 
 {
   printf 'MINIJAM_NODE_IMAGE=%s\n' "${node_image}"

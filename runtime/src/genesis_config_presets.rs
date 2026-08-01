@@ -669,6 +669,31 @@ mod tests {
     }
 
     #[test]
+    fn development_and_local_genesis_use_only_the_known_local_relayer() {
+        let local = serde_json::to_value(AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT)).unwrap();
+        for patch in [development_config_genesis(), local_config_genesis()] {
+            assert_eq!(
+                field(
+                    section(&patch, "mini_jam", "miniJam"),
+                    "ingress_relayer",
+                    "ingressRelayer"
+                ),
+                &local
+            );
+        }
+
+        let stage0 = stage0_config_genesis(AccountId::new([0x42; 32]));
+        assert_ne!(
+            field(
+                section(&stage0, "mini_jam", "miniJam"),
+                "ingress_relayer",
+                "ingressRelayer"
+            ),
+            &local
+        );
+    }
+
+    #[test]
     fn stage0_genesis_uses_release_faucet_and_sudo_accounts() {
         const EXPECTED_FAUCET: [u8; 32] = [
             0x1a, 0x69, 0x04, 0x44, 0xd1, 0x60, 0xa1, 0xf6, 0x32, 0x81, 0x20, 0x3e, 0xde, 0x44,

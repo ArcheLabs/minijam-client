@@ -20,7 +20,7 @@ check() {
   docker info >/dev/null 2>&1 || die "Docker daemon is unavailable"
   docker compose version >/dev/null || die "Docker Compose plugin is required"
   load_env
-  for image in "${MINIJAM_NODE_IMAGE:-}" "${MINIJAM_WORKER_IMAGE:-}" "${MINIJAM_COMPILER_IMAGE:-}" "${MINIJAM_PLAYGROUND_API_IMAGE:-}" "${MINIJAM_PLAYGROUND_WEB_LOCAL_IMAGE:-}"; do
+  for image in "${MINIJAM_NODE_IMAGE:-}" "${MINIJAM_WORKER_IMAGE:-}" "${MINIJAM_COMPILER_IMAGE:-}" "${MINIJAM_PLAYGROUND_API_IMAGE:-}" "${MINIJAM_PLAYGROUND_WEB_IMAGE:-}" "${MINIJAM_PLAYGROUND_WEB_LOCAL_IMAGE:-}"; do
     [[ "$image" =~ ^ghcr\.io/archelabs/[a-z0-9-]+@sha256:[0-9a-f]{64}$ ]] || die "invalid immutable image digest"
   done
   [[ "${MINIJAM_NODE_IMAGE}" != *replace-with-release-digest* ]] || die "placeholder digest"

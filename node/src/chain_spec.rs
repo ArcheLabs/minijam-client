@@ -70,6 +70,7 @@ fn parse_relayer_public_key(value: &str) -> Result<AccountId, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sc_service::ChainSpec as _;
     use sp_core::crypto::{AccountId32, Ss58Codec};
 
     #[test]
@@ -108,5 +109,37 @@ mod tests {
             sudo.to_ss58check(),
             "5ELwW5Q5vLgPKqBpRxuQwGcaGwUhYUVzEd9MhfVUzWWdhLTr"
         );
+    }
+
+    #[test]
+    fn stage0_relayer_key_is_required_and_strictly_decoded() {
+        assert!(parse_relayer_public_key("not-a-key").is_err());
+        assert!(parse_relayer_public_key("0x11").is_err());
+        assert_eq!(
+            parse_relayer_public_key(&format!("0x{}", "42".repeat(32))).unwrap(),
+            AccountId::new([0x42; 32])
+        );
+    }
+
+    #[test]
+    fn stage0_plain_and_raw_specs_are_isolated_by_relayer() {
+        let stage0_relayer = AccountId::new([0x42; 32]);
+        let other_relayer = AccountId::new([0x43; 32]);
+        let stage0 = stage0_chain_spec_with_relayer(stage0_relayer.clone()).unwrap();
+        let other = stage0_chain_spec_with_relayer(other_relayer).unwrap();
+        let plain = stage0.as_json(false).unwrap();
+        let raw = stage0.as_json(true).unwrap();
+        let local_hex = format!(
+            "{}",
+            hex_bytes(minijam_runtime::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT)
+        );
+        assert!(plain.contains(&stage0_relayer.to_ss58check()));
+        assert!(!plain.contains(&local_hex));
+        assert_ne!(plain, other.as_json(false).unwrap());
+        assert_ne!(raw, other.as_json(true).unwrap());
+    }
+
+    fn hex_bytes(bytes: [u8; 32]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 }

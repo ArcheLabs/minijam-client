@@ -110,3 +110,6 @@ See `deploy/stage0/TROUBLESHOOTING.md` for startup failures and
 
 Stage 0 is resettable, non-high-availability infrastructure for testing. It
 does not carry real economic value and does not provide permanence guarantees.
+# Stage 0 Relayer genesis transition
+
+This release changes the MiniJAM ingress Relayer from a runtime constant to genesis state. Stage 0 is resettable: **no live-state migration is supported**. Deploy this release only with its newly exported `stage0-raw.json` and remove all prior Stage 0 volumes before starting it. An old database must never be used with this Runtime or chain specification.

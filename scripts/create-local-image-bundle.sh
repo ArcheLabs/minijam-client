@@ -18,6 +18,7 @@ jq -r --arg tag "${tag}" '
   "MINIJAM_WORKER_IMAGE=" + image("worker"),
   "MINIJAM_COMPILER_IMAGE=" + image("compiler"),
   "MINIJAM_PLAYGROUND_API_IMAGE=" + image("playground_api"),
+  "MINIJAM_PLAYGROUND_WEB_IMAGE=" + image("playground_web"),
   "MINIJAM_PLAYGROUND_WEB_LOCAL_IMAGE=" + image("playground_web_local"),
   "MINIJAM_NODE_BIND=127.0.0.1", "MINIJAM_NODE_PORT=9944",
   "MINIJAM_WEB_BIND=127.0.0.1", "MINIJAM_WEB_PORT=4173"
