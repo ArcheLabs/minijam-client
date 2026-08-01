@@ -310,6 +310,36 @@ jobs:
           MINIJAM_RELEASE_DIAGNOSTICS: ${{ github.workspace }}/stage0-release-diagnostics
         run: ./scripts/test-stage0-release.sh stage0-release
 
+      - name: Smoke test generated public local bundle
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          MINIJAM_E2E_WALLET_SEED: "0x0707070707070707070707070707070707070707070707070707070707070707"
+        run: |
+          bundle="stage0-release/minijam-local-${RELEASE_TAG}"
+          "${bundle}/minijam-local" up
+          (
+            cd apps/playground-web
+            MINIJAM_E2E_BASE_URL=http://127.0.0.1:4173 \
+            MINIJAM_E2E_COMPOSE_FILE="${GITHUB_WORKSPACE}/${bundle}/compose.yml" \
+            MINIJAM_E2E_COMPOSE_PROJECT=minijam-local \
+            MINIJAM_STAGE0_ENV="${GITHUB_WORKSPACE}/${bundle}/release.env" \
+            npm run test:stage0
+          )
+          "${bundle}/minijam-local" down
+          "${bundle}/minijam-local" up
+          curl -fsS http://127.0.0.1:4173/ >/dev/null
+          MINIJAM_CONFIRM_RESET=true "${bundle}/minijam-local" reset
+          "${bundle}/minijam-local" up
+          curl -fsS http://127.0.0.1:4173/ >/dev/null
+
+      - name: Clean generated public local bundle smoke
+        if: always()
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          bundle="stage0-release/minijam-local-${RELEASE_TAG}"
+          test -x "${bundle}/minijam-local" && "${bundle}/minijam-local" down || true
+
       - name: Check release artifact secret hygiene
         run: ./scripts/check-release-secret-hygiene.sh stage0-release
 

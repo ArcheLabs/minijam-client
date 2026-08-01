@@ -27,7 +27,9 @@ check() {
   loopback "${MINIJAM_NODE_BIND:-127.0.0.1}" || die "node binding must be loopback"
   loopback "${MINIJAM_WEB_BIND:-127.0.0.1}" || die "web binding must be loopback"
   "${compose[@]}" config >/dev/null
-  ! rg -q '^[[:space:]]*build:|stage0-raw\.json|deploy/stage0/secrets' "${root}/compose.yml" || die "bundle compose violates local-only policy"
+  if grep -Eq '^[[:space:]]*build:|stage0-raw\.json|deploy/stage0/secrets' "${root}/compose.yml"; then
+    die "bundle compose violates local-only policy"
+  fi
 }
 
 case "${1:-}" in
@@ -38,7 +40,21 @@ case "${1:-}" in
     for _ in $(seq 1 180); do
       healthy=1
       for service in "${services[@]}"; do
-        [[ "$("${compose[@]}" ps --format json "${service}" 2>/dev/null | grep -o '"health":"[^"]*"' | head -1)" == '"health":"healthy"' ]] || healthy=0
+        container="$("${compose[@]}" ps -q "${service}")"
+        if [[ -z "${container}" ]]; then
+          healthy=0
+          continue
+        fi
+        health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${container}")"
+        case "${health}" in
+          healthy) ;;
+          exited|dead|unhealthy)
+            "${compose[@]}" ps
+            "${compose[@]}" logs --tail=200
+            die "${service} entered ${health} before becoming healthy"
+            ;;
+          *) healthy=0 ;;
+        esac
       done
       [[ "$healthy" == 1 ]] && { echo "MiniJAM local network is ready."; echo "Playground: http://127.0.0.1:${MINIJAM_WEB_PORT:-4173}"; echo "Node RPC:   http://127.0.0.1:${MINIJAM_NODE_PORT:-9944}"; exit 0; }
       sleep 2
