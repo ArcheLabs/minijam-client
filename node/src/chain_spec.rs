@@ -1,4 +1,4 @@
-use minijam_runtime::{genesis_config_presets::STAGE0_RUNTIME_PRESET, WASM_BINARY};
+use minijam_runtime::{genesis_config_presets::stage0_config_genesis, AccountId, WASM_BINARY};
 use sc_service::{ChainType, Properties};
 
 /// Specialized `ChainSpec`. This is a specialization of the general Substrate ChainSpec type.
@@ -37,6 +37,14 @@ pub fn local_chain_spec() -> Result<ChainSpec, String> {
 }
 
 pub fn stage0_chain_spec() -> Result<ChainSpec, String> {
+    let value = std::env::var("MINIJAM_STAGE0_RELAYER_PUBLIC_KEY").map_err(|_| {
+        "MINIJAM_STAGE0_RELAYER_PUBLIC_KEY is required when exporting the Stage 0 chain spec"
+            .to_string()
+    })?;
+    stage0_chain_spec_with_relayer(parse_relayer_public_key(&value)?)
+}
+
+pub fn stage0_chain_spec_with_relayer(relayer: AccountId) -> Result<ChainSpec, String> {
     Ok(ChainSpec::builder(
         WASM_BINARY.ok_or_else(|| "Stage-0 wasm not available".to_string())?,
         None,
@@ -44,9 +52,19 @@ pub fn stage0_chain_spec() -> Result<ChainSpec, String> {
     .with_name("MiniJAM Stage-0")
     .with_id("minijam_stage0")
     .with_chain_type(ChainType::Live)
-    .with_genesis_config_preset_name(STAGE0_RUNTIME_PRESET)
+    .with_genesis_config(stage0_config_genesis(relayer))
     .with_properties(chain_properties())
     .build())
+}
+
+fn parse_relayer_public_key(value: &str) -> Result<AccountId, String> {
+    let bytes = sp_core::bytes::from_hex(value).map_err(|_| {
+        "MINIJAM_STAGE0_RELAYER_PUBLIC_KEY must be 0x-prefixed 32-byte hex".to_string()
+    })?;
+    let key: [u8; 32] = bytes.try_into().map_err(|_| {
+        "MINIJAM_STAGE0_RELAYER_PUBLIC_KEY must be 0x-prefixed 32-byte hex".to_string()
+    })?;
+    Ok(AccountId::new(key))
 }
 
 #[cfg(test)]
@@ -56,7 +74,8 @@ mod tests {
 
     #[test]
     fn stage0_chain_properties_keep_mini_units() {
-        let spec = stage0_chain_spec().expect("Stage 0 chain spec must build");
+        let spec = stage0_chain_spec_with_relayer(AccountId::new([0x99; 32]))
+            .expect("Stage 0 chain spec must build");
         let properties = spec.properties();
         assert_eq!(
             properties.get("tokenSymbol"),

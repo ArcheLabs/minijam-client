@@ -123,9 +123,6 @@ impl pallet_minijam::Config for Test {
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
     type JamHoldReason = RuntimeHoldReason;
-    type WorkIngressOrigin = frame_system::EnsureSigned<u64>;
-    type PreimageIngressOrigin = frame_system::EnsureSigned<u64>;
-    type SystemIngressOrigin = frame_system::EnsureSigned<u64>;
     type ChainId = ChainId;
     type WorkDeposit = WorkDeposit;
     type CandidateBond = CandidateBond;
@@ -292,6 +289,14 @@ fn new_test_ext() -> sp_io::TestExternalities {
     }
     .assimilate_storage(&mut storage)
     .unwrap();
+    pallet_minijam::GenesisConfig::<Test> {
+        protocol_state: Vec::new(),
+        service_fuel: Vec::new(),
+        ingress_relayer: Some(5),
+        _phantom: Default::default(),
+    }
+    .assimilate_storage(&mut storage)
+    .unwrap();
     storage.into()
 }
 
@@ -304,6 +309,7 @@ fn test_ext_with_protocol_state(
     pallet_minijam::GenesisConfig::<Test> {
         protocol_state,
         service_fuel: Vec::new(),
+        ingress_relayer: Some(5),
         _phantom: Default::default(),
     }
     .assimilate_storage(&mut storage)
@@ -380,6 +386,9 @@ fn bundle_ref(seed: u8) -> ContentRef {
 }
 
 fn submit_work(owner: u64) -> frame_support::dispatch::DispatchResult {
+    // Existing flow tests exercise work semantics, not authorization; make their
+    // caller the configured test relayer. Authorization itself is covered below.
+    pallet_minijam::IngressRelayer::<Test>::put(owner);
     MiniJam::submit_work(
         RuntimeOrigin::signed(owner),
         work_package(owner as u8),
@@ -564,6 +573,7 @@ fn submit_work_stores_package_hash_and_bundle_ref() {
             package.clone(),
             bundle.clone()
         ));
+        pallet_minijam::IngressRelayer::<Test>::put(6);
 
         let work = MiniJam::work(0).unwrap();
         assert_eq!(work.owner, 5);
@@ -766,6 +776,7 @@ fn submit_work_rejects_duplicate_package_and_invalid_bundle() {
             package.clone(),
             bundle.clone()
         ));
+        pallet_minijam::IngressRelayer::<Test>::put(6);
         assert_noop!(
             MiniJam::submit_work(RuntimeOrigin::signed(6), package, bundle),
             pallet_minijam::Error::<Test>::DuplicateWorkPackage
@@ -822,6 +833,7 @@ fn genesis_config_seeds_service_fuel() {
     pallet_minijam::GenesisConfig::<Test> {
         protocol_state: Vec::new(),
         service_fuel: vec![(7, 250), (7, 50), (8, 0)],
+        ingress_relayer: Some(5),
         _phantom: Default::default(),
     }
     .assimilate_storage(&mut storage)
@@ -953,6 +965,7 @@ fn accepted_candidate_executes_next_block_and_commits_delta() {
 #[test]
 fn queued_preimages_are_imported_with_next_virtual_block() {
     new_test_ext().execute_with(|| {
+        pallet_minijam::IngressRelayer::<Test>::put(6);
         let preimage = minijam_protocol::CanonicalPreimageBytes::try_from(vec![7, 8, 9]).unwrap();
         let canonical_hash = blake2_256(&preimage);
         assert_ok!(MiniJam::submit_preimage(RuntimeOrigin::signed(6), preimage));
@@ -1294,6 +1307,7 @@ fn system_op_execution_failure_is_quarantined_without_panic() {
 #[test]
 fn preimage_execution_input_failure_is_quarantined_without_panic() {
     new_test_ext().execute_with(|| {
+        pallet_minijam::IngressRelayer::<Test>::put(6);
         System::set_block_number(50);
         assert_ok!(MiniJam::submit_preimage(
             RuntimeOrigin::signed(6),
@@ -1602,6 +1616,35 @@ fn service_state_accessors_address_canonical_protocol_keys() {
         assert_eq!(
             MiniJam::get_service_preimage(service_id, code_hash),
             Some(preimage)
+        );
+    });
+}
+
+#[test]
+fn ingress_relayer_requires_genesis_authorization_and_root_rotation() {
+    new_test_ext().execute_with(|| {
+        assert_eq!(MiniJam::ingress_relayer(), Some(5));
+        assert_noop!(
+            MiniJam::set_ingress_relayer(RuntimeOrigin::signed(1), 2),
+            sp_runtime::DispatchError::BadOrigin
+        );
+        assert_ok!(MiniJam::set_ingress_relayer(RuntimeOrigin::root(), 2));
+        assert_eq!(MiniJam::ingress_relayer(), Some(2));
+
+        assert_noop!(
+            MiniJam::submit_work(RuntimeOrigin::signed(1), work_package(7), bundle_ref(7)),
+            pallet_minijam::Error::<Test>::UnauthorizedIngress
+        );
+        assert_ok!(MiniJam::submit_work(
+            RuntimeOrigin::signed(2),
+            work_package(8),
+            bundle_ref(8)
+        ));
+
+        pallet_minijam::IngressRelayer::<Test>::kill();
+        assert_noop!(
+            MiniJam::submit_work(RuntimeOrigin::signed(2), work_package(9), bundle_ref(9)),
+            pallet_minijam::Error::<Test>::IngressRelayerNotConfigured
         );
     });
 }

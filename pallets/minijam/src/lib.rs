@@ -231,12 +231,6 @@ pub mod pallet {
 
         type JamHoldReason: From<HoldReason>;
 
-        type WorkIngressOrigin: EnsureOrigin<OriginFor<Self>, Success = Self::AccountId>;
-
-        type PreimageIngressOrigin: EnsureOrigin<OriginFor<Self>, Success = Self::AccountId>;
-
-        type SystemIngressOrigin: EnsureOrigin<OriginFor<Self>, Success = Self::AccountId>;
-
         #[pallet::constant]
         type ChainId: Get<[u8; 32]>;
 
@@ -309,8 +303,15 @@ pub mod pallet {
         type MaxPendingSystemOps: Get<u32>;
     }
 
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
     #[pallet::pallet]
+    #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
+
+    #[pallet::storage]
+    #[pallet::getter(fn ingress_relayer)]
+    pub type IngressRelayer<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
 
     #[pallet::storage]
     pub type NextWorkId<T> = StorageValue<_, WorkId, ValueQuery>;
@@ -415,6 +416,7 @@ pub mod pallet {
     pub struct GenesisConfig<T: Config> {
         pub protocol_state: Vec<(Vec<u8>, Vec<u8>)>,
         pub service_fuel: Vec<(u32, BalanceOf<T>)>,
+        pub ingress_relayer: Option<T::AccountId>,
         #[serde(skip)]
         pub _phantom: core::marker::PhantomData<T>,
     }
@@ -422,6 +424,9 @@ pub mod pallet {
     #[pallet::genesis_build]
     impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
         fn build(&self) {
+            if let Some(account) = &self.ingress_relayer {
+                IngressRelayer::<T>::put(account);
+            }
             for (key, value) in &self.protocol_state {
                 let key: [u8; 31] = key
                     .as_slice()
@@ -448,6 +453,10 @@ pub mod pallet {
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
+        IngressRelayerChanged {
+            old: Option<T::AccountId>,
+            new: T::AccountId,
+        },
         WorkSubmitted {
             work_id: WorkId,
             owner: T::AccountId,
@@ -557,6 +566,8 @@ pub mod pallet {
 
     #[pallet::error]
     pub enum Error<T> {
+        IngressRelayerNotConfigured,
+        UnauthorizedIngress,
         WorkIdOverflow,
         TooManyPendingWorks,
         InvalidWorkPackage,
@@ -643,7 +654,7 @@ pub mod pallet {
             canonical_work_package: BoundedVec<u8, T::MaxWorkPackageBytes>,
             bundle_ref: ContentRef,
         ) -> DispatchResult {
-            let owner = T::WorkIngressOrigin::ensure_origin(origin)?;
+            let owner = Self::ensure_ingress_relayer(origin)?;
             ensure!(
                 !canonical_work_package.is_empty(),
                 Error::<T>::InvalidWorkPackage
@@ -816,7 +827,7 @@ pub mod pallet {
             origin: OriginFor<T>,
             canonical_preimage: CanonicalPreimageBytes,
         ) -> DispatchResult {
-            let submitter = T::PreimageIngressOrigin::ensure_origin(origin)?;
+            let submitter = Self::ensure_ingress_relayer(origin)?;
             let state = FrameProtocolState::<T>(Default::default());
             let executor = T::JamCoreExecutor::default();
             let metadata = executor
@@ -853,7 +864,7 @@ pub mod pallet {
             origin: OriginFor<T>,
             command: Box<SystemCommandV1>,
         ) -> DispatchResult {
-            let submitter = T::SystemIngressOrigin::ensure_origin(origin)?;
+            let submitter = Self::ensure_ingress_relayer(origin)?;
             Self::validate_system_command(&command)?;
             let sender = Self::system_op_sender(&submitter);
             let nonce = SystemOpNonces::<T>::get(sender);
@@ -1014,6 +1025,22 @@ pub mod pallet {
             });
             Ok(())
         }
+
+        #[pallet::call_index(11)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(1, 1))]
+        pub fn set_ingress_relayer(
+            origin: OriginFor<T>,
+            new_relayer: T::AccountId,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            let old = IngressRelayer::<T>::get();
+            IngressRelayer::<T>::put(&new_relayer);
+            Self::deposit_event(Event::IngressRelayerChanged {
+                old,
+                new: new_relayer,
+            });
+            Ok(())
+        }
     }
 
     #[pallet::view_functions]
@@ -1144,6 +1171,14 @@ pub mod pallet {
     }
 
     impl<T: Config> Pallet<T> {
+        fn ensure_ingress_relayer(origin: OriginFor<T>) -> Result<T::AccountId, DispatchError> {
+            let who = ensure_signed(origin)?;
+            let expected =
+                IngressRelayer::<T>::get().ok_or(Error::<T>::IngressRelayerNotConfigured)?;
+            ensure!(who == expected, Error::<T>::UnauthorizedIngress);
+            Ok(who)
+        }
+
         pub fn pending_worker_tasks() -> Vec<WorkerTaskV1> {
             let mut tasks = PendingWorks::<T>::get()
                 .into_iter()

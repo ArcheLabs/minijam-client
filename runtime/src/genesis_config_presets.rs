@@ -22,6 +22,13 @@ const SYSTEM_SERVICE_FUEL: Balance = 1_000 * UNIT;
 const SYSTEM_SERVICE_BLOB: &[u8] = include_bytes!("../../artifacts/system-service.blob");
 pub const STAGE0_RUNTIME_PRESET: &str = "stage0";
 
+/// Known deterministic local-development identity derived from the seed `0x92` repeated 32 times.
+/// Never use as a public Stage 0 Relayer.
+pub const LOCAL_PLAYGROUND_RELAYER_ACCOUNT: [u8; 32] = [
+    0x90, 0x15, 0x78, 0xa4, 0x17, 0x30, 0x0a, 0xa0, 0xae, 0x53, 0x3b, 0x5b, 0xd0, 0xe9, 0xaf, 0x48,
+    0x9a, 0x4c, 0xc4, 0xa6, 0xf3, 0x89, 0x99, 0xb7, 0x62, 0x83, 0x86, 0x70, 0x87, 0x73, 0x82, 0x09,
+];
+
 const STAGE0_AURA_AUTHORITIES: [[u8; 32]; 1] = [[
     0x66, 0xd0, 0x9c, 0xb4, 0xdf, 0xf3, 0x44, 0xd5, 0xa6, 0xb0, 0x7c, 0xa9, 0x90, 0x9d, 0xc0, 0x5f,
     0x46, 0xcc, 0xda, 0x66, 0x87, 0xc5, 0x2d, 0x7d, 0xad, 0x99, 0x83, 0xc7, 0xfe, 0x89, 0x16, 0x19,
@@ -62,10 +69,11 @@ fn testnet_genesis(
     mut endowed_accounts: Vec<AccountId>,
     root: AccountId,
     workers: Vec<(AccountId, [u8; 32], Balance)>,
+    ingress_relayer: AccountId,
 ) -> Value {
     let reward_pool = AccountId::new([9; 32]);
     let fuel_escrow = AccountId::new([7; 32]);
-    let playground_relayer = crate::PlaygroundRelayer::get();
+    let playground_relayer = ingress_relayer;
     if !endowed_accounts
         .iter()
         .any(|account| account == &reward_pool)
@@ -82,7 +90,7 @@ fn testnet_genesis(
         .iter()
         .any(|account| account == &playground_relayer)
     {
-        endowed_accounts.push(playground_relayer);
+        endowed_accounts.push(playground_relayer.clone());
     }
 
     build_struct_json_patch!(RuntimeGenesisConfig {
@@ -118,6 +126,7 @@ fn testnet_genesis(
         mini_jam: MiniJamConfig {
             protocol_state: system_service_zero_protocol_state(),
             service_fuel: vec![(0, SYSTEM_SERVICE_FUEL)],
+            ingress_relayer: Some(playground_relayer),
             _phantom: Default::default(),
         },
         mini_jam_workers: MiniJamWorkersConfig {
@@ -213,6 +222,7 @@ pub fn development_config_genesis() -> Value {
         ],
         Sr25519Keyring::Alice.to_account_id(),
         development_workers(),
+        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
     )
 }
 
@@ -234,15 +244,17 @@ pub fn local_config_genesis() -> Value {
             .collect::<Vec<_>>(),
         Sr25519Keyring::Alice.to_account_id(),
         development_workers(),
+        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
     )
 }
 
-pub fn stage0_config_genesis() -> Value {
+pub fn stage0_config_genesis(ingress_relayer: AccountId) -> Value {
     testnet_genesis(
         stage0_authorities(),
         stage0_endowed_accounts(),
         AccountId::new(STAGE0_SUDO_ACCOUNT),
         stage0_workers(),
+        ingress_relayer,
     )
 }
 
@@ -250,7 +262,9 @@ pub fn get_preset(id: &PresetId) -> Option<Vec<u8>> {
     let patch = match id.as_ref() {
         sp_genesis_builder::DEV_RUNTIME_PRESET => development_config_genesis(),
         sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET => local_config_genesis(),
-        STAGE0_RUNTIME_PRESET => stage0_config_genesis(),
+        // Stage 0 must be constructed by the node with an explicit public Relayer key.
+        // A runtime preset has no safe channel for that required input.
+        STAGE0_RUNTIME_PRESET => return None,
         _ => return None,
     };
 
@@ -594,7 +608,7 @@ mod tests {
 
     #[test]
     fn stage0_genesis_uses_release_network_identities() {
-        let patch = stage0_config_genesis();
+        let patch = stage0_config_genesis(AccountId::new([0x99; 32]));
         let aura = field(
             section(&patch, "aura", "aura"),
             "authorities",
@@ -671,7 +685,7 @@ mod tests {
         assert_eq!(STAGE0_SUDO_ACCOUNT, EXPECTED_SUDO);
         assert_eq!(crate::FaucetAccount::get(), AccountId::new(EXPECTED_FAUCET));
 
-        let patch = stage0_config_genesis();
+        let patch = stage0_config_genesis(AccountId::new([0x99; 32]));
         let sudo = section(&patch, "sudo", "sudo");
         assert_eq!(
             field(sudo, "key", "key"),

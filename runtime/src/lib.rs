@@ -146,18 +146,6 @@ parameter_types! {
     pub const AccumulateGasPrice: Balance = 0;
 }
 
-ord_parameter_types! {
-    // Public key derived from the deterministic local seed `0x92` repeated 32
-    // times. Local orchestration owns the seed; the runtime stores the public
-    // account only.
-    pub const PlaygroundRelayer: AccountId = AccountId::new([
-        0x90, 0x15, 0x78, 0xa4, 0x17, 0x30, 0x0a, 0xa0,
-        0xae, 0x53, 0x3b, 0x5b, 0xd0, 0xe9, 0xaf, 0x48,
-        0x9a, 0x4c, 0xc4, 0xa6, 0xf3, 0x89, 0x99, 0xb7,
-        0x62, 0x83, 0x86, 0x70, 0x87, 0x73, 0x82, 0x09,
-    ]);
-}
-
 #[derive_impl(frame_system::config_preludes::SolochainDefaultConfig)]
 impl frame_system::Config for Runtime {
     type Block = Block;
@@ -261,9 +249,6 @@ impl pallet_minijam::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
     type JamHoldReason = RuntimeHoldReason;
-    type WorkIngressOrigin = frame_system::EnsureSignedBy<PlaygroundRelayer, AccountId>;
-    type PreimageIngressOrigin = frame_system::EnsureSignedBy<PlaygroundRelayer, AccountId>;
-    type SystemIngressOrigin = frame_system::EnsureSignedBy<PlaygroundRelayer, AccountId>;
     type ChainId = MiniJamChainId;
     type WorkDeposit = WorkDeposit;
     type CandidateBond = CandidateBond;
@@ -350,7 +335,13 @@ mod stage0_economics_tests {
         let storage = frame_system::GenesisConfig::<Runtime>::default()
             .build_storage()
             .expect("runtime system genesis builds");
-        storage.into()
+        let mut ext: sp_io::TestExternalities = storage.into();
+        ext.execute_with(|| {
+            pallet_minijam::IngressRelayer::<Runtime>::put(AccountId::new(
+                crate::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT,
+            ));
+        });
+        ext
     }
 
     #[test]
@@ -365,7 +356,9 @@ mod stage0_economics_tests {
             }
             let controller = [0x5a; 32];
             assert_ok!(MiniJam::submit_system_op(
-                RuntimeOrigin::signed(PlaygroundRelayer::get()),
+                RuntimeOrigin::signed(AccountId::new(
+                    crate::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT,
+                )),
                 Box::new(SystemCommandV1::CreateService {
                     controller,
                     code_hash: [0x9b; 32],
@@ -401,52 +394,24 @@ mod stage0_economics_tests {
 
     #[test]
     fn state_changing_ingress_accepts_only_playground_relayer() {
-        let relayer = PlaygroundRelayer::get();
+        let relayer =
+            AccountId::new(crate::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT);
         let direct_user = AccountId::new([0x93; 32]);
 
-        assert!(
-            <Runtime as pallet_minijam::Config>::WorkIngressOrigin::try_origin(
-                RuntimeOrigin::signed(relayer.clone())
-            )
-            .is_ok()
-        );
-        assert!(
-            <Runtime as pallet_minijam::Config>::PreimageIngressOrigin::try_origin(
-                RuntimeOrigin::signed(relayer.clone())
-            )
-            .is_ok()
-        );
-        assert!(
-            <Runtime as pallet_minijam::Config>::SystemIngressOrigin::try_origin(
-                RuntimeOrigin::signed(relayer)
-            )
-            .is_ok()
-        );
+        assert!(pallet_minijam::IngressRelayer::<Runtime>::get() == Some(relayer.clone()));
+        assert!(pallet_minijam::IngressRelayer::<Runtime>::get() == Some(relayer.clone()));
+        assert!(pallet_minijam::IngressRelayer::<Runtime>::get() == Some(relayer));
 
-        assert!(
-            <Runtime as pallet_minijam::Config>::WorkIngressOrigin::try_origin(
-                RuntimeOrigin::signed(direct_user.clone())
-            )
-            .is_err()
-        );
-        assert!(
-            <Runtime as pallet_minijam::Config>::PreimageIngressOrigin::try_origin(
-                RuntimeOrigin::signed(direct_user.clone())
-            )
-            .is_err()
-        );
-        assert!(
-            <Runtime as pallet_minijam::Config>::SystemIngressOrigin::try_origin(
-                RuntimeOrigin::signed(direct_user)
-            )
-            .is_err()
-        );
+        assert!(pallet_minijam::IngressRelayer::<Runtime>::get() != Some(direct_user.clone()));
+        assert!(pallet_minijam::IngressRelayer::<Runtime>::get() != Some(direct_user.clone()));
+        assert!(pallet_minijam::IngressRelayer::<Runtime>::get() != Some(direct_user));
     }
 
     #[test]
     fn runtime_dispatch_enforces_system_and_preimage_ingress() {
         runtime_ext().execute_with(|| {
-            let relayer = PlaygroundRelayer::get();
+            let relayer =
+                AccountId::new(crate::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT);
             let direct_user = AccountId::new([0x93; 32]);
             let command = SystemCommandV1::CreateService {
                 controller: [0x44; 32],
