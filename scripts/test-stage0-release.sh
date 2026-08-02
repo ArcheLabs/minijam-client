@@ -1,6 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+parse_public_key_hex() {
+  awk '
+    /^[[:space:]]*Public key \(hex\):/ {
+      print $4
+      exit
+    }
+  '
+}
+
+verify_relayer_public_key() {
+  local relayer_inspection="$1"
+  local relayer_public="$2"
+  local relayer_derived
+
+  relayer_derived="$(parse_public_key_hex <<<"${relayer_inspection}")"
+  if [[ -z "${relayer_derived}" ]]; then
+    echo "failed to parse Relayer public key from minijam-node key inspect output" >&2
+    return 1
+  fi
+
+  if [[ "${relayer_derived,,}" != "${relayer_public,,}" ]]; then
+    echo "release Relayer URI does not match the public key in the chain spec" >&2
+    echo "expected public key: ${relayer_public}" >&2
+    echo "derived public key:  ${relayer_derived}" >&2
+    return 1
+  fi
+}
+
+# Allows the parser and verifier to be regression-tested without release secrets.
+if [[ "${MINIJAM_STAGE0_RELEASE_TEST_LIB:-}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 repository="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 artifacts_input="${1:?usage: $0 RELEASE_ARTIFACT_DIR}"
 test -d "${artifacts_input}"
@@ -69,11 +102,7 @@ playground_web_image="$(jq -er '.images.playground_web' "${manifest}")"
 genesis_hash="$(jq -er '.genesis_hash' "${manifest}")"
 relayer_public="$(jq -er '.playground_relayer.public_key' "${manifest}")"
 relayer_inspection="$("${artifacts}/minijam-node" key inspect --scheme Sr25519 "${MINIJAM_RELEASE_RELAYER_URI}")"
-relayer_derived="$(sed -n 's/^Public key (hex):[[:space:]]*//p' <<<"${relayer_inspection}" | head -n1)"
-[[ "${relayer_derived,,}" == "${relayer_public,,}" ]] || {
-  echo "release Relayer URI does not match the public key in the chain spec" >&2
-  exit 1
-}
+verify_relayer_public_key "${relayer_inspection}" "${relayer_public}"
 
 {
   printf 'MINIJAM_NODE_IMAGE=%s\n' "${node_image}"
