@@ -50,6 +50,10 @@ require_jq \
   'all(.services[]?.volumes[]?; .type != "bind")' \
   "public bundle must not contain bind mounts"
 
+require_jq \
+  '.services["compiler-api"].tmpfs == ["/tmp:size=256m,mode=1777"]' \
+  "Compiler API tmpfs must be exactly /tmp:size=256m,mode=1777"
+
 if grep -Eq 'stage0-raw\.json|deploy/stage0/secrets' "${resolved}"; then
   fail "public bundle contains Stage 0 files or secret paths"
 fi
