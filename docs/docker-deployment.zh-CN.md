@@ -16,7 +16,9 @@ Stage 0 release stack 不是无需凭据的本地开发链。Authority keystore�
 
 ## Stack 包含什么
 
-release Compose Stack 会启动一个 MiniJAM Node、一个 Compiler API、一个 Playground API 和 bundle gateway、三个使用不同身份的 Worker，以及一个 Playground Web 前端。默认只有 Playground Web 发布到主机，其他服务和健康端点保留在私有 Compose 网络内。
+release Compose Stack 会启动一个 MiniJAM Node、一个 Compiler API、一个 Playground API 和 bundle gateway、三个使用不同身份的 Worker，以及一个 Playground Web 前端。Playground API 预期可被浏览器公开调用；Node RPC、Compiler API、Worker 健康检查端点和 metrics 仍保持私有。
+
+MiniJAM Playground API 是公开的开发者 API，并且有意支持跨域浏览器客户端。它使用 permissive CORS；CORS 不是授权边界。状态变更仍由 signed action、sr25519 钱包签名、重放保护和 Service Controller 检查授权。
 
 ## 要求
 
@@ -166,7 +168,7 @@ docker compose --env-file deploy/stage0/.env \
 
 Docker 部署健康后，默认本地地址为 [http://127.0.0.1:4173](http://127.0.0.1:4173)。公共托管 Playground 上线后，应单独列出其地址；本文档不编造公共地址。
 
-浏览器只能访问 Playground Web。不要暴露 Node RPC、Compiler API、Playground API、Worker health endpoint 或 metrics 端口。公共主机应使用 Operator 管理的 HTTPS reverse proxy，并且只发布 Web 端口。
+浏览器可以访问 Playground Web，也可以直接访问公开的 Playground API。不要暴露 Node RPC、Compiler API、Worker health endpoint 或 metrics 端口。公共主机应使用 Operator 管理的 HTTPS reverse proxy 发布 Web 和 Playground API。
 
 ## 8. 停止、重启或重置
 

@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use axum::{
     body::Body,
     extract::{Path as AxumPath, Query, State},
-    http::{header, StatusCode},
+    http::{header, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -27,6 +27,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sp_core::{sr25519, Pair};
 use thiserror::Error;
+use tower_http::cors::{AllowHeaders, Any, CorsLayer};
 
 pub const ACTION_DOMAIN: &[u8] = b"minijam/playground-action/v1";
 static ACTION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -805,6 +806,12 @@ impl Playground {
             .route("/ipfs/{cid}", get(get_bundle))
             .route("/health/live", get(|| async { StatusCode::NO_CONTENT }))
             .route("/health/ready", get(ready))
+            .layer(
+                CorsLayer::new()
+                    .allow_origin(Any)
+                    .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                    .allow_headers(AllowHeaders::mirror_request()),
+            )
             .with_state(self)
     }
 
@@ -1900,6 +1907,98 @@ mod tests {
         let decoded = jambda_refine::MiniJamWorkBundleV1::decode(&mut encoded).unwrap();
         assert!(encoded.is_empty());
         assert!(decoded.package_hash_matches());
+    }
+
+    #[tokio::test]
+    async fn public_api_allows_arbitrary_origins_and_preflight() {
+        let temp = tempfile::tempdir().unwrap();
+        let playground = playground(&temp.path().join("playground.sqlite"));
+
+        for origin in ["http://127.0.0.1:5173", "https://example.com"] {
+            let response = playground
+                .clone()
+                .router()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri("/api/v1/config")
+                        .header(header::ORIGIN, origin)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+            assert!(!response
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_CREDENTIALS));
+        }
+
+        let response = playground
+            .clone()
+            .router()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/v1/actions/prepare")
+                    .header(header::ORIGIN, "https://example.com")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "content-type")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+        assert!(response.headers()[header::ACCESS_CONTROL_ALLOW_METHODS]
+            .to_str()
+            .unwrap()
+            .contains("POST"));
+        assert!(response.headers()[header::ACCESS_CONTROL_ALLOW_HEADERS]
+            .to_str()
+            .unwrap()
+            .to_ascii_lowercase()
+            .contains("content-type"));
+    }
+
+    #[tokio::test]
+    async fn public_api_routes_return_cors_headers_for_developer_requests() {
+        let temp = tempfile::tempdir().unwrap();
+        let playground = playground(&temp.path().join("playground.sqlite"));
+        let requests = [
+            ("/api/v1/build", "{}"),
+            ("/api/v1/actions/prepare", "{}"),
+            ("/api/v1/services", "{}"),
+            ("/api/v1/work", "{}"),
+        ];
+
+        for (path, body) in requests {
+            let response = playground
+                .clone()
+                .router()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header(header::ORIGIN, "https://community.example")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert!(
+                response
+                    .headers()
+                    .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+                "missing CORS header for {path}"
+            );
+        }
     }
 
     #[tokio::test]

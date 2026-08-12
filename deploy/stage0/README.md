@@ -5,9 +5,10 @@ Playground API (including the bundle gateway), three independent Workers, and
 one production Playground Web. It pulls five public MiniJAM images and does not
 build source code.
 
-Only Playground Web is published by default. Node RPC, Compiler API,
-Playground API, bundle routes, and Worker health endpoints remain on the
-private Compose network. Web proxies `/api/` and `/ipfs/` to Playground API.
+Playground API is a public developer API and intentionally supports arbitrary
+cross-origin browser clients. Node RPC, Compiler API, and Worker health
+endpoints remain on the private Compose network. Playground Web may proxy
+`/api/` and `/ipfs/` to Playground API, but direct API access is also supported.
 
 ## Requirements
 
@@ -75,8 +76,13 @@ docker compose \
 Open `http://127.0.0.1:4173` unless `MINIJAM_WEB_BIND` or
 `MINIJAM_WEB_PORT` was changed. For an explicitly public Stage 0 host, set
 `MINIJAM_WEB_BIND=0.0.0.0` and put an operator-managed HTTPS reverse proxy in
-front of this single port. Do not expose Node RPC, Compiler API, Playground
-API, Worker, or metrics ports.
+front of the Web port and the public Playground API. Do not expose Node RPC,
+Compiler API, Worker, or metrics ports.
+
+The Playground API is intentionally a public developer API and uses
+permissive CORS for cross-origin browser clients. CORS is not an authorization
+boundary: mutation authorization remains enforced by signed actions,
+sr25519 wallet signatures, replay protection, and Service Controller checks.
 
 ## Reset
 

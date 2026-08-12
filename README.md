@@ -7,6 +7,18 @@ English | [Simplified Chinese](README.zh-CN.md)
 
 MiniJAM is an independent Polkadot SDK chain running a simplified version of the JAM protocol.
 
+## Playground API
+
+The MiniJAM Playground API is a public developer API and intentionally supports
+cross-origin browser clients. Its `/api/v1/*` routes use permissive CORS and
+allow arbitrary web applications, including jam-os, Playground, localhost
+applications, community MiniJAM apps, and third-party developer frontends.
+
+CORS is not an authorization boundary. Read access is public, while mutation
+authorization remains enforced by signed actions, sr25519 wallet signatures,
+replay protection, and Service Controller checks. The API does not use cookie
+sessions or credentialed CORS.
+
 ## Differences from JAM
 
 MiniJAM narrows the JAM execution model from the Gray Paper into the smallest protocol surface that can be validated on an independent chain.

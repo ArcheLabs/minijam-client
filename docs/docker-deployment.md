@@ -16,7 +16,9 @@ Credentials are provisioned only in the maintainer-owned release environment and
 
 ## What the stack runs
 
-The release Compose stack starts one MiniJAM Node, one Compiler API, one Playground API and bundle gateway, three independently keyed Workers, and one Playground Web frontend. Only Playground Web is published to the host by default; the other service and health endpoints remain inside the private Compose network.
+The release Compose stack starts one MiniJAM Node, one Compiler API, one Playground API and bundle gateway, three independently keyed Workers, and one Playground Web frontend. Playground API is intended to be publicly callable by browser clients; Node RPC, Compiler API, Worker health endpoints, and metrics remain private.
+
+The MiniJAM Playground API is a public developer API and intentionally supports cross-origin browser clients. Its CORS policy is permissive; CORS is not an authorization boundary. Mutation authorization remains enforced by signed actions, sr25519 wallet signatures, replay protection, and Service Controller checks.
 
 ## Requirements
 
@@ -166,7 +168,7 @@ docker compose --env-file deploy/stage0/.env \
 
 After the Docker deployment is healthy, the default local address is [http://127.0.0.1:4173](http://127.0.0.1:4173). A hosted public Playground URL should be listed separately when one is deployed; this document does not invent one.
 
-The browser should access only Playground Web. Do not expose Node RPC, Compiler API, Playground API, Worker health endpoints, or metrics ports. For a public host, use an operator-managed HTTPS reverse proxy and publish only the Web port.
+The browser may access Playground Web or the public Playground API directly. Do not expose Node RPC, Compiler API, Worker health endpoints, or metrics ports. For a public host, use an operator-managed HTTPS reverse proxy for the Web port and Playground API.
 
 ## 8. Stop, restart, or reset
 
