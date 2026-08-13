@@ -1,0 +1,226 @@
+name: Playground API Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Optional immutable API release tag (for example api-v0.1.1)
+        required: false
+        type: string
+  push:
+    tags:
+      - "api-v*"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+  IMAGE: ghcr.io/archelabs/minijam-playground-api
+
+jobs:
+  release:
+    name: Test, build, and publish Playground API
+    if: github.repository == 'ArcheLabs/minijam-client'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout MiniJAM
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+
+      - name: Check Jambda App configuration
+        env:
+          JAMBDA_APP_CLIENT_ID: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          JAMBDA_APP_PRIVATE_KEY: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+        run: |
+          test -n "${JAMBDA_APP_CLIENT_ID}" || {
+            echo "::error::JAMBDA_APP_CLIENT_ID is not configured"
+            exit 1
+          }
+          test -n "${JAMBDA_APP_PRIVATE_KEY}" || {
+            echo "::error::JAMBDA_APP_PRIVATE_KEY is not configured"
+            exit 1
+          }
+
+      - name: Read pinned Jambda commit
+        id: jambda-pin
+        run: |
+          jambda_sha="$(git ls-tree HEAD external/jambda | awk '{print $3}')"
+          if [[ ! "${jambda_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Unable to determine pinned Jambda commit"
+            exit 1
+          fi
+          echo "sha=${jambda_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create Jambda token
+        id: jambda-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+          owner: ArcheLabs
+          repositories: jambda
+          permission-contents: read
+
+      - name: Checkout pinned Jambda
+        uses: actions/checkout@v4
+        with:
+          repository: ArcheLabs/jambda
+          ref: ${{ steps.jambda-pin.outputs.sha }}
+          token: ${{ steps.jambda-token.outputs.token }}
+          path: external/jambda
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check submodule pin
+        run: ./scripts/check-submodule.sh
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Install native build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 \
+            llvm-18-dev \
+            libclang-18-dev \
+            protobuf-compiler
+
+          LLVM_CONFIG_PATH="$(command -v llvm-config-18)"
+          LIBCLANG_PATH="$("${LLVM_CONFIG_PATH}" --libdir)"
+          CLANG_PATH="$(command -v clang-18)"
+
+          test -x "${LLVM_CONFIG_PATH}"
+          test -x "${CLANG_PATH}"
+          protoc --version
+          find "${LIBCLANG_PATH}" -maxdepth 1 \
+            \( -name 'libclang.so' -o -name 'libclang.so.*' \) \
+            -print -quit | grep -q .
+
+          {
+            echo "LLVM_CONFIG_PATH=${LLVM_CONFIG_PATH}"
+            echo "LIBCLANG_PATH=${LIBCLANG_PATH}"
+            echo "CLANG_PATH=${CLANG_PATH}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: playground-api-release-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            playground-api-release-${{ runner.os }}-
+            stage0-release-${{ runner.os }}-
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Test Playground API
+        run: cargo test -p minijam-playground-api
+
+      - name: Build Playground API release binary
+        run: |
+          cargo build --locked --release -p minijam-playground-api
+          test -x target/release/minijam-playground-api
+
+      - name: Resolve immutable image tags
+        id: release
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          short_sha="${GITHUB_SHA:0:7}"
+          sha_tag="api-${short_sha}"
+          release_tag=""
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+          elif [[ -n "${REQUESTED_TAG}" ]]; then
+            release_tag="${REQUESTED_TAG}"
+          fi
+
+          if [[ -n "${release_tag}" && ! "${release_tag}" =~ ^api-v[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?$ ]]; then
+            echo "::error::Invalid API release tag: ${release_tag}"
+            exit 1
+          fi
+
+          echo "short_sha=${short_sha}" >> "${GITHUB_OUTPUT}"
+          echo "sha_tag=${sha_tag}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:${sha_tag}"
+            if [[ -n "${release_tag}" ]]; then
+              echo "${IMAGE}:${release_tag}"
+            fi
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Playground API image
+        id: docker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/local/Dockerfile
+          target: playground-api-release
+          push: true
+          tags: ${{ steps.release.outputs.tags }}
+          cache-from: type=gha,scope=playground-api-release
+          cache-to: type=gha,mode=max,scope=playground-api-release
+          provenance: false
+
+      - name: Record immutable digest
+        id: digest
+        shell: bash
+        env:
+          DIGEST: ${{ steps.docker.outputs.digest }}
+          SHA_TAG: ${{ steps.release.outputs.sha_tag }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          SHORT_SHA: ${{ steps.release.outputs.short_sha }}
+        run: |
+          if [[ ! "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Invalid image digest returned by Docker build: ${DIGEST}"
+            exit 1
+          fi
+
+          reference="${IMAGE}@${DIGEST}"
+          echo "reference=${reference}" >> "${GITHUB_OUTPUT}"
+          echo "Playground API image: ${reference}"
+
+          {
+            echo "## Playground API Release"
+            echo
+            echo "Commit: \`${SHORT_SHA}\`"
+            echo
+            echo "Immutable tag: \`${IMAGE}:${SHA_TAG}\`"
+            if [[ -n "${RELEASE_TAG}" ]]; then
+              echo
+              echo "Release tag: \`${IMAGE}:${RELEASE_TAG}\`"
+            fi
+            echo
+            echo "Image:"
+            echo
+            echo "\`${reference}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"

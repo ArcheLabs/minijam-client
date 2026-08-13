@@ -20,6 +20,24 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && install -D /cargo-target/release/minijam-playground-api /out/minijam-playground-api \
     && install -D /cargo-target/release/minijam-worker /out/minijam-worker
 
+# Isolated builder used by the independent Playground API release workflow.
+# Keep the Stage 0 rust-builder above unchanged so the full release path preserves
+# its existing build semantics.
+FROM rust:1.88-bookworm AS playground-api-builder
+WORKDIR /src
+ENV RUSTUP_MAX_RETRIES=10 \
+    CARGO_TARGET_DIR=/cargo-target
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends clang libclang-dev protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/usr/local/rustup \
+    --mount=type=cache,target=/cargo-target \
+    cargo build --locked --release -p minijam-playground-api \
+    && install -D /cargo-target/release/minijam-playground-api /out/minijam-playground-api
+
 FROM debian:bookworm-slim AS rust-runtime
 RUN apt-get -o Acquire::Retries=5 update \
     && apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates curl \
@@ -34,6 +52,15 @@ ENTRYPOINT ["minijam-node"]
 
 FROM rust-runtime AS playground
 COPY --from=rust-builder /out/minijam-playground-api /usr/local/bin/
+RUN install -d -o minijam -g minijam /data /data/bundles
+USER minijam
+ENTRYPOINT ["minijam-playground-api"]
+
+# Independent release target. It deliberately does not depend on the shared
+# Stage 0 rust-builder, so building this target cannot compile Node, Worker, or
+# Compiler API as a side effect.
+FROM rust-runtime AS playground-api-release
+COPY --from=playground-api-builder /out/minijam-playground-api /usr/local/bin/
 RUN install -d -o minijam -g minijam /data /data/bundles
 USER minijam
 ENTRYPOINT ["minijam-playground-api"]
