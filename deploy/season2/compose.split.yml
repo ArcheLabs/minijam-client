@@ -1,0 +1,46 @@
+name: minijam-season2-split
+
+# Run node/worker on VM A and api/compiler on VM B. `node-net` is a private
+# cross-host network and must not be published to the public Internet.
+services:
+  node:
+    image: ${MINIJAM_NODE_IMAGE:-ghcr.io/archelabs/minijam-node:season2}
+    command: [--chain=/chain-specs/season2.json, --validator, --force-authoring, --rpc-external, --rpc-methods=safe]
+    volumes: [node-data:/data]
+    networks: [node-net]
+  worker:
+    image: ${MINIJAM_WORKER_IMAGE:-ghcr.io/archelabs/minijam-worker:season2}
+    command: [--rpc-url=http://node:9944, --worker-id=0, --submit-candidates, --submit-support-votes]
+    depends_on: [node]
+    volumes: [worker-data:/data]
+    networks: [node-net]
+  compiler:
+    image: ${MINIJAM_COMPILER_IMAGE:-ghcr.io/archelabs/minijam-compiler-api:season2}
+    environment: {MINIJAM_COMPILER_DIRECT: "true"}
+    read_only: true
+    tmpfs: ["/tmp:size=256m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [api-net, compiler-net]
+  api:
+    image: ${MINIJAM_API_IMAGE:-ghcr.io/archelabs/minijam-playground-api:season2}
+    environment:
+      MINIJAM_PLAYGROUND_BIND: 0.0.0.0:8080
+      MINIJAM_RPC_URL: ${MINIJAM_RPC_URL:?set the private VM A RPC endpoint}
+      MINIJAM_COMPILER_URL: http://compiler:8081
+      MINIJAM_RELAYER_URI: ${MINIJAM_RELAYER_URI:?set a relayer key}
+    depends_on: [compiler]
+    ports: ["127.0.0.1:8080:8080"]
+    volumes: [api-data:/data]
+    networks: [api-net]
+
+volumes:
+  node-data: {}
+  worker-data: {}
+  api-data: {}
+
+networks:
+  node-net:
+    external: true
+  api-net: {}
+  compiler-net: {}

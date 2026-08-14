@@ -379,6 +379,25 @@ impl MiniJamChainClient {
         .await
     }
 
+    pub async fn submit_allocation(
+        &self,
+        allocation_id: u64,
+        target_service: u32,
+        amount: u128,
+    ) -> Result<Submission, ChainClientError> {
+        let allocation = pallet_minijam::AllocationV1 {
+            allocation_id,
+            target_service,
+            amount,
+        };
+        let correlation = minijam_protocol::blake2_256(&allocation.encode());
+        self.submit_call(
+            RuntimeCall::MiniJam(pallet_minijam::Call::submit_allocation { allocation }),
+            correlation,
+        )
+        .await
+    }
+
     async fn submit_call(
         &self,
         call: RuntimeCall,

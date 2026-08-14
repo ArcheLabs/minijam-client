@@ -77,7 +77,7 @@ export function ServicePage({ serviceId }: { serviceId: number }) {
   }
 
   function prepareWork() {
-    if (!isController || !service) return setError("The connected account is not the finalized Service Controller.");
+    if (!service) return setError("Service details are still loading.");
     try {
       setPending({
         kind: "work",
@@ -136,7 +136,7 @@ export function ServicePage({ serviceId }: { serviceId: number }) {
       <p className="eyebrow">Finalized service</p>
       <h1>Service {serviceId}</h1>
       <ErrorPanel message={error} />
-      {!isController && wallet.account && <div className="permission-note" role="status">Connected account is not the finalized Controller. Upgrade and Work are disabled.</div>}
+      {!isController && wallet.account && <div className="permission-note" role="status">Upgrade remains Controller-only. Work is open to any signed Experience user.</div>}
       <section className="service-grid">
         <div className="panel">
           <h2>On-chain details</h2>
@@ -176,7 +176,7 @@ export function ServicePage({ serviceId }: { serviceId: number }) {
           </select></label>
           <label>Payload<input value={payload} onChange={(event) => setPayload(event.target.value)} /></label>
           <label>Optional extrinsics <small>one hex value per line</small><textarea rows={3} value={extrinsics} onChange={(event) => setExtrinsics(event.target.value)} /></label>
-          <button className="primary-button" disabled={!isController || submitting} onClick={prepareWork}>Run Work</button>
+          <button className="primary-button" disabled={!service || submitting} onClick={prepareWork}>Run Work</button>
         </div>
       </section>
       <section className="upgrade-section">

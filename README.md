@@ -2,7 +2,7 @@
 
 English | [Simplified Chinese](README.zh-CN.md)
 
-> MiniJAM is still in early development and is not production-ready.
+> MiniJAM Season 2 is an Experience Network and is still in early development.
 >
 
 MiniJAM is an independent Polkadot SDK chain running a simplified version of the JAM protocol.
@@ -16,8 +16,23 @@ applications, community MiniJAM apps, and third-party developer frontends.
 
 CORS is not an authorization boundary. Read access is public, while mutation
 authorization remains enforced by signed actions, sr25519 wallet signatures,
-replay protection, and Service Controller checks. The API does not use cookie
-sessions or credentialed CORS.
+and replay protection. Service creation and upgrades remain Controller-only;
+ordinary Work is permissionless at the Experience layer and is submitted by
+the runtime Ingress Relayer. The API does not use cookie sessions or
+credentialed CORS.
+
+## Season 2 Experience Network
+
+Season 2 keeps JAM gas limits and Jambda Service balance semantics, but removes
+the separate MiniJAM Service Fuel charging layer from Work execution. A single
+active Worker is supported for the first deployment. Hub-backed value enters
+through one-way `AllocationV1 { allocation_id, target_service, amount }`
+ingress and a replay-protected queue. MiniJAM has no mJK release or reverse
+bridge path; redemption is entirely decided by the Hub contract.
+
+Compact and split deployment profiles are in `deploy/season2`. Both use the
+same Runtime, safe RPC methods, isolated compiler networking, and separate
+relayer/validator/worker key responsibilities.
 
 ## Differences from JAM
 
@@ -30,7 +45,8 @@ MiniJAM narrows the JAM execution model from the Gray Paper into the smallest pr
 - Disputes and verdicts: MiniJAM does not implement global disputes, judgments, or other work-report correctness and consistency logic. These are delegated to Support/Oppose voting within each Work round, absence slashing, candidate report rejection slashing, and equivocation proofs.
 - State and state transition: MiniJAM keeps JAM's original state and state transition logic, but some state always remains at default values. This makes multi-client off-chain Worker implementations easier because they do not need to implement a separate logic set.
 - Accumulate: MiniJAM keeps the accumulation logic and runs it as Runtime logic, so it cannot run in parallel at execution time.
-- Bridge: unlike JAM, MiniJAM has native asset escrow and release requirements. These are implemented through Runtime bridge effects and replay-protected bridge storage.
+- Bridge: Season 2 accepts Hub-to-MiniJAM allocation receipts only. MiniJAM
+  cannot release Hub mJK; redemption remains a Hub operation.
 
 ## Current Progress
 
@@ -40,9 +56,11 @@ The current repository already includes:
 - Deterministic Worker selection, task assignment, multi-round candidate reports, and voting logic;
 - The MiniJAM JamCore execution interface, plus execution result normalization and atomic state validation;
 - Bulletin storage abstractions and a local simulator with injectable faults;
-- Bridging required for inbound escrow and outbound release;
+- One-way Allocation ingress with replay-protected receipts and Service 0 V2
+  queue handoff;
 - A MiniJAM Executive implemented on top of jambda.
-- Stage-0 WorkPackage ingress, ContentRef bounds, preimage/system-op queues, service fuel reserve/settlement, and pallet view queries;
+- WorkPackage ingress, ContentRef bounds, unchanged preimage/system-op queues,
+  JAM gas accounting, and pallet view queries;
 - A `minijam-worker` daemon skeleton plus reusable Worker content fetcher and bundle verification helpers.
 
 ## Workflow
@@ -74,7 +92,7 @@ The Runtime also provides Root administration operations for pausing execution a
 | `crates/minijam-state-adapter` | Execution output validation, state change normalization, and atomic application |
 | `pallets/minijam-workers` | Worker registration, updates, unbonding, task assignment, voting, and misbehavior proofs |
 | `pallets/minijam` | Work lifecycle, candidate reports, multi-round voting, execution queue, and protocol state |
-| `pallets/minijam-bridge` | Inbound escrow, outbound release, and replay protection records |
+| `pallets/minijam-bridge` | Legacy Stage-0 bridge pallet; not composed into the Season 2 runtime |
 | `runtime` | FRAME Runtime configuration and jambda Executive integration |
 | `node` | MiniJAM node CLI, RPC, chain specs, and Aura/GRANDPA service |
 
@@ -86,8 +104,8 @@ The following values come from the current development configuration in `minijam
 | --- | --- |
 | Candidate Worker set | 8 |
 | Max Work items per round | 4 |
-| Workers assigned per Work | 3 |
-| Support/Oppose threshold | 2 / 2 |
+| Workers assigned per Work | 1 |
+| Support/Oppose threshold | 1 / 1 |
 | Epoch length | 100 blocks |
 | Assignment seed delay | 10 blocks |
 | Report submission deadline | 20 blocks |

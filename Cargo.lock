@@ -5371,7 +5371,6 @@ dependencies = [
  "pallet-balances",
  "pallet-grandpa",
  "pallet-minijam",
- "pallet-minijam-bridge",
  "pallet-minijam-workers",
  "pallet-sudo",
  "pallet-timestamp",

@@ -18,7 +18,6 @@ use crate::{
 
 const DEV_BALANCE: Balance = 1_000_000 * UNIT;
 const REWARD_POOL_BALANCE: Balance = 1_000_000 * UNIT;
-const SYSTEM_SERVICE_FUEL: Balance = 1_000 * UNIT;
 const SYSTEM_SERVICE_BLOB: &[u8] = include_bytes!("../../artifacts/system-service.blob");
 pub const STAGE0_RUNTIME_PRESET: &str = "stage0";
 
@@ -102,7 +101,7 @@ fn testnet_genesis(
                     let balance = if account == reward_pool {
                         REWARD_POOL_BALANCE
                     } else if account == fuel_escrow {
-                        SYSTEM_SERVICE_FUEL
+                        1_000 * UNIT
                     } else {
                         DEV_BALANCE
                     };
@@ -125,8 +124,8 @@ fn testnet_genesis(
         sudo: SudoConfig { key: Some(root) },
         mini_jam: MiniJamConfig {
             protocol_state: system_service_zero_protocol_state(),
-            service_fuel: vec![(0, SYSTEM_SERVICE_FUEL)],
-            ingress_relayer: Some(playground_relayer),
+            service_fuel: Vec::new(),
+            ingress_relayer: Some(playground_relayer.clone()),
             _phantom: Default::default(),
         },
         mini_jam_workers: MiniJamWorkersConfig {
@@ -382,12 +381,8 @@ mod tests {
             .as_array()
             .expect("service fuel must be a JSON array");
         assert!(
-            service_fuel.iter().any(|entry| {
-                entry
-                    .as_array()
-                    .is_some_and(|pair| pair.first() == Some(&Value::from(0)))
-            }),
-            "service 0 fuel must be present"
+            service_fuel.is_empty(),
+            "Season 2 does not seed Service Fuel"
         );
 
         let workers = field(mini_jam_workers, "workers", "workers")

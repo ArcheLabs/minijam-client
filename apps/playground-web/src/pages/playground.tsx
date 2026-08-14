@@ -91,9 +91,6 @@ export function PlaygroundPage() {
       const id = Number(serviceId);
       if (!Number.isSafeInteger(id) || id < 0) throw new Error("Enter a valid Service ID.");
       const service = await playgroundApi.getService(id);
-      if (service.controller.toLowerCase() !== account.accountId.toLowerCase()) {
-        throw new Error("The connected account is not the finalized Service Controller.");
-      }
       const value = BigInt(increment);
       const bytes = new Uint8Array(8);
       new DataView(bytes.buffer).setBigInt64(0, value, true);

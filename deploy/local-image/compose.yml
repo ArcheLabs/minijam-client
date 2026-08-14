@@ -19,7 +19,7 @@ services:
     image: ${MINIJAM_NODE_IMAGE:?missing MINIJAM_NODE_IMAGE}
     pull_policy: always
     restart: unless-stopped
-    command: [--dev, --alice, --base-path=/data, --rpc-external, --rpc-cors=all, --rpc-methods=unsafe]
+    command: [--dev, --alice, --base-path=/data, --rpc-external, --rpc-cors=all, --rpc-methods=safe]
     ports: ["${MINIJAM_NODE_BIND:-127.0.0.1}:${MINIJAM_NODE_PORT:-9944}:9944"]
     volumes: [node-data:/data]
     healthcheck:

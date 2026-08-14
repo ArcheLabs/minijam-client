@@ -238,6 +238,40 @@ where
         }
     })?;
 
+    module.register_method("minijam_getAllocation", {
+        let client = client.clone();
+        move |params, _, _| -> RpcResult<Option<String>> {
+            let allocation_id: u64 = params.one()?;
+            let encoded = client
+                .runtime_api()
+                .get_allocation(best_hash(&client), allocation_id)
+                .map_err(runtime_api_error)?;
+            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+        }
+    })?;
+
+    module.register_method("minijam_isAllocationProcessed", {
+        let client = client.clone();
+        move |params, _, _| -> RpcResult<bool> {
+            let allocation_id: u64 = params.one()?;
+            client
+                .runtime_api()
+                .is_allocation_processed(best_hash(&client), allocation_id)
+                .map_err(runtime_api_error)
+        }
+    })?;
+
+    module.register_method("minijam_getPendingAllocations", {
+        let client = client.clone();
+        move |_, _, _| -> RpcResult<String> {
+            let encoded = client
+                .runtime_api()
+                .get_pending_allocations(best_hash(&client))
+                .map_err(runtime_api_error)?;
+            Ok(hex_encode(&encoded))
+        }
+    })?;
+
     module.register_method("minijam_getPendingPreimages", {
         let client = client.clone();
         move |_, _, _| -> RpcResult<String> {

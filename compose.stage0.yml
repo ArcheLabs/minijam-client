@@ -47,7 +47,7 @@ services:
           --node-key-file=/data/release-secrets/node-key \
           --rpc-external \
           --rpc-cors=all \
-          --rpc-methods=unsafe
+          --rpc-methods=safe
     volumes:
       - node-data:/data
       - ${MINIJAM_CHAIN_SPEC_PATH:-./chain-specs/stage0-raw.json}:/chain-specs/stage0-raw.json:ro

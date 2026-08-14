@@ -1,5 +1,21 @@
 # Implementation status
 
+## Season 2 P0
+
+- Experience Network deployment profiles support one active Worker and safe
+  RPC methods; Compact and Split use the same Runtime.
+- Work no longer depends on the deprecated Service Fuel ledger. JAM execution
+  gas limits, usage reporting, and Jambda Service balance semantics remain.
+- Work is permissionless at the Experience API; create/upgrade and runtime
+  ingress-relayer boundaries remain separate.
+- `AllocationV1` ingress has a dedicated relayer setting with ingress fallback,
+  pending/processed replay protection, canonical Service 0 V2 queue handoff,
+  receipts, and read views.
+- The legacy outbound bridge pallet is not composed into the Season 2 runtime.
+- Preimage submission remains extrinsic-supplied and follows the existing
+  validation, pending queue, execution input, and Jambda consume/quarantine
+  flow.
+
 MiniJAM is an early development codebase. The public repository contains the
 protocol surface, runtime pallets, node skeleton, local simulators, and the
 gitlink for the private jambda execution submodule. It does not contain the
@@ -27,15 +43,15 @@ private jambda source code.
   operation, gas, receipt, total-delta, and rollback validation.
 - FRAME storage binding for MiniJAM protocol state, service outputs, consumed
   reports, execution receipts, and bridge effects.
-- Native-asset inbound escrow, outbound release, replay protection, bridge
-  ledger encoding, and `pallet-minijam-bridge` balance hold integration.
+- Legacy native-asset bridge pallet and bridge-engine sources remain for Stage 0
+  compatibility, but are not part of the Season 2 Runtime composition.
 - Bulletin storage API plus a local Raw/Blake2b-256 CID simulator with
   fetch/store/renew/status operations and missing/corrupt/timeout fault
   injection.
 - Mock JamCore executor and deterministic receipt generation for tests.
 - Polkadot SDK stable2603 solo-chain runtime with System, Timestamp, Aura,
-  GRANDPA, Balances, TransactionPayment, Sudo, MiniJAM workers, MiniJAM
-  lifecycle, and MiniJAM bridge pallets.
+  GRANDPA, Balances, TransactionPayment, Sudo, MiniJAM workers, and MiniJAM
+  lifecycle pallets.
 - Development node CLI, RPC wiring, dev/local chain specs, Aura authoring, and
   GRANDPA finality service.
 - Private jambda submodule integration for `jambda-minijam-executive`, including

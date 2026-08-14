@@ -73,6 +73,39 @@ pub mod pallet {
         pub reserved: Balance,
     }
 
+    /// The only Hub-to-MiniJAM value crossing understood by the client.
+    ///
+    /// The balance is deliberately generic so the runtime can use the exact
+    /// balance type used by Jambda Service accounts without an intermediate
+    /// conversion.
+    #[derive(
+        Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
+    )]
+    pub struct AllocationV1<Balance> {
+        pub allocation_id: u64,
+        pub target_service: u32,
+        pub amount: Balance,
+    }
+
+    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    #[scale_info(skip_type_params(T))]
+    pub struct PendingAllocation<T: Config> {
+        pub submitter: T::AccountId,
+        pub allocation: AllocationV1<BalanceOf<T>>,
+    }
+
+    #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    pub enum AllocationStatus {
+        Pending,
+        Processed,
+    }
+
+    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
+    pub struct AllocationReceipt<Balance> {
+        pub allocation: AllocationV1<Balance>,
+        pub status: AllocationStatus,
+    }
+
     #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
     pub struct WorkFuelSettlement<Balance> {
         pub charged: Balance,
@@ -268,6 +301,9 @@ pub mod pallet {
         type AccumulateGasPrice: Get<BalanceOf<Self>>;
 
         #[pallet::constant]
+        type MaxPendingAllocations: Get<u32>;
+
+        #[pallet::constant]
         type ReportSubmissionDeadline: Get<u32>;
 
         #[pallet::constant]
@@ -312,6 +348,10 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn ingress_relayer)]
     pub type IngressRelayer<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
+
+    #[pallet::storage]
+    #[pallet::getter(fn allocation_relayer)]
+    pub type AllocationRelayer<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
 
     #[pallet::storage]
     pub type NextWorkId<T> = StorageValue<_, WorkId, ValueQuery>;
@@ -396,6 +436,21 @@ pub mod pallet {
     pub type SystemOpNonces<T: Config> = StorageMap<_, Blake2_128Concat, [u8; 32], u64, ValueQuery>;
 
     #[pallet::storage]
+    pub type PendingAllocations<T: Config> =
+        StorageMap<_, Blake2_128Concat, u64, PendingAllocation<T>, OptionQuery>;
+
+    #[pallet::storage]
+    pub type ProcessedAllocations<T: Config> =
+        StorageMap<_, Blake2_128Concat, u64, (), OptionQuery>;
+
+    #[pallet::storage]
+    pub type AllocationReceipts<T: Config> =
+        StorageMap<_, Blake2_128Concat, u64, AllocationReceipt<BalanceOf<T>>, OptionQuery>;
+
+    #[pallet::storage]
+    pub type PendingAllocationCount<T> = StorageValue<_, u32, ValueQuery>;
+
+    #[pallet::storage]
     pub type ServiceFuelAccounts<T: Config> =
         StorageMap<_, Blake2_128Concat, u32, ServiceFuelAccount<BalanceOf<T>>, ValueQuery>;
 
@@ -427,6 +482,11 @@ pub mod pallet {
             if let Some(account) = &self.ingress_relayer {
                 IngressRelayer::<T>::put(account);
             }
+            if let Some(account) = &self.ingress_relayer {
+                // Minimal deployment fallback; this remains a separate
+                // storage key so it can be split without a protocol change.
+                AllocationRelayer::<T>::put(account);
+            }
             for (key, value) in &self.protocol_state {
                 let key: [u8; 31] = key
                     .as_slice()
@@ -457,6 +517,10 @@ pub mod pallet {
             old: Option<T::AccountId>,
             new: T::AccountId,
         },
+        AllocationRelayerChanged {
+            old: Option<T::AccountId>,
+            new: T::AccountId,
+        },
         WorkSubmitted {
             work_id: WorkId,
             owner: T::AccountId,
@@ -476,6 +540,16 @@ pub mod pallet {
             work_id: WorkId,
             charged: BalanceOf<T>,
             refunded: BalanceOf<T>,
+        },
+        AllocationQueued {
+            allocation_id: u64,
+            target_service: u32,
+            amount: BalanceOf<T>,
+        },
+        AllocationProcessed {
+            allocation_id: u64,
+            target_service: u32,
+            amount: BalanceOf<T>,
         },
         CandidateSubmitted {
             work_id: WorkId,
@@ -601,6 +675,12 @@ pub mod pallet {
         FuelSettlementInvariant,
         FaucetOnCooldown,
         ZeroFaucetAmount,
+        AllocationRelayerNotConfigured,
+        UnauthorizedAllocation,
+        ZeroAllocation,
+        DuplicateAllocation,
+        TooManyPendingAllocations,
+        AllocationNotFound,
     }
 
     #[pallet::hooks]
@@ -660,8 +740,7 @@ pub mod pallet {
                 Error::<T>::InvalidWorkPackage
             );
             Self::validate_content_ref(&bundle_ref)?;
-            let work_package = Self::decode_work_package(&canonical_work_package)?;
-            let fuel_reservation = Self::reserve_work_fuel(&work_package)?;
+            Self::decode_work_package(&canonical_work_package)?;
             let package_hash = blake2_256(&canonical_work_package);
             ensure!(
                 !WorkByPackageHash::<T>::contains_key(package_hash),
@@ -684,7 +763,10 @@ pub mod pallet {
                     package_hash,
                     canonical_work_package,
                     bundle_ref: bundle_ref.clone(),
-                    fuel_reservation: fuel_reservation.clone(),
+                    // Service Fuel is a deprecated product-layer accounting
+                    // subsystem. JAM gas limits remain enforced by Jambda,
+                    // but no Service Fuel balance participates in Work.
+                    fuel_reservation: Default::default(),
                     round: 0,
                     status: WorkStatus::InsufficientWorkers,
                     candidate_deadline: Zero::zero(),
@@ -703,17 +785,6 @@ pub mod pallet {
                 bundle_ref,
                 status,
             });
-            let total_reserved = fuel_reservation
-                .iter()
-                .fold(BalanceOf::<T>::zero(), |total, reservation| {
-                    total.saturating_add(reservation.reserved)
-                });
-            if !total_reserved.is_zero() {
-                Self::deposit_event(Event::WorkFuelReserved {
-                    work_id,
-                    total: total_reserved,
-                });
-            }
             Ok(())
         }
 
@@ -1041,6 +1112,71 @@ pub mod pallet {
             });
             Ok(())
         }
+
+        #[pallet::call_index(12)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(5, 5))]
+        #[transactional]
+        pub fn submit_allocation(
+            origin: OriginFor<T>,
+            allocation: AllocationV1<BalanceOf<T>>,
+        ) -> DispatchResult {
+            let submitter = Self::ensure_allocation_relayer(origin)?;
+            ensure!(!allocation.amount.is_zero(), Error::<T>::ZeroAllocation);
+            ensure!(
+                Self::service_exists(allocation.target_service),
+                Error::<T>::UnknownService
+            );
+            ensure!(
+                !ProcessedAllocations::<T>::contains_key(allocation.allocation_id)
+                    && !PendingAllocations::<T>::contains_key(allocation.allocation_id),
+                Error::<T>::DuplicateAllocation
+            );
+            ensure!(
+                PendingAllocationCount::<T>::get() < T::MaxPendingAllocations::get(),
+                Error::<T>::TooManyPendingAllocations
+            );
+
+            let allocation_id = allocation.allocation_id;
+            let target_service = allocation.target_service;
+            let amount = allocation.amount;
+            PendingAllocations::<T>::insert(
+                allocation_id,
+                PendingAllocation::<T> {
+                    submitter,
+                    allocation: allocation.clone(),
+                },
+            );
+            PendingAllocationCount::<T>::mutate(|count| *count = count.saturating_add(1));
+            AllocationReceipts::<T>::insert(
+                allocation_id,
+                AllocationReceipt {
+                    allocation,
+                    status: AllocationStatus::Pending,
+                },
+            );
+            Self::deposit_event(Event::AllocationQueued {
+                allocation_id,
+                target_service,
+                amount,
+            });
+            Ok(())
+        }
+
+        #[pallet::call_index(13)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(4, 4))]
+        pub fn set_allocation_relayer(
+            origin: OriginFor<T>,
+            new_relayer: T::AccountId,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            let old = AllocationRelayer::<T>::get();
+            AllocationRelayer::<T>::put(&new_relayer);
+            Self::deposit_event(Event::AllocationRelayerChanged {
+                old,
+                new: new_relayer,
+            });
+            Ok(())
+        }
     }
 
     #[pallet::view_functions]
@@ -1089,6 +1225,20 @@ pub mod pallet {
             work_id: WorkId,
         ) -> Option<WorkFuelSettlement<BalanceOf<T>>> {
             WorkFuelSettlements::<T>::get(work_id)
+        }
+
+        pub fn get_allocation(allocation_id: u64) -> Option<AllocationReceipt<BalanceOf<T>>> {
+            AllocationReceipts::<T>::get(allocation_id)
+        }
+
+        pub fn is_allocation_processed(allocation_id: u64) -> bool {
+            ProcessedAllocations::<T>::contains_key(allocation_id)
+        }
+
+        pub fn get_pending_allocations() -> Vec<PendingAllocation<T>> {
+            let mut pending: Vec<_> = PendingAllocations::<T>::iter_values().collect();
+            pending.sort_by_key(|item| item.allocation.allocation_id);
+            pending
         }
 
         pub fn get_pending_preimages() -> BoundedVec<PendingPreimage<T>, T::MaxPendingPreimages> {
@@ -1177,6 +1327,55 @@ pub mod pallet {
                 IngressRelayer::<T>::get().ok_or(Error::<T>::IngressRelayerNotConfigured)?;
             ensure!(who == expected, Error::<T>::UnauthorizedIngress);
             Ok(who)
+        }
+
+        fn allocation_relayer_account() -> Result<T::AccountId, DispatchError> {
+            AllocationRelayer::<T>::get()
+                .or_else(|| IngressRelayer::<T>::get())
+                .ok_or(Error::<T>::AllocationRelayerNotConfigured.into())
+        }
+
+        fn ensure_allocation_relayer(origin: OriginFor<T>) -> Result<T::AccountId, DispatchError> {
+            let who = ensure_signed(origin)?;
+            let expected = Self::allocation_relayer_account()?;
+            ensure!(who == expected, Error::<T>::UnauthorizedAllocation);
+            Ok(who)
+        }
+
+        /// Canonical allocation input for the future Service 0 V2 adapter.
+        /// This is intentionally a queue handoff, not a direct protocol-state
+        /// mutation or a reverse bridge operation.
+        pub fn pending_allocation_inputs() -> Vec<Vec<u8>> {
+            Self::get_pending_allocations()
+                .into_iter()
+                .map(|pending| pending.allocation.encode())
+                .collect()
+        }
+
+        /// Called by the Service 0 V2 adapter after the canonical input has
+        /// been consumed by Jambda. The client only records the receipt.
+        pub fn consume_allocation(allocation_id: u64) -> DispatchResult {
+            ensure!(
+                !ProcessedAllocations::<T>::contains_key(allocation_id),
+                Error::<T>::DuplicateAllocation
+            );
+            let pending = PendingAllocations::<T>::take(allocation_id)
+                .ok_or(Error::<T>::AllocationNotFound)?;
+            ProcessedAllocations::<T>::insert(allocation_id, ());
+            PendingAllocationCount::<T>::mutate(|count| *count = count.saturating_sub(1));
+            AllocationReceipts::<T>::insert(
+                allocation_id,
+                AllocationReceipt {
+                    allocation: pending.allocation.clone(),
+                    status: AllocationStatus::Processed,
+                },
+            );
+            Self::deposit_event(Event::AllocationProcessed {
+                allocation_id,
+                target_service: pending.allocation.target_service,
+                amount: pending.allocation.amount,
+            });
+            Ok(())
         }
 
         pub fn pending_worker_tasks() -> Vec<WorkerTaskV1> {
@@ -1372,7 +1571,6 @@ pub mod pallet {
         }
 
         fn fail_work(work_id: WorkId, work: &mut WorkRecord<T>) -> DispatchResult {
-            Self::release_work_fuel(work_id, work)?;
             let reason = T::JamHoldReason::from(HoldReason::WorkDeposit);
             let (credit, remainder) =
                 <T as Config>::Currency::slash(&reason, &work.owner, T::WorkDeposit::get());
@@ -1549,11 +1747,6 @@ pub mod pallet {
                     continue;
                 }
                 let mut work = Works::<T>::get(work_id).ok_or(ExecutionFailure::Fatal)?;
-                Self::settle_imported_work_fuel(
-                    work_id,
-                    &mut work,
-                    &candidate.envelope.canonical_report,
-                )?;
                 work.status = WorkStatus::Imported;
                 Works::<T>::insert(work_id, work);
                 ExecutionReceipts::<T>::insert(work_id, output.receipt_hash);

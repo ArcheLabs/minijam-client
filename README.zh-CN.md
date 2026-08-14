@@ -2,7 +2,7 @@
 
 English | 简体中文
 
-> MiniJAM 仍处于早期开发阶段，尚未面向生产环境。
+> MiniJAM Season 2 是 Experience Network，仍处于早期开发阶段。
 >
 
 MiniJAM 是一个运行精简版 JAM 协议的独立 Polkadot SDK 链。
@@ -13,9 +13,20 @@ MiniJAM Playground API 是公开的开发者 API，并且有意支持跨域浏�
 所有 `/api/v1/*` 路由都使用 permissive CORS，允许 jam-os、Playground、
 localhost 应用、社区 MiniJAM 应用和第三方开发者前端直接调用。
 
-CORS 不是授权边界。读取接口公开；所有状态变更仍由 signed action、sr25519
-钱包签名、重放保护和 Service Controller 检查强制授权。API 不使用 Cookie Session，
-也不启用 credentialed CORS。
+CORS 不是授权边界。读取接口公开；状态变更仍由 signed action、sr25519 钱包签名
+和重放保护强制授权。创建和升级 Service 仍要求 Controller；普通 Work 在
+Experience 层 permissionless，由 runtime Ingress Relayer 提交。API 不使用 Cookie
+Session，也不启用 credentialed CORS。
+
+## Season 2 Experience Network
+
+Season 2 保留 JAM gas limit 和 Jambda Service balance 语义，但移除 Work 执行路径
+上的 MiniJAM Service Fuel 收费层。第一版部署支持一个 active Worker。Hub-backed
+价值只能通过单向、带重放保护的 `AllocationV1 { allocation_id, target_service,
+amount }` 进入队列。MiniJAM 不提供 mJK 释放或反向桥；赎回完全由 Hub 合约决定。
+
+Compact 和 split 部署配置位于 `deploy/season2`，两者使用相同 Runtime、安全 RPC、
+隔离的 Compiler 网络和分离的生产密钥。
 
 ## 与 JAM 的区别
 
@@ -28,7 +39,8 @@ MiniJAM 把灰皮书中的 JAM 执行模型收缩到一个可在独立链上验�
 - 争议与裁决：MiniJAM 不实现全局 disputes、judgments 等工作报告正确性、一致性逻辑。将其交由 Work round 内的 Support/Oppose、缺席惩罚、候选报告拒绝惩罚和 equivocation proof。
 - 状态与状态转换：MiniJAM 保留了 JAM 的原始状态和状态转换逻辑，但部分状态始终保持默认值。这方便链下 Worker 的多客户端实现，无需实现一套单独的逻辑。
 - Accumulate：MiniJAM 保留了累积逻辑，并将其作为 Runtime 运行，因此在运行上无法并行。
-- 桥接：与 JAM 不同，MiniJAM 有原生资产托管与释放需求。这通过 Runtime bridge effects 和防重放桥接存储实现。
+- 桥接：Season 2 只接受 Hub→MiniJAM Allocation receipt。MiniJAM 不能释放 Hub
+  mJK，赎回仍是 Hub 操作。
 
 ## 当前进度
 
@@ -40,7 +52,8 @@ MiniJAM 把灰皮书中的 JAM 执行模型收缩到一个可在独立链上验�
 - Bulletin 存储抽象和可注入故障的本地模拟器；
 - 入站托管与出站释放所需的桥接；
 - 在 jambda 基础上实现的 MiniJAM Executive；
-- 阶段 0 的 WorkPackage 入口、ContentRef 上限、preimage/system-op 队列、service fuel 预留/结算和 pallet view 查询；
+- WorkPackage 入口、ContentRef 上限、保持不变的 preimage/system-op 队列、JAM gas
+  accounting 和 pallet view 查询；
 - `minijam-worker` daemon 骨架，以及可复用的 Worker 内容获取和 bundle 校验 helper。
 
 ## 工作流程
@@ -72,7 +85,7 @@ Runtime 还提供暂停执行和隔离待执行队列的 Root 管理操作，用
 | `crates/minijam-state-adapter` | 执行输出校验、状态变更规范化和原子应用 |
 | `pallets/minijam-workers` | Worker 注册、更新、解绑、任务分配、投票和作恶证明 |
 | `pallets/minijam` | Work 生命周期、候选报告、多轮表决、执行队列和协议状态 |
-| `pallets/minijam-bridge` | 入站托管、出站释放和防重放记录 |
+| `pallets/minijam-bridge` | Stage 0 遗留桥接 pallet，未加入 Season 2 Runtime |
 | `runtime` | FRAME Runtime 配置与 jambda Executive 集成 |
 | `node` | MiniJAM 节点 CLI、RPC、链配置和 Aura/GRANDPA 服务 |
 
@@ -84,8 +97,8 @@ Runtime 还提供暂停执行和隔离待执行队列的 Root 管理操作，用
 | --- | --- |
 | 候选 Worker 集合 | 8 |
 | 每轮最多 Work 数 | 4 |
-| 每个 Work 分配的 Worker 数 | 3 |
-| 赞成/反对阈值 | 2 / 2 |
+| 每个 Work 分配的 Worker 数 | 1 |
+| 赞成/反对阈值 | 1 / 1 |
 | Epoch 长度 | 100 个区块 |
 | 分配随机种子延迟 | 10 个区块 |
 | 报告提交期限 | 20 个区块 |

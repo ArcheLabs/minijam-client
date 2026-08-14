@@ -111,6 +111,19 @@ impl_runtime_apis! {
                 .map(|value| value.encode())
         }
 
+        fn get_allocation(allocation_id: u64) -> Option<Vec<u8>> {
+            pallet_minijam::Pallet::<Runtime>::get_allocation(allocation_id)
+                .map(|value| value.encode())
+        }
+
+        fn is_allocation_processed(allocation_id: u64) -> bool {
+            pallet_minijam::Pallet::<Runtime>::is_allocation_processed(allocation_id)
+        }
+
+        fn get_pending_allocations() -> Vec<u8> {
+            pallet_minijam::Pallet::<Runtime>::get_pending_allocations().encode()
+        }
+
         fn get_pending_preimages() -> Vec<u8> {
             pallet_minijam::Pallet::<Runtime>::get_pending_preimages().encode()
         }

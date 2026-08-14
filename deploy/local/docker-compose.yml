@@ -41,7 +41,7 @@ services:
       - --base-path=/data
       - --rpc-external
       - --rpc-cors=all
-      - --rpc-methods=unsafe
+      - --rpc-methods=safe
     ports:
       - "${MINIJAM_NODE_PORT:-9944}:9944"
     volumes:

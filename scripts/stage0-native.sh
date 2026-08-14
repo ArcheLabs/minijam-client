@@ -262,7 +262,7 @@ up() {
       --base-path="${data}/node" \
       --rpc-external \
       --rpc-cors=all \
-      --rpc-methods=unsafe
+      --rpc-methods=safe
     wait_node || exit 1
 
     start_service compiler-api env \

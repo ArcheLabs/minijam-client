@@ -147,6 +147,7 @@ impl pallet_minijam::Config for Test {
     type JamCoreExecutor = TestExecutor;
     type MaxPendingPreimages = frame_support::traits::ConstU32<8>;
     type MaxPendingSystemOps = frame_support::traits::ConstU32<8>;
+    type MaxPendingAllocations = frame_support::traits::ConstU32<8>;
 }
 
 #[derive(Default)]
@@ -550,7 +551,6 @@ fn submit_assigned_service_work() -> [u8; 32] {
         service_info_key(7),
         StateValue::try_from(vec![1, 2, 3]).unwrap(),
     );
-    assert_ok!(MiniJam::fund_service(RuntimeOrigin::signed(5), 7, 100));
     let package = encoded_work_package(31, vec![work_item(7, 10, 20)]);
     let package_hash = blake2_256(&package);
     assert_ok!(MiniJam::submit_work(
@@ -1066,7 +1066,7 @@ fn fund_service_rejects_unknown_service_and_zero_amount() {
 }
 
 #[test]
-fn submit_work_reserves_service_fuel_by_work_items() {
+fn submit_work_ignores_service_fuel_by_work_items() {
     new_test_ext().execute_with(|| {
         pallet_minijam::ProtocolState::<Test>::insert(
             service_info_key(7),
@@ -1082,19 +1082,15 @@ fn submit_work_reserves_service_fuel_by_work_items() {
         ));
 
         let fuel = pallet_minijam::ServiceFuelAccounts::<Test>::get(7);
-        assert_eq!(fuel.available, 70);
-        assert_eq!(fuel.reserved, 30);
+        assert_eq!(fuel.available, 100);
+        assert_eq!(fuel.reserved, 0);
         let work = MiniJam::work(0).unwrap();
-        assert_eq!(work.fuel_reservation.len(), 1);
-        assert_eq!(work.fuel_reservation[0].service_id, 7);
-        assert_eq!(work.fuel_reservation[0].refine_limit, 10);
-        assert_eq!(work.fuel_reservation[0].accumulate_limit, 20);
-        assert_eq!(work.fuel_reservation[0].reserved, 30);
+        assert!(work.fuel_reservation.is_empty());
     });
 }
 
 #[test]
-fn submit_work_rejects_when_service_fuel_is_insufficient() {
+fn submit_work_succeeds_when_service_fuel_is_insufficient() {
     new_test_ext().execute_with(|| {
         pallet_minijam::ProtocolState::<Test>::insert(
             service_info_key(7),
@@ -1102,14 +1098,11 @@ fn submit_work_rejects_when_service_fuel_is_insufficient() {
         );
         assert_ok!(MiniJam::fund_service(RuntimeOrigin::signed(5), 7, 10));
 
-        assert_noop!(
-            MiniJam::submit_work(
-                RuntimeOrigin::signed(5),
-                encoded_work_package(22, vec![work_item(7, 10, 20)]),
-                bundle_ref(22)
-            ),
-            pallet_minijam::Error::<Test>::InsufficientServiceFuel
-        );
+        assert_ok!(MiniJam::submit_work(
+            RuntimeOrigin::signed(5),
+            encoded_work_package(22, vec![work_item(7, 10, 20)]),
+            bundle_ref(22)
+        ));
         let fuel = pallet_minijam::ServiceFuelAccounts::<Test>::get(7);
         assert_eq!(fuel.available, 10);
         assert_eq!(fuel.reserved, 0);
@@ -1117,7 +1110,7 @@ fn submit_work_rejects_when_service_fuel_is_insufficient() {
 }
 
 #[test]
-fn failed_work_releases_reserved_service_fuel() {
+fn failed_work_does_not_touch_service_fuel() {
     new_test_ext().execute_with(|| {
         activate_workers();
         pallet_minijam::ProtocolState::<Test>::insert(
@@ -1133,7 +1126,7 @@ fn failed_work_releases_reserved_service_fuel() {
         ));
         assert_eq!(
             pallet_minijam::ServiceFuelAccounts::<Test>::get(7).reserved,
-            30
+            0
         );
 
         for block in [121, 142, 163] {
@@ -1149,18 +1142,12 @@ fn failed_work_releases_reserved_service_fuel() {
             pallet_minijam::WorkStatus::Failed
         );
         assert!(MiniJam::work(0).unwrap().fuel_reservation.is_empty());
-        assert_eq!(
-            MiniJam::work_fuel_settlement(0).unwrap(),
-            pallet_minijam::WorkFuelSettlement {
-                charged: 0,
-                refunded: 30
-            }
-        );
+        assert!(MiniJam::work_fuel_settlement(0).is_none());
     });
 }
 
 #[test]
-fn imported_report_settles_reserved_service_fuel() {
+fn imported_report_does_not_settle_service_fuel() {
     new_test_ext().execute_with(|| {
         let pairs = activate_workers();
         pallet_minijam::ProtocolState::<Test>::insert(
@@ -1208,23 +1195,17 @@ fn imported_report_settles_reserved_service_fuel() {
         <MiniJam as frame_support::traits::Hooks<u64>>::on_finalize(101);
 
         let fuel = pallet_minijam::ServiceFuelAccounts::<Test>::get(7);
-        assert_eq!(fuel.available, 90);
+        assert_eq!(fuel.available, 100);
         assert_eq!(fuel.reserved, 0);
-        assert_eq!(pallet_minijam::TotalServiceFuel::<Test>::get(), 90);
-        assert_eq!(Balances::total_balance(&101), 90);
+        assert_eq!(pallet_minijam::TotalServiceFuel::<Test>::get(), 100);
+        assert_eq!(Balances::total_balance(&101), 100);
         assert_eq!(MiniJam::get_service_fuel(7), fuel);
         assert_eq!(
             MiniJam::work(0).unwrap().status,
             pallet_minijam::WorkStatus::Imported
         );
         assert!(MiniJam::work(0).unwrap().fuel_reservation.is_empty());
-        assert_eq!(
-            MiniJam::work_fuel_settlement(0).unwrap(),
-            pallet_minijam::WorkFuelSettlement {
-                charged: 10,
-                refunded: 20
-            }
-        );
+        assert!(MiniJam::work_fuel_settlement(0).is_none());
         assert_eq!(
             MiniJam::get_work_fuel_reservation(0).unwrap(),
             MiniJam::work(0).unwrap().fuel_reservation
@@ -1237,6 +1218,73 @@ fn imported_report_settles_reserved_service_fuel() {
         assert_eq!(
             MiniJam::get_execution_receipt(0),
             pallet_minijam::ExecutionReceipts::<Test>::get(0)
+        );
+    });
+}
+
+#[test]
+fn allocation_is_authorized_replay_protected_and_consumed_once() {
+    new_test_ext().execute_with(|| {
+        pallet_minijam::ProtocolState::<Test>::insert(
+            service_info_key(7),
+            StateValue::try_from(vec![1, 2, 3]).unwrap(),
+        );
+        let allocation = pallet_minijam::AllocationV1 {
+            allocation_id: 100,
+            target_service: 7,
+            amount: 500u128,
+        };
+
+        assert_noop!(
+            MiniJam::submit_allocation(RuntimeOrigin::signed(6), allocation.clone()),
+            pallet_minijam::Error::<Test>::UnauthorizedAllocation
+        );
+        assert_noop!(
+            MiniJam::submit_allocation(
+                RuntimeOrigin::signed(5),
+                pallet_minijam::AllocationV1 {
+                    amount: 0,
+                    ..allocation.clone()
+                }
+            ),
+            pallet_minijam::Error::<Test>::ZeroAllocation
+        );
+        assert_noop!(
+            MiniJam::submit_allocation(
+                RuntimeOrigin::signed(5),
+                pallet_minijam::AllocationV1 {
+                    target_service: 99,
+                    ..allocation.clone()
+                }
+            ),
+            pallet_minijam::Error::<Test>::UnknownService
+        );
+
+        assert_ok!(MiniJam::submit_allocation(
+            RuntimeOrigin::signed(5),
+            allocation.clone()
+        ));
+        assert_eq!(MiniJam::get_pending_allocations().len(), 1);
+        assert_eq!(MiniJam::pending_allocation_inputs().len(), 1);
+        assert_eq!(
+            MiniJam::get_allocation(100).unwrap().status,
+            pallet_minijam::AllocationStatus::Pending
+        );
+        assert_noop!(
+            MiniJam::submit_allocation(RuntimeOrigin::signed(5), allocation.clone()),
+            pallet_minijam::Error::<Test>::DuplicateAllocation
+        );
+
+        assert_ok!(MiniJam::consume_allocation(100));
+        assert!(MiniJam::is_allocation_processed(100));
+        assert!(MiniJam::get_pending_allocations().is_empty());
+        assert_eq!(
+            MiniJam::get_allocation(100).unwrap().status,
+            pallet_minijam::AllocationStatus::Processed
+        );
+        assert_noop!(
+            MiniJam::consume_allocation(100),
+            pallet_minijam::Error::<Test>::DuplicateAllocation
         );
     });
 }

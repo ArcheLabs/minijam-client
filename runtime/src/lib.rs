@@ -4,7 +4,7 @@
 
 extern crate alloc;
 
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 
 #[cfg(feature = "std")]
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
@@ -13,7 +13,7 @@ pub mod apis;
 pub mod genesis_config_presets;
 
 use frame_support::{
-    derive_impl, ord_parameter_types, parameter_types,
+    derive_impl, parameter_types,
     traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, VariantCountOf},
     weights::{
         constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
@@ -130,7 +130,6 @@ parameter_types! {
     pub FuelEscrowAccount: AccountId = AccountId::new([7; 32]);
     pub FaucetAccount: AccountId =
         AccountId::new(genesis_config_presets::STAGE0_FAUCET_ACCOUNT);
-    pub BridgeEscrowAccount: AccountId = AccountId::new([8; 32]);
     pub const MinimumWorkerStake: Balance = 1_000 * UNIT;
     pub const TimelyVoteReward: Balance = 0;
     pub const MinimumAbsenceSlash: Balance = UNIT;
@@ -229,11 +228,11 @@ impl pallet_minijam_workers::Config for Runtime {
     type MaxCandidates = ConstU32<256>;
     type TopWorkers = ConstU32<8>;
     type AssignmentSeedDelay = ConstU32<10>;
-    type WorkersPerWork = ConstU32<3>;
+    type WorkersPerWork = ConstU32<1>;
     type MaxWorksPerRound = ConstU32<4>;
     type MaxDutiesPerWorkerPerRound = ConstU32<2>;
-    type SupportThreshold = ConstU32<2>;
-    type OpposeThreshold = ConstU32<2>;
+    type SupportThreshold = ConstU32<1>;
+    type OpposeThreshold = ConstU32<1>;
     type MaxOpenVotes = ConstU32<64>;
     type ChainId = MiniJamChainId;
     type ProtocolVersion = frame_support::traits::ConstU16<1>;
@@ -273,13 +272,7 @@ impl pallet_minijam::Config for Runtime {
     type JamCoreExecutor = jambda_minijam_executive::MiniJamExecutive;
     type MaxPendingPreimages = ConstU32<64>;
     type MaxPendingSystemOps = ConstU32<64>;
-}
-
-impl pallet_minijam_bridge::Config for Runtime {
-    type RuntimeEvent = RuntimeEvent;
-    type Currency = Balances;
-    type RuntimeHoldReason = RuntimeHoldReason;
-    type EscrowAccount = BridgeEscrowAccount;
+    type MaxPendingAllocations = ConstU32<64>;
 }
 
 #[frame_support::runtime]
@@ -317,8 +310,6 @@ mod runtime {
     pub type MiniJamWorkers = pallet_minijam_workers;
     #[runtime::pallet_index(8)]
     pub type MiniJam = pallet_minijam;
-    #[runtime::pallet_index(9)]
-    pub type MiniJamBridge = pallet_minijam_bridge;
 }
 
 #[cfg(test)]

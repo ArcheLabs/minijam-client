@@ -1198,14 +1198,6 @@ async fn submit_work(
     let params_hash = hash_json(&signed_params)?;
     let account = playground.consume_action(&request.authorization, "work", params_hash)?;
     let finalized = playground.chain()?.finalized_context().await?;
-    if playground
-        .chain()?
-        .controller_at(finalized.block_hash, request.service_id)
-        .await?
-        != Some(account)
-    {
-        return Err(ApiError::Forbidden);
-    }
     let built = minijam_work_package_builder::build_work_package(
         minijam_work_package_builder::BuildWorkInput {
             service_id: request.service_id,
@@ -2525,5 +2517,42 @@ mod tests {
             Err(ApiError::Forbidden)
         ));
         assert_eq!(chain.upgrade_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn non_controller_work_is_accepted_by_experience_ingress() {
+        let temp = tempfile::tempdir().unwrap();
+        let chain = Arc::new(MockChain::new(Some([99; 32])));
+        let playground =
+            playground(&temp.path().join("playground.sqlite")).with_chain(chain.clone());
+        let pair = sr25519::Pair::from_seed(&[6; 32]);
+        let params = serde_json::json!({
+            "serviceId": 9,
+            "serviceCodeHash": hex(&[7; 32]),
+            "payloadBase64": STANDARD.encode(b"work"),
+            "extrinsicsBase64": Vec::<String>::new(),
+        });
+        let prepared = playground
+            .prepare(PrepareActionRequest {
+                account: hex(&pair.public().0),
+                action: "work".into(),
+                params_hash: hex(&hash_json(&params).unwrap()),
+                expiry: now() + 60,
+            })
+            .unwrap();
+        let request = SubmitWorkRequest {
+            authorization: sign_prepared(&pair, prepared),
+            service_id: 9,
+            service_code_hash: params["serviceCodeHash"].as_str().unwrap().into(),
+            payload_base64: params["payloadBase64"].as_str().unwrap().into(),
+            extrinsics_base64: Vec::new(),
+        };
+
+        let result = submit_work(State(playground), Json(request)).await;
+        assert!(
+            result.is_ok(),
+            "non-controller Work must enter the API queue"
+        );
+        assert_eq!(chain.work_calls.load(Ordering::Relaxed), 0);
     }
 }

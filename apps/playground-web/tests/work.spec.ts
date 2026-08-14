@@ -16,14 +16,14 @@ test("runs Work, survives reload, and observes Counter state", async ({ page }) 
   await expect(page.getByText("Counter: 1")).toBeVisible();
 });
 
-test("owner mismatch disables Upgrade and Work", async ({ page }) => {
+test("owner mismatch keeps Work available but disables Upgrade", async ({ page }) => {
   const state = initialState();
   state.controller = `0x${"99".repeat(32)}`;
   await mockPlaygroundApi(page, state);
   await page.goto("/services/7");
   await page.getByRole("button", { name: "Connect wallet" }).click();
-  await expect(page.getByText(/not the finalized Controller/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Run Work" })).toBeDisabled();
+  await expect(page.getByText(/Upgrade remains Controller-only/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run Work" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Upgrade Service" })).toBeDisabled();
 });
 
