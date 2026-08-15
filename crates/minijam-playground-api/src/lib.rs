@@ -105,6 +105,12 @@ pub trait ChainGateway: Send + Sync {
         bundle_ref: minijam_protocol::ContentRef,
         package_hash: [u8; 32],
     ) -> Result<Submission, ApiError>;
+    async fn submit_allocation(
+        &self,
+        allocation_id: u64,
+        target_service: u32,
+        amount: u128,
+    ) -> Result<Submission, ApiError>;
     async fn work_id_by_package_hash(
         &self,
         package_hash: [u8; 32],
@@ -249,6 +255,17 @@ impl ChainGateway for minijam_chain_client::MiniJamChainClient {
             .map_err(|error| ApiError::Chain(error.to_string()))
     }
 
+    async fn submit_allocation(
+        &self,
+        allocation_id: u64,
+        target_service: u32,
+        amount: u128,
+    ) -> Result<Submission, ApiError> {
+        self.submit_allocation(allocation_id, target_service, amount)
+            .await
+            .map_err(|error| ApiError::Chain(error.to_string()))
+    }
+
     async fn work_id_by_package_hash(
         &self,
         package_hash: [u8; 32],
@@ -339,6 +356,22 @@ pub struct SubmitWorkRequest {
     pub extrinsics_base64: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitAllocationRequest {
+    pub allocation_id: u64,
+    pub target_service: u32,
+    pub amount: u128,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllocationSubmission {
+    pub extrinsic_hash: String,
+    pub submitted_nonce: u32,
+    pub correlation: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceView {
@@ -346,6 +379,7 @@ pub struct ServiceView {
     pub controller: String,
     pub code_hash: String,
     pub code_length: u64,
+    pub balance: u64,
     pub preimage_ready: bool,
     pub finalized_block: String,
     pub finalized_block_number: u32,
@@ -802,6 +836,7 @@ impl Playground {
             .route("/api/v1/services/{id}/storage", get(get_service_storage))
             .route("/api/v1/services/{id}/upgrade", post(upgrade_service))
             .route("/api/v1/work", post(submit_work))
+            .route("/api/v1/allocations", post(submit_allocation))
             .route("/api/v1/operations/{id}", get(get_operation))
             .route("/ipfs/{cid}", get(get_bundle))
             .route("/health/live", get(|| async { StatusCode::NO_CONTENT }))
@@ -1235,6 +1270,31 @@ async fn submit_work(
     Ok((StatusCode::ACCEPTED, Json(operation)))
 }
 
+async fn submit_allocation(
+    State(playground): State<Playground>,
+    Json(request): Json<SubmitAllocationRequest>,
+) -> Result<Json<AllocationSubmission>, ApiError> {
+    if request.allocation_id == 0 {
+        return Err(ApiError::Invalid("allocationId must be non-zero".into()));
+    }
+    if request.amount == 0 {
+        return Err(ApiError::Invalid("amount must be non-zero".into()));
+    }
+    let submission = playground
+        .chain()?
+        .submit_allocation(
+            request.allocation_id,
+            request.target_service,
+            request.amount,
+        )
+        .await?;
+    Ok(Json(AllocationSubmission {
+        extrinsic_hash: hex(&submission.extrinsic_hash),
+        submitted_nonce: submission.submitted_nonce,
+        correlation: hex(&submission.correlation),
+    }))
+}
+
 async fn get_service(
     State(playground): State<Playground>,
     AxumPath(service_id): AxumPath<u32>,
@@ -1269,6 +1329,7 @@ async fn get_service(
         controller: hex(&controller),
         code_hash: hex(&info.code_hash.0),
         code_length,
+        balance: info.balance,
         preimage_ready: preimage.is_some(),
         finalized_block: hex(&finalized.block_hash),
         finalized_block_number: finalized.block_number,
@@ -1838,6 +1899,15 @@ mod tests {
         ) -> Result<Submission, ApiError> {
             self.work_calls.fetch_add(1, Ordering::Relaxed);
             Ok(Self::submission(7))
+        }
+
+        async fn submit_allocation(
+            &self,
+            _allocation_id: u64,
+            _target_service: u32,
+            _amount: u128,
+        ) -> Result<Submission, ApiError> {
+            Ok(Self::submission(9))
         }
 
         async fn work_id_by_package_hash(

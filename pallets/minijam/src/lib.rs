@@ -27,6 +27,7 @@ pub mod pallet {
         crypto::OpaqueHash,
         simple::ByteSequence,
         state::StoreKey,
+        types::ServiceInfo,
         work::{WorkPackage, WorkReport},
     };
     use minijam_jamcore_api::{
@@ -42,6 +43,12 @@ pub mod pallet {
     use minijam_state_adapter::{validate_execution_output, ValidatedDelta, ValidationError};
     use pallet_minijam_workers::RoundDecision;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
+
+    const ALLOCATION_SYSTEM_SERVICE_ID: u32 = u32::MAX;
+    const ALLOCATION_SYSTEM_SENDER: [u8; 32] = [0xa1; 32];
+    const ALLOCATION_SYSTEM_CODE_HASH: Hash = [0xa2; 32];
+    const ALLOCATION_SYSTEM_MARKER: &[u8; 8] = b"allocv1\0";
+    const ALLOCATION_RECEIPT_PREFIX: &[u8] = b"system/allocation/";
 
     pub type WorkId = u64;
     pub type BalanceOf<T> =
@@ -681,6 +688,8 @@ pub mod pallet {
         DuplicateAllocation,
         TooManyPendingAllocations,
         AllocationNotFound,
+        AllocationAmountOverflow,
+        AllocationTransitionNotConfirmed,
     }
 
     #[pallet::hooks]
@@ -1122,6 +1131,11 @@ pub mod pallet {
         ) -> DispatchResult {
             let submitter = Self::ensure_allocation_relayer(origin)?;
             ensure!(!allocation.amount.is_zero(), Error::<T>::ZeroAllocation);
+            let jam_amount = allocation.amount.saturated_into::<u64>();
+            ensure!(
+                jam_amount.saturated_into::<BalanceOf<T>>() == allocation.amount,
+                Error::<T>::AllocationAmountOverflow
+            );
             ensure!(
                 Self::service_exists(allocation.target_service),
                 Error::<T>::UnknownService
@@ -1342,9 +1356,9 @@ pub mod pallet {
             Ok(who)
         }
 
-        /// Canonical allocation input for the future Service 0 V2 adapter.
-        /// This is intentionally a queue handoff, not a direct protocol-state
-        /// mutation or a reverse bridge operation.
+        /// Canonical allocation input handed to the Service 0 V2 adapter.
+        /// This is a queue handoff, not a direct protocol-state mutation or a
+        /// reverse bridge operation.
         pub fn pending_allocation_inputs() -> Vec<Vec<u8>> {
             Self::get_pending_allocations()
                 .into_iter()
@@ -1352,15 +1366,46 @@ pub mod pallet {
                 .collect()
         }
 
-        /// Called by the Service 0 V2 adapter after the canonical input has
-        /// been consumed by Jambda. The client only records the receipt.
+        /// Compatibility helper for the Service 0 V2 adapter. A successful
+        /// Service 0 receipt must already be present before this can consume
+        /// the queued allocation.
         pub fn consume_allocation(allocation_id: u64) -> DispatchResult {
             ensure!(
                 !ProcessedAllocations::<T>::contains_key(allocation_id),
                 Error::<T>::DuplicateAllocation
             );
+            let receipt =
+                ProtocolState::<T>::get(Self::allocation_receipt_state_key(allocation_id))
+                    .ok_or(Error::<T>::AllocationTransitionNotConfirmed)?;
+            ensure!(
+                receipt.len() >= 5 && receipt[0] == 0,
+                Error::<T>::AllocationTransitionNotConfirmed
+            );
             let pending = PendingAllocations::<T>::take(allocation_id)
                 .ok_or(Error::<T>::AllocationNotFound)?;
+            ProcessedAllocations::<T>::insert(allocation_id, ());
+            PendingAllocationCount::<T>::mutate(|count| *count = count.saturating_sub(1));
+            AllocationReceipts::<T>::insert(
+                allocation_id,
+                AllocationReceipt {
+                    allocation: pending.allocation.clone(),
+                    status: AllocationStatus::Processed,
+                },
+            );
+            Self::deposit_event(Event::AllocationProcessed {
+                allocation_id,
+                target_service: pending.allocation.target_service,
+                amount: pending.allocation.amount,
+            });
+            Ok(())
+        }
+
+        fn consume_allocation_after_transition(allocation_id: u64) -> Result<(), ExecutionFailure> {
+            if ProcessedAllocations::<T>::contains_key(allocation_id) {
+                return Err(ExecutionFailure::Fatal);
+            }
+            let pending =
+                PendingAllocations::<T>::take(allocation_id).ok_or(ExecutionFailure::Fatal)?;
             ProcessedAllocations::<T>::insert(allocation_id, ());
             PendingAllocationCount::<T>::mutate(|count| *count = count.saturating_sub(1));
             AllocationReceipts::<T>::insert(
@@ -1734,7 +1779,9 @@ pub mod pallet {
 
             let delta = validate_execution_output(&input, &output, &state)
                 .map_err(|error| Self::map_validation_error(&input, error))?;
+            let changes = delta.changes().to_vec();
             Self::apply_delta(delta)?;
+            Self::consume_successful_allocations(&changes)?;
             Self::consume_preimages(&output.consumed_preimages);
             Self::consume_system_ops(&output.consumed_system_ops);
 
@@ -1833,8 +1880,85 @@ pub mod pallet {
             pending.sort_by_key(|pending| {
                 (pending.op.sender, pending.op.nonce, pending.op.request_id)
             });
-            let ops: Vec<SystemOpV1> = pending.into_iter().map(|pending| pending.op).collect();
+            let mut ops: Vec<SystemOpV1> = pending.into_iter().map(|pending| pending.op).collect();
+            for encoded in Self::pending_allocation_inputs() {
+                let mut raw = encoded.as_slice();
+                let allocation = AllocationV1::<BalanceOf<T>>::decode(&mut raw)
+                    .map_err(|_| ExecutionFailure::Fatal)?;
+                if !raw.is_empty() {
+                    return Err(ExecutionFailure::Fatal);
+                }
+                ops.push(Self::allocation_system_op(&allocation)?);
+            }
             ops.try_into().map_err(|_| ExecutionFailure::Fatal)
+        }
+
+        fn allocation_system_op(
+            allocation: &AllocationV1<BalanceOf<T>>,
+        ) -> Result<SystemOpV1, ExecutionFailure> {
+            let amount = allocation.amount.saturated_into::<u64>();
+            if amount.saturated_into::<BalanceOf<T>>() != allocation.amount {
+                return Err(ExecutionFailure::Fatal);
+            }
+            let service_info =
+                ProtocolState::<T>::get(Self::service_info_state_key(allocation.target_service))
+                    .ok_or(ExecutionFailure::Fatal)?;
+            let service_info = ServiceInfo::decode(&mut service_info.as_slice())
+                .map_err(|_| ExecutionFailure::Fatal)?;
+            if service_info.min_memo_gas == 0 {
+                return Err(ExecutionFailure::Fatal);
+            }
+
+            let mut controller = [0u8; 32];
+            controller[..ALLOCATION_SYSTEM_MARKER.len()]
+                .copy_from_slice(ALLOCATION_SYSTEM_MARKER.as_slice());
+            controller[8..16].copy_from_slice(&allocation.allocation_id.to_le_bytes());
+            controller[16..20].copy_from_slice(&allocation.target_service.to_le_bytes());
+            controller[20..28].copy_from_slice(&amount.to_le_bytes());
+
+            Ok(SystemOpV1::new(
+                ALLOCATION_SYSTEM_SENDER,
+                allocation.allocation_id,
+                SystemCommandV1::UpgradeService {
+                    controller,
+                    service_id: ALLOCATION_SYSTEM_SERVICE_ID,
+                    code_hash: ALLOCATION_SYSTEM_CODE_HASH,
+                    code_len: 1,
+                    min_item_gas: 1,
+                    min_memo_gas: service_info.min_memo_gas,
+                },
+            ))
+        }
+
+        fn allocation_receipt_state_key(allocation_id: u64) -> [u8; 31] {
+            let mut storage_key = Vec::with_capacity(ALLOCATION_RECEIPT_PREFIX.len() + 8);
+            storage_key.extend_from_slice(ALLOCATION_RECEIPT_PREFIX);
+            storage_key.extend_from_slice(&allocation_id.to_le_bytes());
+            StoreKey::new_service_storage_key(&SYSTEM_SERVICE_ID, &ByteSequence::from(storage_key))
+                .to_state_key()
+                .0
+        }
+
+        fn consume_successful_allocations(
+            changes: &[ProtocolStateChange],
+        ) -> Result<(), ExecutionFailure> {
+            for pending in Self::get_pending_allocations() {
+                let allocation_id = pending.allocation.allocation_id;
+                let key = Self::allocation_receipt_state_key(allocation_id);
+                let Some(change) = changes.iter().find(|change| change.key == key) else {
+                    continue;
+                };
+                let Some(value) = change.value.as_ref() else {
+                    return Err(ExecutionFailure::Fatal);
+                };
+                if value.len() < 5 {
+                    return Err(ExecutionFailure::Fatal);
+                }
+                if value[0] == 0 {
+                    Self::consume_allocation_after_transition(allocation_id)?;
+                }
+            }
+            Ok(())
         }
 
         fn consume_preimages(consumed_preimages: &[Hash]) {

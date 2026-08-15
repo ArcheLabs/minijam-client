@@ -286,11 +286,15 @@ mod tests {
     use super::*;
     use jam_codec::Decode as JamDecode;
     use jambda_minijam_executive::MiniJamExecutive;
-    use jp_core_primitives::{crypto::OpaqueHash, types::ServiceInfo};
+    use jp_core_primitives::{
+        crypto::OpaqueHash, simple::ByteSequence, state::StoreKey, types::ServiceInfo,
+    };
     use minijam_jamcore_api::{
         MiniJamExecutionInput, MiniJamExecutor, ProtocolStateReader, StateError,
     };
+    use minijam_protocol::SystemReceiptV1;
     use minijam_protocol::{SystemCommandV1, SystemOpV1, PROTOCOL_VERSION_V1};
+    use parity_scale_codec::Decode;
     use std::collections::BTreeMap;
 
     struct TestProtocolState(BTreeMap<[u8; 31], Vec<u8>>);
@@ -512,6 +516,141 @@ mod tests {
             invalid_result.is_err(),
             "invalid request id must be rejected"
         );
+    }
+
+    #[test]
+    fn allocation_executes_through_service_zero_transfer_host_call() {
+        let mut state = TestProtocolState::from_pairs(system_service_zero_protocol_state());
+        let controller = [0x5a; 32];
+        let create = SystemOpV1::new(
+            controller,
+            0,
+            SystemCommandV1::CreateService {
+                controller,
+                code_hash: [0x9b; 32],
+                code_len: 27,
+                min_item_gas: 2,
+                min_memo_gas: 3,
+            },
+        );
+        let create_request_id = create.request_id;
+        let create_input = MiniJamExecutionInput {
+            protocol_version: PROTOCOL_VERSION_V1,
+            slot: 10,
+            parent_hash: [1u8; 32],
+            parent_state_root: [2u8; 32],
+            entropy: [3u8; 32],
+            reports: Default::default(),
+            preimages: Default::default(),
+            system_ops: vec![create].try_into().unwrap(),
+            max_gas: 20_000_000,
+        };
+        let create_output =
+            <MiniJamExecutive as MiniJamExecutor>::execute(&MiniJamExecutive, create_input, &state)
+                .expect("service creation must execute");
+
+        let mut create_receipt_storage_key = b"system/receipt/".to_vec();
+        create_receipt_storage_key.extend_from_slice(&create_request_id);
+        let create_receipt_key =
+            StoreKey::new_service_storage_key(&0, &ByteSequence::from(create_receipt_storage_key))
+                .to_state_key();
+        let create_receipt = create_output
+            .ordered_changes
+            .iter()
+            .find(|change| change.key == create_receipt_key.0)
+            .and_then(|change| change.value.as_ref())
+            .expect("service creation must write a receipt");
+        let receipt = SystemReceiptV1::decode(&mut create_receipt.as_slice())
+            .expect("service creation receipt must decode");
+        let target_service = match receipt {
+            SystemReceiptV1::ServiceCreated { service_id, .. } => service_id,
+            other => panic!("unexpected service creation receipt: {other:?}"),
+        };
+        assert!(
+            target_service > 0,
+            "created service id was {target_service}"
+        );
+        state.apply(&create_output);
+        let target_key = StoreKey::new_service_info_key(&target_service).to_state_key();
+        let before = ServiceInfo::decode(
+            &mut state
+                .get(&target_key.0)
+                .expect("created service must have service info")
+                .expect("created service info must be present")
+                .as_slice(),
+        )
+        .expect("created service info must decode");
+
+        let mut allocation_controller = [0u8; 32];
+        allocation_controller[..8].copy_from_slice(b"allocv1\0");
+        allocation_controller[8..16].copy_from_slice(&100u64.to_le_bytes());
+        allocation_controller[16..20].copy_from_slice(&target_service.to_le_bytes());
+        allocation_controller[20..28].copy_from_slice(&500u64.to_le_bytes());
+        let allocation = SystemOpV1::new(
+            [0xa1; 32],
+            100,
+            SystemCommandV1::UpgradeService {
+                controller: allocation_controller,
+                service_id: u32::MAX,
+                code_hash: [0xa2; 32],
+                code_len: 1,
+                min_item_gas: 1,
+                min_memo_gas: before.min_memo_gas,
+            },
+        );
+        let allocation_input = MiniJamExecutionInput {
+            protocol_version: PROTOCOL_VERSION_V1,
+            slot: 11,
+            parent_hash: [4u8; 32],
+            parent_state_root: [5u8; 32],
+            entropy: [6u8; 32],
+            reports: Default::default(),
+            preimages: Default::default(),
+            system_ops: vec![allocation].try_into().unwrap(),
+            max_gas: 20_000_000,
+        };
+        let allocation_output = <MiniJamExecutive as MiniJamExecutor>::execute(
+            &MiniJamExecutive,
+            allocation_input,
+            &state,
+        )
+        .expect("allocation transfer must execute");
+        let mut allocation_receipt_storage_key = b"system/allocation/".to_vec();
+        allocation_receipt_storage_key.extend_from_slice(&100u64.to_le_bytes());
+        let allocation_receipt_key = StoreKey::new_service_storage_key(
+            &0,
+            &ByteSequence::from(allocation_receipt_storage_key),
+        )
+        .to_state_key();
+        assert!(
+            allocation_output
+                .ordered_changes
+                .iter()
+                .any(|change| change.key == allocation_receipt_key.0),
+            "successful or rejected allocation must write a receipt"
+        );
+        state.apply(&allocation_output);
+
+        let after = ServiceInfo::decode(
+            &mut state
+                .get(&target_key.0)
+                .expect("target service must remain present")
+                .expect("target service info must remain present")
+                .as_slice(),
+        )
+        .expect("target service info must decode after allocation");
+        assert_eq!(after.balance, before.balance + 500);
+
+        let mut receipt_storage_key = b"system/allocation/".to_vec();
+        receipt_storage_key.extend_from_slice(&100u64.to_le_bytes());
+        let receipt_key =
+            StoreKey::new_service_storage_key(&0, &ByteSequence::from(receipt_storage_key))
+                .to_state_key();
+        let receipt = state
+            .get(&receipt_key.0)
+            .expect("allocation receipt lookup must succeed")
+            .expect("successful allocation must write a receipt");
+        assert_eq!(receipt.first(), Some(&0));
     }
 
     #[test]

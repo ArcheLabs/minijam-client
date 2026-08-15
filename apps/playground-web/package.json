@@ -9,7 +9,8 @@
     "build": "tsc -b && vite build",
     "test": "vitest run src",
     "test:e2e": "playwright test",
-    "test:stage0": "playwright test --config playwright.stage0.config.ts"
+    "test:stage0": "playwright test --config playwright.stage0.config.ts",
+    "test:season2": "playwright test --config playwright.season2.config.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

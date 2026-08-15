@@ -1275,6 +1275,15 @@ fn allocation_is_authorized_replay_protected_and_consumed_once() {
             pallet_minijam::Error::<Test>::DuplicateAllocation
         );
 
+        let mut allocation_receipt_key = b"system/allocation/".to_vec();
+        allocation_receipt_key.extend_from_slice(&100u64.to_le_bytes());
+        let allocation_receipt_key =
+            StoreKey::new_service_storage_key(&0, &ByteSequence::from(allocation_receipt_key))
+                .to_state_key();
+        pallet_minijam::ProtocolState::<Test>::insert(
+            allocation_receipt_key.0,
+            StateValue::try_from(vec![0, 0, 0, 0, 0]).unwrap(),
+        );
         assert_ok!(MiniJam::consume_allocation(100));
         assert!(MiniJam::is_allocation_processed(100));
         assert!(MiniJam::get_pending_allocations().is_empty());

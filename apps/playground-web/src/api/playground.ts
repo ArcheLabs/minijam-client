@@ -47,6 +47,7 @@ export interface ServiceView {
   controller: string;
   codeHash: string;
   codeLength: number;
+  balance: number;
   preimageReady: boolean;
   finalizedBlock: string;
   finalizedBlockNumber: number;
