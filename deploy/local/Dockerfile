@@ -94,7 +94,7 @@ RUN apt-get -o Acquire::Retries=5 update \
     && curl --http1.1 --retry 5 --retry-all-errors -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh \
     && chmod +x /tmp/llvm.sh \
     && /tmp/llvm.sh "${LLVM_VERSION}" \
-    && apt-get purge -y curl gnupg lsb-release software-properties-common \
+    && apt-get purge -y gnupg lsb-release software-properties-common \
     && apt-get autoremove -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/llvm.sh \

@@ -120,6 +120,7 @@ jobs:
       - name: Run Season 2 Docker E2E and restart smoke
         working-directory: apps/playground-web
         env:
+          MINIJAM_E2E_PULL_POLICY: never
           MINIJAM_E2E_WALLET_SEED: ${{ secrets.MINIJAM_E2E_WALLET_SEED }}
           MINIJAM_RELAYER_URI: ${{ secrets.MINIJAM_SEASON2_INGRESS_RELAYER_URI }}
           MINIJAM_ALLOCATION_RELAYER_URI: ${{ secrets.MINIJAM_SEASON2_ALLOCATION_RELAYER_URI }}
