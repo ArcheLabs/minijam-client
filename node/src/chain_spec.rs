@@ -1,4 +1,7 @@
-use minijam_runtime::{genesis_config_presets::stage0_config_genesis, AccountId, WASM_BINARY};
+use minijam_runtime::{
+    genesis_config_presets::{season2_config_genesis, stage0_config_genesis},
+    AccountId, WASM_BINARY,
+};
 use sc_service::{ChainType, Properties};
 
 /// Specialized `ChainSpec`. This is a specialization of the general Substrate ChainSpec type.
@@ -57,20 +60,45 @@ pub fn stage0_chain_spec_with_relayer(relayer: AccountId) -> Result<ChainSpec, S
     .build())
 }
 
+pub fn season2_chain_spec() -> Result<ChainSpec, String> {
+    let ingress = std::env::var("MINIJAM_SEASON2_INGRESS_RELAYER_PUBLIC_KEY")
+        .map_err(|_| "MINIJAM_SEASON2_INGRESS_RELAYER_PUBLIC_KEY is required".to_string())?;
+    let allocation = std::env::var("MINIJAM_SEASON2_ALLOCATION_RELAYER_PUBLIC_KEY")
+        .map_err(|_| "MINIJAM_SEASON2_ALLOCATION_RELAYER_PUBLIC_KEY is required".to_string())?;
+    season2_chain_spec_with_relayers(
+        parse_relayer_public_key(&ingress)?,
+        parse_relayer_public_key(&allocation)?,
+    )
+}
+
+pub fn season2_chain_spec_with_relayers(
+    ingress_relayer: AccountId,
+    allocation_relayer: AccountId,
+) -> Result<ChainSpec, String> {
+    Ok(ChainSpec::builder(
+        WASM_BINARY.ok_or_else(|| "Season 2 wasm not available".to_string())?,
+        None,
+    )
+    .with_name("MiniJAM Season 2")
+    .with_id("minijam_season2")
+    .with_chain_type(ChainType::Live)
+    .with_genesis_config_patch(season2_config_genesis(ingress_relayer, allocation_relayer))
+    .with_properties(chain_properties())
+    .build())
+}
+
 fn parse_relayer_public_key(value: &str) -> Result<AccountId, String> {
-    let bytes = sp_core::bytes::from_hex(value).map_err(|_| {
-        "MINIJAM_STAGE0_RELAYER_PUBLIC_KEY must be 0x-prefixed 32-byte hex".to_string()
-    })?;
-    let key: [u8; 32] = bytes.try_into().map_err(|_| {
-        "MINIJAM_STAGE0_RELAYER_PUBLIC_KEY must be 0x-prefixed 32-byte hex".to_string()
-    })?;
+    let bytes = sp_core::bytes::from_hex(value)
+        .map_err(|_| "relayer public key must be 0x-prefixed 32-byte hex".to_string())?;
+    let key: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "relayer public key must be 0x-prefixed 32-byte hex".to_string())?;
     Ok(AccountId::new(key))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sc_service::ChainSpec as _;
     use sp_core::crypto::{AccountId32, Ss58Codec};
 
     #[test]
@@ -146,5 +174,34 @@ mod tests {
         let other_raw = other.as_json(true).unwrap();
         assert_ne!(plain, other_plain);
         assert_ne!(raw, other_raw);
+    }
+
+    #[test]
+    fn season2_spec_has_one_worker_and_separate_relayers() {
+        let ingress = AccountId::new([0x42; 32]);
+        let allocation = AccountId::new([0x43; 32]);
+        let spec = season2_chain_spec_with_relayers(ingress.clone(), allocation.clone())
+            .expect("Season 2 chain spec must build");
+        let patch = spec
+            .as_json(false)
+            .expect("Season 2 plain chain spec must serialize");
+        let value: serde_json::Value = serde_json::from_str(&patch).unwrap();
+        let genesis = value.pointer("/genesis/runtimeGenesis/patch").unwrap();
+        let mini_jam = genesis.get("miniJam").unwrap();
+        assert_eq!(
+            mini_jam.get("ingressRelayer").unwrap(),
+            &serde_json::to_value(ingress).unwrap()
+        );
+        assert_eq!(
+            mini_jam.get("allocationRelayer").unwrap(),
+            &serde_json::to_value(allocation).unwrap()
+        );
+        assert_eq!(
+            genesis.get("miniJamWorkers").unwrap()["workers"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

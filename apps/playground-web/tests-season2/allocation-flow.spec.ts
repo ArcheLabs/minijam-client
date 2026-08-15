@@ -98,25 +98,30 @@ test("fresh Season 2 chain executes Work and applies one replay-safe Allocation"
 
   const serviceBeforeWork = await page.request.get(`/api/v1/services/${serviceId}`);
   expect(serviceBeforeWork.ok()).toBeTruthy();
-  const service = await serviceBeforeWork.json() as { codeHash: string; balance: number };
-  const nonController = sr25519PairFromSeed(new Uint8Array(32).fill(8));
-  const nonControllerAddress = u8aToHex(nonController.publicKey);
+  const service = await serviceBeforeWork.json() as { codeHash: string; balance: number; preimageReady: boolean };
+  expect(service.preimageReady).toBeTruthy();
   const workParams = {
     serviceId,
     serviceCodeHash: service.codeHash,
     payloadBase64: "AQAAAAAAAAA=",
     extrinsicsBase64: []
   };
-  const workAuthorization = await signAction(page, nonController, nonControllerAddress, "work", workParams);
-  const workResponse = await page.request.post("/api/v1/work", {
-    data: { authorization: workAuthorization, ...workParams }
-  });
-  expect(workResponse.ok()).toBeTruthy();
-  const workOperation = await workResponse.json() as { operationId: string };
-  await waitFor(async () => {
-    const response = await page.request.get(`/api/v1/operations/${workOperation.operationId}`);
-    return await response.json() as { status: string };
-  }, (operation) => operation.status === "succeeded");
+  async function submitWork(pair: ReturnType<typeof sr25519PairFromSeed>, account: string) {
+    const authorization = await signAction(page, pair, account, "work", workParams);
+    const response = await page.request.post("/api/v1/work", {
+      data: { authorization, ...workParams }
+    });
+    expect(response.ok()).toBeTruthy();
+    const operation = await response.json() as { operationId: string };
+    await waitFor(async () => {
+      const status = await page.request.get(`/api/v1/operations/${operation.operationId}`);
+      return await status.json() as { status: string };
+    }, (value) => value.status === "succeeded");
+  }
+
+  await submitWork(controller, controllerAddress);
+  const nonController = sr25519PairFromSeed(new Uint8Array(32).fill(8));
+  await submitWork(nonController, u8aToHex(nonController.publicKey));
 
   const allocationId = 7001;
   const amount = 500;
@@ -138,4 +143,11 @@ test("fresh Season 2 chain executes Work and applies one replay-safe Allocation"
   expect((await submitAllocation()).ok()).toBeFalsy();
   const afterRestartReplay = await (await page.request.get(`/api/v1/services/${serviceId}`)).json() as { balance: number };
   expect(afterRestartReplay.balance).toBe(initialBalance + amount);
+
+  const allocationTwo = { allocationId: allocationId + 1, targetService: serviceId, amount };
+  expect((await page.request.post("/api/v1/allocations", { data: allocationTwo })).ok()).toBeTruthy();
+  await waitFor(async () => {
+    const response = await page.request.get(`/api/v1/services/${serviceId}`);
+    return await response.json() as { balance: number };
+  }, (value) => value.balance === initialBalance + amount * 2);
 });

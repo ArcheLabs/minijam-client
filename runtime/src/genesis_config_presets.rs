@@ -69,6 +69,7 @@ fn testnet_genesis(
     root: AccountId,
     workers: Vec<(AccountId, [u8; 32], Balance)>,
     ingress_relayer: AccountId,
+    allocation_relayer: AccountId,
 ) -> Value {
     let reward_pool = AccountId::new([9; 32]);
     let fuel_escrow = AccountId::new([7; 32]);
@@ -90,6 +91,12 @@ fn testnet_genesis(
         .any(|account| account == &playground_relayer)
     {
         endowed_accounts.push(playground_relayer.clone());
+    }
+    if !endowed_accounts
+        .iter()
+        .any(|account| account == &allocation_relayer)
+    {
+        endowed_accounts.push(allocation_relayer.clone());
     }
 
     build_struct_json_patch!(RuntimeGenesisConfig {
@@ -126,6 +133,7 @@ fn testnet_genesis(
             protocol_state: system_service_zero_protocol_state(),
             service_fuel: Vec::new(),
             ingress_relayer: Some(playground_relayer.clone()),
+            allocation_relayer: Some(allocation_relayer),
             _phantom: Default::default(),
         },
         mini_jam_workers: MiniJamWorkersConfig {
@@ -222,6 +230,7 @@ pub fn development_config_genesis() -> Value {
         Sr25519Keyring::Alice.to_account_id(),
         development_workers(),
         AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
+        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
     )
 }
 
@@ -244,6 +253,7 @@ pub fn local_config_genesis() -> Value {
         Sr25519Keyring::Alice.to_account_id(),
         development_workers(),
         AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
+        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
     )
 }
 
@@ -253,7 +263,19 @@ pub fn stage0_config_genesis(ingress_relayer: AccountId) -> Value {
         stage0_endowed_accounts(),
         AccountId::new(STAGE0_SUDO_ACCOUNT),
         stage0_workers(),
+        ingress_relayer.clone(),
         ingress_relayer,
+    )
+}
+
+pub fn season2_config_genesis(ingress_relayer: AccountId, allocation_relayer: AccountId) -> Value {
+    testnet_genesis(
+        stage0_authorities(),
+        stage0_endowed_accounts(),
+        AccountId::new(STAGE0_SUDO_ACCOUNT),
+        stage0_workers().into_iter().take(1).collect(),
+        ingress_relayer,
+        allocation_relayer,
     )
 }
 
@@ -692,6 +714,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "long-running Jambda cross-epoch integration; executed by the release gate"]
     fn create_service_executes_after_epoch_transitions() {
         let mut state = TestProtocolState::from_pairs(system_service_zero_protocol_state());
         for slot in 1..=121 {

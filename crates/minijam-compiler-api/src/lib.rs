@@ -100,6 +100,8 @@ impl CompilerService {
     pub fn router(self) -> Router {
         Router::new()
             .route("/internal/v1/compile", post(compile))
+            .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
+            .route("/readyz", get(|| async { StatusCode::NO_CONTENT }))
             .route("/health/ready", get(|| async { StatusCode::NO_CONTENT }))
             .route("/metrics", get(metrics))
             .with_state(self)

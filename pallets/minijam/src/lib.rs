@@ -479,6 +479,7 @@ pub mod pallet {
         pub protocol_state: Vec<(Vec<u8>, Vec<u8>)>,
         pub service_fuel: Vec<(u32, BalanceOf<T>)>,
         pub ingress_relayer: Option<T::AccountId>,
+        pub allocation_relayer: Option<T::AccountId>,
         #[serde(skip)]
         pub _phantom: core::marker::PhantomData<T>,
     }
@@ -489,9 +490,11 @@ pub mod pallet {
             if let Some(account) = &self.ingress_relayer {
                 IngressRelayer::<T>::put(account);
             }
-            if let Some(account) = &self.ingress_relayer {
-                // Minimal deployment fallback; this remains a separate
-                // storage key so it can be split without a protocol change.
+            if let Some(account) = &self.allocation_relayer {
+                AllocationRelayer::<T>::put(account);
+            } else if let Some(account) = &self.ingress_relayer {
+                // Keep old genesis patches compatible while allowing
+                // production deployments to use a distinct key.
                 AllocationRelayer::<T>::put(account);
             }
             for (key, value) in &self.protocol_state {

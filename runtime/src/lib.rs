@@ -336,6 +336,7 @@ mod stage0_economics_tests {
     }
 
     #[test]
+    #[ignore = "long-running Jambda cross-epoch integration; executed by the release gate"]
     fn real_pallet_executes_create_after_epoch_transitions() {
         runtime_ext().execute_with(|| {
             for (key, value) in crate::genesis_config_presets::system_service_zero_protocol_state()

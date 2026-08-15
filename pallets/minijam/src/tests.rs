@@ -294,6 +294,7 @@ fn new_test_ext() -> sp_io::TestExternalities {
         protocol_state: Vec::new(),
         service_fuel: Vec::new(),
         ingress_relayer: Some(5),
+        allocation_relayer: Some(5),
         _phantom: Default::default(),
     }
     .assimilate_storage(&mut storage)
@@ -311,6 +312,7 @@ fn test_ext_with_protocol_state(
         protocol_state,
         service_fuel: Vec::new(),
         ingress_relayer: Some(5),
+        allocation_relayer: Some(5),
         _phantom: Default::default(),
     }
     .assimilate_storage(&mut storage)
@@ -834,6 +836,7 @@ fn genesis_config_seeds_service_fuel() {
         protocol_state: Vec::new(),
         service_fuel: vec![(7, 250), (7, 50), (8, 0)],
         ingress_relayer: Some(5),
+        allocation_relayer: Some(5),
         _phantom: Default::default(),
     }
     .assimilate_storage(&mut storage)

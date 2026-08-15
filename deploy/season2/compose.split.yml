@@ -6,14 +6,38 @@ services:
   node:
     image: ${MINIJAM_NODE_IMAGE:-ghcr.io/archelabs/minijam-node:season2}
     command: [--chain=/chain-specs/season2.json, --validator, --force-authoring, --rpc-external, --rpc-methods=safe]
-    volumes: [node-data:/data]
+    volumes:
+      - node-data:/data
+      - ${MINIJAM_SEASON2_CHAIN_SPEC_FILE:-./chain-specs/season2.json}:/chain-specs/season2.json:ro
     networks: [node-net]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -H 'content-type: application/json' --data '{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"system_health\",\"params\":[]}' http://127.0.0.1:9944 >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
   worker:
     image: ${MINIJAM_WORKER_IMAGE:-ghcr.io/archelabs/minijam-worker:season2}
-    command: [--rpc-url=http://node:9944, --worker-id=0, --submit-candidates, --submit-support-votes]
-    depends_on: [node]
+    command:
+      - "--rpc-url=http://node:9944"
+      - "--worker-id=0"
+      - "--ipfs-gateway=${MINIJAM_WORKER_IPFS_GATEWAY:?set the private API IPFS gateway}"
+      - "--health-bind=0.0.0.0:8082"
+      - "--metrics-bind=0.0.0.0:9616"
+      - --submit-candidates
+      - --submit-support-votes
+    depends_on:
+      node:
+        condition: service_healthy
     volumes: [worker-data:/data]
+    secrets: [worker_signing_key]
+    environment:
+      MINIJAM_WORKER_SEED_FILE: /run/secrets/worker_signing_key
     networks: [node-net]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8082/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
   compiler:
     image: ${MINIJAM_COMPILER_IMAGE:-ghcr.io/archelabs/minijam-compiler-api:season2}
     environment: {MINIJAM_COMPILER_DIRECT: "true"}
@@ -22,17 +46,30 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     networks: [api-net, compiler-net]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
   api:
     image: ${MINIJAM_API_IMAGE:-ghcr.io/archelabs/minijam-playground-api:season2}
     environment:
       MINIJAM_PLAYGROUND_BIND: 0.0.0.0:8080
       MINIJAM_RPC_URL: ${MINIJAM_RPC_URL:?set the private VM A RPC endpoint}
       MINIJAM_COMPILER_URL: http://compiler:8081
-      MINIJAM_RELAYER_URI: ${MINIJAM_RELAYER_URI:?set a relayer key}
-    depends_on: [compiler]
+      MINIJAM_RELAYER_URI: ${MINIJAM_RELAYER_URI:?set an ingress relayer key}
+      MINIJAM_ALLOCATION_RELAYER_URI: ${MINIJAM_ALLOCATION_RELAYER_URI:?set an allocation relayer key}
+    depends_on:
+      compiler:
+        condition: service_healthy
     ports: ["127.0.0.1:8080:8080"]
     volumes: [api-data:/data]
     networks: [api-net]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
 
 volumes:
   node-data: {}
@@ -44,3 +81,7 @@ networks:
     external: true
   api-net: {}
   compiler-net: {}
+
+secrets:
+  worker_signing_key:
+    file: ${MINIJAM_WORKER_KEY_FILE:?set a worker signing-key file}

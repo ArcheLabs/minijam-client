@@ -46,6 +46,7 @@ pub struct Playground {
     db: Arc<Mutex<Connection>>,
     compiler: reqwest::Client,
     chain: Option<Arc<dyn ChainGateway>>,
+    allocation_chain: Option<Arc<dyn ChainGateway>>,
 }
 
 #[async_trait]
@@ -537,11 +538,17 @@ impl Playground {
             db: Arc::new(Mutex::new(connection)),
             compiler: reqwest::Client::new(),
             chain: None,
+            allocation_chain: None,
         })
     }
 
     pub fn with_chain(mut self, chain: Arc<dyn ChainGateway>) -> Self {
         self.chain = Some(chain);
+        self
+    }
+
+    pub fn with_allocation_chain(mut self, chain: Arc<dyn ChainGateway>) -> Self {
+        self.allocation_chain = Some(chain);
         self
     }
 
@@ -563,6 +570,13 @@ impl Playground {
         self.chain
             .as_ref()
             .ok_or_else(|| ApiError::Chain("chain client is not configured".into()))
+    }
+
+    fn allocation_chain(&self) -> Result<&Arc<dyn ChainGateway>, ApiError> {
+        self.allocation_chain
+            .as_ref()
+            .or(self.chain.as_ref())
+            .ok_or_else(|| ApiError::Chain("allocation chain client is not configured".into()))
     }
 
     async fn process_service_operation(&self, operation: Operation) -> Result<(), ApiError> {
@@ -840,6 +854,8 @@ impl Playground {
             .route("/api/v1/operations/{id}", get(get_operation))
             .route("/ipfs/{cid}", get(get_bundle))
             .route("/health/live", get(|| async { StatusCode::NO_CONTENT }))
+            .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
+            .route("/readyz", get(ready))
             .route("/health/ready", get(ready))
             .layer(
                 CorsLayer::new()
@@ -1281,7 +1297,7 @@ async fn submit_allocation(
         return Err(ApiError::Invalid("amount must be non-zero".into()));
     }
     let submission = playground
-        .chain()?
+        .allocation_chain()?
         .submit_allocation(
             request.allocation_id,
             request.target_service,

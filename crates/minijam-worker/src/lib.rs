@@ -423,11 +423,18 @@ pub fn spawn_worker_health_server(
             let mut request = [0u8; 1024];
             let count = stream.read(&mut request).unwrap_or_default();
             let request = String::from_utf8_lossy(&request[..count]);
-            let (status, body) = if request.starts_with("GET /health/live ") {
+            let (status, body) = if request.starts_with("GET /health/live ")
+                || request.starts_with("GET /healthz ")
+            {
                 ("200 OK", "live\n")
-            } else if request.starts_with("GET /health/ready ") && health.is_ready() {
+            } else if (request.starts_with("GET /health/ready ")
+                || request.starts_with("GET /readyz "))
+                && health.is_ready()
+            {
                 ("200 OK", "ready\n")
-            } else if request.starts_with("GET /health/ready ") {
+            } else if request.starts_with("GET /health/ready ")
+                || request.starts_with("GET /readyz ")
+            {
                 ("503 Service Unavailable", "not ready\n")
             } else {
                 ("404 Not Found", "not found\n")
