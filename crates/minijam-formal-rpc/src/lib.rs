@@ -52,6 +52,7 @@ impl FormalRpc {
         Router::new()
             .route("/", post(json_rpc))
             .route("/ipfs/{cid}", get(get_bundle))
+            .route("/health/ready", get(ready))
             .layer(RequestBodyLimitLayer::new(MAX_RPC_BODY_BYTES))
             .with_state(self)
     }
@@ -493,6 +494,15 @@ async fn get_bundle(
         .header(header::CONTENT_LENGTH, bytes.len().to_string())
         .body(Body::from(bytes))
         .map_err(|error| RpcError::Storage(error.to_string()))
+}
+
+async fn ready() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "ready"
+        })),
+    )
 }
 
 fn decode_service_info(bytes: &[u8]) -> Result<ServiceInfo, RpcError> {
