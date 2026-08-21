@@ -10,6 +10,7 @@ members = [
   "crates/minijam-worker",
   "crates/minijam-cli",
   "crates/minijam-chain-client",
+  "crates/minijam-formal-rpc",
   "crates/minijam-compiler-api",
   "crates/minijam-playground-api",
   "crates/minijam-bridge-engine",
