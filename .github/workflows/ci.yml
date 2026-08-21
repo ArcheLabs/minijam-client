@@ -6,6 +6,7 @@ on:
       - main
       - m9-stage0-local-e2e
       - m10-minimal-release
+      - agent/season2-release-readiness
   workflow_dispatch:
 
 permissions:

@@ -1,6 +1,10 @@
 //! JamScript-agnostic MiniJAM Work ingress.
 
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    net::SocketAddr,
+    path::{Path as FsPath, PathBuf},
+    sync::Arc,
+};
 
 use axum::{
     body::Body,
@@ -19,26 +23,36 @@ use parity_scale_codec::Decode;
 use serde::{Deserialize, Serialize};
 use sp_core::{sr25519, Pair};
 use thiserror::Error;
+use tokio::sync::Semaphore;
+use tower_http::limit::RequestBodyLimitLayer;
 
 const MAX_WORK_BYTES: usize = 1_048_576;
+const MAX_RPC_BODY_BYTES: usize = 8 * 1_048_576;
+const MAX_RPC_CONCURRENCY: usize = 32;
 
 #[derive(Clone)]
 pub struct FormalRpc {
     chain: Arc<MiniJamChainClient>,
     bundle_dir: PathBuf,
+    admission: Arc<Semaphore>,
 }
 
 impl FormalRpc {
     pub fn new(chain: Arc<MiniJamChainClient>, bundle_dir: PathBuf) -> Result<Self, RpcError> {
         std::fs::create_dir_all(&bundle_dir)
             .map_err(|error| RpcError::Storage(error.to_string()))?;
-        Ok(Self { chain, bundle_dir })
+        Ok(Self {
+            chain,
+            bundle_dir,
+            admission: Arc::new(Semaphore::new(MAX_RPC_CONCURRENCY)),
+        })
     }
 
     pub fn router(self) -> Router {
         Router::new()
             .route("/", post(json_rpc))
             .route("/ipfs/{cid}", get(get_bundle))
+            .layer(RequestBodyLimitLayer::new(MAX_RPC_BODY_BYTES))
             .with_state(self)
     }
 
@@ -53,9 +67,7 @@ impl FormalRpc {
             .map_err(chain_error)?
             .ok_or(RpcError::ServiceNotFound)?;
         let service_info = decode_service_info(&service_info)?;
-        if service_info.code_hash.0 != request.service_code_hash.0 {
-            return Err(RpcError::CodeHashMismatch);
-        }
+        validate_code_hash(&service_info, request.service_code_hash.0)?;
 
         let payload = STANDARD
             .decode(request.payload_base64)
@@ -139,25 +151,38 @@ impl FormalRpc {
     }
 
     fn save_bundle(&self, bytes: &[u8], expected_hash: Hash) -> Result<(), RpcError> {
-        if blake2_256(bytes) != expected_hash {
-            return Err(RpcError::Storage("bundle hash mismatch".into()));
-        }
-        let path = self.bundle_dir.join(hex_without_prefix(&expected_hash));
-        if path.exists() {
-            let existing =
-                std::fs::read(&path).map_err(|error| RpcError::Storage(error.to_string()))?;
-            if existing != bytes {
-                return Err(RpcError::Storage("bundle hash collision".into()));
-            }
-            return Ok(());
-        }
-        let temporary = self
-            .bundle_dir
-            .join(format!(".{}.tmp", hex_without_prefix(&expected_hash)));
-        std::fs::write(&temporary, bytes)
-            .and_then(|_| std::fs::rename(&temporary, &path))
-            .map_err(|error| RpcError::Storage(error.to_string()))
+        save_bundle_to_dir(&self.bundle_dir, bytes, expected_hash)
     }
+}
+
+fn save_bundle_to_dir(
+    bundle_dir: &FsPath,
+    bytes: &[u8],
+    expected_hash: Hash,
+) -> Result<(), RpcError> {
+    if blake2_256(bytes) != expected_hash {
+        return Err(RpcError::Storage("bundle hash mismatch".into()));
+    }
+    let path = bundle_dir.join(hex_without_prefix(&expected_hash));
+    if path.exists() {
+        let existing =
+            std::fs::read(&path).map_err(|error| RpcError::Storage(error.to_string()))?;
+        if existing != bytes {
+            return Err(RpcError::Storage("bundle hash collision".into()));
+        }
+        return Ok(());
+    }
+    let temporary = bundle_dir.join(format!(".{}.tmp", hex_without_prefix(&expected_hash)));
+    std::fs::write(&temporary, bytes)
+        .and_then(|_| std::fs::rename(&temporary, &path))
+        .map_err(|error| RpcError::Storage(error.to_string()))
+}
+
+fn validate_code_hash(service_info: &ServiceInfo, expected: Hash) -> Result<(), RpcError> {
+    if service_info.code_hash.0 != expected {
+        return Err(RpcError::CodeHashMismatch);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -283,8 +308,12 @@ pub struct WorkStatusResult {
 
 #[derive(Debug, Error)]
 pub enum RpcError {
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
     #[error("invalid params: {0}")]
     InvalidParams(String),
+    #[error("method not found: {0}")]
+    MethodNotFound(String),
     #[error("stale finalized context")]
     StaleContext { finalized: ContextResult },
     #[error("service not found")]
@@ -297,12 +326,16 @@ pub enum RpcError {
     Storage(String),
     #[error("chain error: {0}")]
     Chain(String),
+    #[error("formal RPC is busy")]
+    Busy,
 }
 
-impl IntoResponse for RpcError {
-    fn into_response(self) -> Response {
-        let (code, message, data) = match self {
+impl RpcError {
+    fn json_parts(self) -> (i32, String, Option<serde_json::Value>) {
+        match self {
+            Self::InvalidRequest(message) => (-32600, message, None),
             Self::InvalidParams(message) => (-32602, message, None),
+            Self::MethodNotFound(method) => (-32601, format!("method not found: {method}"), None),
             Self::StaleContext { finalized } => (
                 -32010,
                 "stale finalized context".into(),
@@ -313,7 +346,14 @@ impl IntoResponse for RpcError {
             Self::WorkNotFound => (-32013, "work not found".into(), None),
             Self::Storage(message) => (-32020, message, None),
             Self::Chain(message) => (-32021, message, None),
-        };
+            Self::Busy => (-32029, "formal RPC is busy".into(), None),
+        }
+    }
+}
+
+impl IntoResponse for RpcError {
+    fn into_response(self) -> Response {
+        let (code, message, data) = self.json_parts();
         Json(JsonRpcResponse::<serde_json::Value>::error(
             serde_json::Value::Null,
             code,
@@ -383,27 +423,45 @@ impl<T> JsonRpcResponse<T> {
 async fn json_rpc(
     State(rpc): State<FormalRpc>,
     Json(request): Json<JsonRpcRequest>,
-) -> Result<Json<serde_json::Value>, RpcError> {
-    if request.jsonrpc != "2.0" {
-        return Err(RpcError::InvalidParams("jsonrpc must be 2.0".into()));
-    }
-    let result = match request.method.as_str() {
-        "minijam_submitWorkV1" => {
-            let params: SubmitWorkParams = serde_json::from_value(request.params)
-                .map_err(|error| RpcError::InvalidParams(error.to_string()))?;
-            serde_json::to_value(rpc.submit_work(params).await?).expect("result serializes")
+) -> Json<serde_json::Value> {
+    let id = request.id.clone();
+    let result = if request.jsonrpc != "2.0" {
+        Err(RpcError::InvalidRequest("jsonrpc must be 2.0".into()))
+    } else {
+        let permit = rpc.admission.clone().try_acquire_owned();
+        match permit {
+            Err(_) => Err(RpcError::Busy),
+            Ok(_permit) => match request.method.as_str() {
+                "minijam_submitWorkV1" => {
+                    match serde_json::from_value::<SubmitWorkParams>(request.params) {
+                        Ok(params) => rpc
+                            .submit_work(params)
+                            .await
+                            .map(|value| serde_json::to_value(value).expect("result serializes")),
+                        Err(error) => Err(RpcError::InvalidParams(error.to_string())),
+                    }
+                }
+                "minijam_getWorkStatusV1" => {
+                    match serde_json::from_value::<GetWorkStatusParams>(request.params) {
+                        Ok(params) => rpc
+                            .work_status(params.package_hash.0)
+                            .await
+                            .map(|value| serde_json::to_value(value).expect("result serializes")),
+                        Err(error) => Err(RpcError::InvalidParams(error.to_string())),
+                    }
+                }
+                method => Err(RpcError::MethodNotFound(method.into())),
+            },
         }
-        "minijam_getWorkStatusV1" => {
-            let params: GetWorkStatusParams = serde_json::from_value(request.params)
-                .map_err(|error| RpcError::InvalidParams(error.to_string()))?;
-            serde_json::to_value(rpc.work_status(params.package_hash.0).await?)
-                .expect("result serializes")
-        }
-        _ => return Err(RpcError::InvalidParams("unknown method".into())),
     };
-    Ok(Json(
-        serde_json::to_value(JsonRpcResponse::ok(request.id, result)).expect("response serializes"),
-    ))
+    let response = match result {
+        Ok(result) => JsonRpcResponse::ok(id, result),
+        Err(error) => {
+            let (code, message, data) = error.json_parts();
+            JsonRpcResponse::<serde_json::Value>::error(id, code, message, data)
+        }
+    };
+    Json(serde_json::to_value(response).expect("response serializes"))
 }
 
 async fn get_bundle(
@@ -520,5 +578,66 @@ mod tests {
             serde_json::to_value(WorkStatus::Imported).unwrap(),
             serde_json::json!("imported")
         );
+    }
+
+    #[test]
+    fn json_rpc_errors_preserve_request_id_and_standard_codes() {
+        let response = JsonRpcResponse::<serde_json::Value>::error(
+            serde_json::json!(17),
+            RpcError::MethodNotFound("unknown".into()).json_parts().0,
+            "method not found".into(),
+            None,
+        );
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["id"], serde_json::json!(17));
+        assert_eq!(value["error"]["code"], -32601);
+        assert_eq!(
+            RpcError::InvalidRequest("bad version".into())
+                .json_parts()
+                .0,
+            -32600
+        );
+        assert_eq!(
+            RpcError::InvalidParams("bad params".into()).json_parts().0,
+            -32602
+        );
+    }
+
+    #[test]
+    fn stale_context_and_code_hash_validation_are_explicit() {
+        let finalized = FinalizedContext {
+            block_hash: [1; 32],
+            block_number: 7,
+            state_root: [2; 32],
+            slot: 7,
+        };
+        let stale = ContextParams {
+            block_hash: HashParam([9; 32]),
+            state_root: HashParam([2; 32]),
+            slot: 7,
+        };
+        assert!(matches!(
+            stale.matches(&finalized),
+            Err(RpcError::StaleContext { .. })
+        ));
+
+        let mut info = ServiceInfo::default();
+        info.code_hash.0 = [3; 32];
+        assert!(validate_code_hash(&info, [3; 32]).is_ok());
+        assert!(matches!(
+            validate_code_hash(&info, [4; 32]),
+            Err(RpcError::CodeHashMismatch)
+        ));
+    }
+
+    #[test]
+    fn bundle_store_writes_and_verifies_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let bytes = b"verified bundle";
+        let hash = blake2_256(bytes);
+        save_bundle_to_dir(directory.path(), bytes, hash).unwrap();
+        let stored = std::fs::read(directory.path().join(hex_without_prefix(&hash))).unwrap();
+        assert_eq!(stored, bytes);
+        assert!(save_bundle_to_dir(directory.path(), b"tampered", hash).is_err());
     }
 }

@@ -185,7 +185,7 @@ where
             let work_id: WorkId = params.one()?;
             let receipt = client
                 .runtime_api()
-                .get_execution_receipt(best_hash(&client), work_id)
+                .get_execution_receipt(finalized_hash(&client), work_id)
                 .map_err(runtime_api_error)?;
             Ok(receipt.map(|hash| hex_encode(&hash)))
         }
