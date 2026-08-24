@@ -260,12 +260,16 @@ impl pallet_minijam::Config for Runtime {
     type FaucetCooldownBlocks = FaucetCooldownBlocks;
     type RefineGasPrice = RefineGasPrice;
     type AccumulateGasPrice = AccumulateGasPrice;
-    type ReportSubmissionDeadline = ConstU32<20>;
-    type VoteWindow = ConstU32<10>;
+    // MINI Cells' deterministic Refine workload is intentionally compute-heavy.
+    // Keep the local development chain from expiring an otherwise valid report
+    // while a worker executes the PVM candidate.
+    type ReportSubmissionDeadline = ConstU32<600>;
+    type VoteWindow = ConstU32<600>;
     type MaxCandidateRounds = ConstU8<3>;
     type MaxPendingWorks = ConstU32<64>;
     type MaxExecutionReports = ConstU32<4>;
-    type MaxExecutionGas = ConstU64<20_000_000>;
+    // Local MINI Cells compatibility budget: 5B Refine plus 1B Accumulate.
+    type MaxExecutionGas = ConstU64<6_000_000_000>;
     type MaxWorkPackageBytes = ConstU32<1_048_576>;
     type MaxBundleBytes = ConstU64<16_777_216>;
     type MaxServicesPerWork = ConstU32<64>;
