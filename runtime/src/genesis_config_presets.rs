@@ -314,8 +314,8 @@ mod tests {
     use minijam_jamcore_api::{
         MiniJamExecutionInput, MiniJamExecutor, ProtocolStateReader, StateError,
     };
-    use minijam_protocol::SystemReceiptV1;
-    use minijam_protocol::{SystemCommandV1, SystemOpV1, PROTOCOL_VERSION_V1};
+    use minijam_protocol::SystemReceiptV2;
+    use minijam_protocol::{SystemCommandV2, SystemOpV2, PROTOCOL_VERSION_V1};
     use parity_scale_codec::Decode;
     use std::collections::BTreeMap;
 
@@ -470,14 +470,13 @@ mod tests {
     #[test]
     fn system_ops_execute_through_real_jambda_executor() {
         let sender = [0x5a; 32];
-        let command = SystemCommandV1::CreateService {
-            controller: sender,
+        let command = SystemCommandV2::CreateService {
             code_hash: [0x9b; 32],
             code_len: 27,
             min_item_gas: 2,
             min_memo_gas: 3,
         };
-        let op = SystemOpV1::new(sender, 0, command);
+        let op = SystemOpV2::new(sender, 0, command);
         let input = MiniJamExecutionInput {
             protocol_version: PROTOCOL_VERSION_V1,
             slot: 10,
@@ -514,13 +513,6 @@ mod tests {
                     && info.balance > 0
             })
         }));
-        assert!(output.ordered_changes.iter().any(|change| {
-            change
-                .value
-                .as_ref()
-                .is_some_and(|value| value.as_slice() == sender)
-        }));
-
         let mut invalid_op = op.clone();
         invalid_op.request_id[0] ^= 0xff;
         let invalid_input = MiniJamExecutionInput {
@@ -541,14 +533,12 @@ mod tests {
     }
 
     #[test]
-    fn allocation_executes_through_service_zero_transfer_host_call() {
+    fn allocation_executes_through_service_zero_and_accumulate() {
         let mut state = TestProtocolState::from_pairs(system_service_zero_protocol_state());
-        let controller = [0x5a; 32];
-        let create = SystemOpV1::new(
-            controller,
+        let create = SystemOpV2::new(
+            [0x5a; 32],
             0,
-            SystemCommandV1::CreateService {
-                controller,
+            SystemCommandV2::CreateService {
                 code_hash: [0x9b; 32],
                 code_len: 27,
                 min_item_gas: 2,
@@ -582,10 +572,10 @@ mod tests {
             .find(|change| change.key == create_receipt_key.0)
             .and_then(|change| change.value.as_ref())
             .expect("service creation must write a receipt");
-        let receipt = SystemReceiptV1::decode(&mut create_receipt.as_slice())
+        let receipt = SystemReceiptV2::decode(&mut create_receipt.as_slice())
             .expect("service creation receipt must decode");
         let target_service = match receipt {
-            SystemReceiptV1::ServiceCreated { service_id, .. } => service_id,
+            SystemReceiptV2::ServiceCreated { service_id } => service_id,
             other => panic!("unexpected service creation receipt: {other:?}"),
         };
         assert!(
@@ -603,21 +593,13 @@ mod tests {
         )
         .expect("created service info must decode");
 
-        let mut allocation_controller = [0u8; 32];
-        allocation_controller[..8].copy_from_slice(b"allocv1\0");
-        allocation_controller[8..16].copy_from_slice(&100u64.to_le_bytes());
-        allocation_controller[16..20].copy_from_slice(&target_service.to_le_bytes());
-        allocation_controller[20..28].copy_from_slice(&500u64.to_le_bytes());
-        let allocation = SystemOpV1::new(
+        let allocation = SystemOpV2::new(
             [0xa1; 32],
             100,
-            SystemCommandV1::UpgradeService {
-                controller: allocation_controller,
-                service_id: u32::MAX,
-                code_hash: [0xa2; 32],
-                code_len: 1,
-                min_item_gas: 1,
-                min_memo_gas: before.min_memo_gas,
+            SystemCommandV2::ApplyAllocation {
+                allocation_id: 100,
+                target_service,
+                amount: 500,
             },
         );
         let allocation_input = MiniJamExecutionInput {
@@ -736,11 +718,10 @@ mod tests {
         }
 
         let sender = [0x5a; 32];
-        let op = SystemOpV1::new(
+        let op = SystemOpV2::new(
             sender,
             0,
-            SystemCommandV1::CreateService {
-                controller: sender,
+            SystemCommandV2::CreateService {
                 code_hash: [0x9b; 32],
                 code_len: 27,
                 min_item_gas: 2,

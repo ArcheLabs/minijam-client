@@ -23,7 +23,7 @@ SHA256="$(sha256sum "${OUT_BLOB}" | cut -d ' ' -f 1)"
 cat > "${OUT_MANIFEST}" <<JSON
 {
   "name": "minijam-system-service",
-  "abi_version": 1,
+  "abi_version": 2,
   "artifact": "system-service.blob",
   "debug_artifact": "system-service.polkavm",
   "byte_len": ${BYTE_LEN},
@@ -31,7 +31,7 @@ cat > "${OUT_MANIFEST}" <<JSON
   "source": "services/system-service/src/service.c",
   "toolchain": "service-toolchain/compiler/toolchain.lock",
   "stage": 0,
-  "note": "CreateService executes in the Service 0 PVM; UpgradeService remains a documented Stage 0 native deviation."
+  "note": "Ownerless SystemOpV2 Service 0; CreateService and ApplyAllocation are explicit commands."
 }
 JSON
 

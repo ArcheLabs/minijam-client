@@ -1,0 +1,27 @@
+{
+  "abiVersion": 2,
+  "domain": "0x6d696e696a616d2f73797374656d2d6f702f7632",
+  "createService": {
+    "submitter": "0x0101010101010101010101010101010101010101010101010101010101010101",
+    "nonce": 7,
+    "command": {
+      "variant": "CreateService",
+      "codeHash": "0x0909090909090909090909090909090909090909090909090909090909090909",
+      "codeLen": 32,
+      "minItemGas": 1,
+      "minMemoGas": 2
+    },
+    "requestId": "0x0e64fec23a064ad8165981f2f351571cd5f28e3da8048977d64d221d8d6d2413"
+  },
+  "applyAllocation": {
+    "submitter": "0x0202020202020202020202020202020202020202020202020202020202020202",
+    "nonce": 3,
+    "command": {
+      "variant": "ApplyAllocation",
+      "allocationId": 11,
+      "targetService": 19,
+      "amount": 500
+    },
+    "requestId": "0xe86caa43869bb17df2b19e37b11ebf0e31f3a6f8d525fcb2cbea0fff588a1503"
+  }
+}

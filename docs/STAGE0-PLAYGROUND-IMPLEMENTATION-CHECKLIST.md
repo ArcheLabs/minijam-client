@@ -1,5 +1,9 @@
 # MiniJAM Stage 0 Playground Implementation Checklist
 
+> Historical M2/M3 checklist. The current protocol path is ownerless System
+> Service ABI V2; Controller/Upgrade items below are retained as archaeology
+> only and are not production API semantics.
+
 This checklist tracks the implementation against
 [`minijam-stage0-playground-implementation-spec.md`](minijam-stage0-playground-implementation-spec.md).
 An item is checked only when its implementation and automated acceptance evidence

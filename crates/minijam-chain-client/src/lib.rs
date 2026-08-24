@@ -11,7 +11,7 @@ pub use rpc::FinalizedContext;
 use std::time::Duration;
 
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
-use minijam_protocol::{CanonicalPreimageBytes, ContentRef, Hash, SystemCommandV1, WorkId};
+use minijam_protocol::{CanonicalPreimageBytes, ContentRef, Hash, SystemCommandV2, WorkId};
 use minijam_runtime::RuntimeCall;
 use parity_scale_codec::{Decode, Encode};
 use sp_core::{
@@ -161,19 +161,6 @@ impl MiniJamChainClient {
         .await
     }
 
-    pub async fn service_controller_at(
-        &self,
-        block: Hash,
-        service_id: u32,
-    ) -> Result<Option<Vec<u8>>, ChainClientError> {
-        rpc::optional_hex(
-            &*self.rpc.lock().await,
-            "minijam_getServiceControllerAt",
-            serde_json::json!([rpc::hex(&block), service_id]),
-        )
-        .await
-    }
-
     pub async fn service_storage_at(
         &self,
         block: Hash,
@@ -204,14 +191,12 @@ impl MiniJamChainClient {
 
     pub async fn submit_create_service(
         &self,
-        controller: [u8; 32],
         code_hash: Hash,
         code_len: u32,
         min_item_gas: u64,
         min_memo_gas: u64,
     ) -> Result<Submission, ChainClientError> {
-        self.submit_system_command(SystemCommandV1::CreateService {
-            controller,
+        self.submit_system_command(SystemCommandV2::CreateService {
             code_hash,
             code_len,
             min_item_gas,
@@ -222,54 +207,12 @@ impl MiniJamChainClient {
 
     pub async fn prepare_create_service(
         &self,
-        controller: [u8; 32],
         code_hash: Hash,
         code_len: u32,
         min_item_gas: u64,
         min_memo_gas: u64,
     ) -> Result<PreparedSystemOperation, ChainClientError> {
-        self.prepare_system_command(SystemCommandV1::CreateService {
-            controller,
-            code_hash,
-            code_len,
-            min_item_gas,
-            min_memo_gas,
-        })
-        .await
-    }
-
-    pub async fn submit_upgrade_service(
-        &self,
-        controller: [u8; 32],
-        service_id: u32,
-        code_hash: Hash,
-        code_len: u32,
-        min_item_gas: u64,
-        min_memo_gas: u64,
-    ) -> Result<Submission, ChainClientError> {
-        self.submit_system_command(SystemCommandV1::UpgradeService {
-            controller,
-            service_id,
-            code_hash,
-            code_len,
-            min_item_gas,
-            min_memo_gas,
-        })
-        .await
-    }
-
-    pub async fn prepare_upgrade_service(
-        &self,
-        controller: [u8; 32],
-        service_id: u32,
-        code_hash: Hash,
-        code_len: u32,
-        min_item_gas: u64,
-        min_memo_gas: u64,
-    ) -> Result<PreparedSystemOperation, ChainClientError> {
-        self.prepare_system_command(SystemCommandV1::UpgradeService {
-            controller,
-            service_id,
+        self.prepare_system_command(SystemCommandV2::CreateService {
             code_hash,
             code_len,
             min_item_gas,
@@ -280,7 +223,7 @@ impl MiniJamChainClient {
 
     async fn submit_system_command(
         &self,
-        command: SystemCommandV1,
+        command: SystemCommandV2,
     ) -> Result<Submission, ChainClientError> {
         let prepared = self.prepare_system_command(command).await?;
         self.submit_prepared_extrinsic(prepared).await
@@ -288,7 +231,7 @@ impl MiniJamChainClient {
 
     async fn prepare_system_command(
         &self,
-        command: SystemCommandV1,
+        command: SystemCommandV2,
     ) -> Result<PreparedSystemOperation, ChainClientError> {
         let _system_op = self.system_op_lock.lock().await;
         let account = sp_runtime::MultiSigner::Sr25519(self.signer.public()).into_account();
@@ -300,7 +243,7 @@ impl MiniJamChainClient {
         };
         *next_system_nonce = Some(system_nonce.saturating_add(1));
         let correlation =
-            minijam_protocol::SystemOpV1::compute_request_id(&sender, system_nonce, &command);
+            minijam_protocol::SystemOpV2::compute_request_id(&sender, system_nonce, &command);
         let _submission = self.submit_lock.lock().await;
         let submitted_nonce = self.allocate_nonce().await?;
         let genesis = rpc::genesis_hash(&*self.rpc.lock().await).await?;

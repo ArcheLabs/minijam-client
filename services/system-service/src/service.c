@@ -18,10 +18,7 @@
 static const uint8_t LAST_NONCE_PREFIX[] = "system/last-nonce/";
 static const uint8_t RECEIPT_PREFIX[] = "system/receipt/";
 static const uint8_t ALLOCATION_PREFIX[] = "system/allocation/";
-static const uint8_t CONTROLLER_PREFIX[] = "system/controller/";
-static const uint8_t SERVICES_PREFIX[] = "system/services/";
-static const uint8_t REQUEST_DOMAIN[] = "minijam/system-op/v1";
-static const uint8_t ALLOCATION_MARKER[] = "allocv1\0";
+static const uint8_t REQUEST_DOMAIN[] = "minijam/system-op/v2";
 static uint8_t input[SYSTEM_INPUT_MAX];
 static const uint8_t transfer_memo[TRANSFER_MEMO_SIZE];
 
@@ -81,13 +78,13 @@ static void write_rejected(const uint8_t request_id[32], uint32_t code) {
   size_t key_size =
       prefixed_key(key, RECEIPT_PREFIX, sizeof(RECEIPT_PREFIX) - 1, request_id,
                    32);
-  receipt[0] = 2;
+  receipt[0] = 1;
   store_u32(receipt + 1, code);
   (void)minijam_storage_write(key, key_size, receipt, sizeof(receipt));
 }
 
 static int request_id_matches(const uint8_t request_id[32],
-                              const uint8_t sender[32],
+                              const uint8_t submitter[32],
                               const uint8_t encoded_nonce[8],
                               const uint8_t *encoded_command,
                               size_t command_size) {
@@ -96,7 +93,7 @@ static int request_id_matches(const uint8_t request_id[32],
   size_t offset = 0;
   copy(message + offset, REQUEST_DOMAIN, sizeof(REQUEST_DOMAIN) - 1);
   offset += sizeof(REQUEST_DOMAIN) - 1;
-  copy(message + offset, sender, 32);
+  copy(message + offset, submitter, 32);
   offset += 32;
   copy(message + offset, encoded_nonce, 8);
   offset += 8;
@@ -146,42 +143,24 @@ static void write_allocation_receipt(uint64_t allocation_id, uint8_t status,
   (void)minijam_storage_write(key, key_size, receipt, sizeof(receipt));
 }
 
-static int is_allocation_upgrade(const uint8_t *controller, uint32_t service_id,
-                                 const uint8_t *code_hash, uint32_t code_len,
-                                 uint64_t min_item_gas, uint64_t min_memo_gas) {
-  if (service_id != UINT32_MAX || code_len != 1 || min_item_gas != 1 ||
-      min_memo_gas == 0)
-    return 0;
-  for (size_t i = 0; i < sizeof(ALLOCATION_MARKER) - 1; ++i)
-    if (controller[i] != ALLOCATION_MARKER[i]) return 0;
-  for (size_t i = 28; i < 32; ++i)
-    if (controller[i] != 0) return 0;
-  for (size_t i = 0; i < 32; ++i)
-    if (code_hash[i] != 0xa2) return 0;
-  return 1;
-}
-
-static void apply_allocation(const uint8_t *controller, uint64_t memo_gas) {
-  const uint64_t allocation_id = load_u64(controller + 8);
-  const uint32_t target_service = load_u32(controller + 16);
-  const uint64_t amount = load_u64(controller + 20);
-  const uint64_t transfer = minijam_host_call6(
-      MINIJAM_HOST_TRANSFER, target_service, amount, memo_gas,
-      (uintptr_t)transfer_memo, 0, 0);
-  write_allocation_receipt(allocation_id, transfer == 0 ? 0 : 1,
-                           transfer == 0 ? 0 : (uint32_t)transfer);
+static void apply_allocation(const uint8_t *command) {
+  const uint64_t allocation_id = load_u64(command);
+  /* The canonical accumulator applies the balance transition after this
+   * receipt-producing system-service execution.  Do not perform a second
+   * transfer here: the V2 command intentionally carries no synthetic memo
+   * gas field and Service 0 must not duplicate the authoritative transition. */
+  write_allocation_receipt(allocation_id, 0, 0);
 }
 
 static void create_service(const uint8_t request_id[32],
-                           const uint8_t sender[32], uint64_t nonce,
+                           const uint8_t submitter[32], uint64_t nonce,
                            const uint8_t *command) {
-  const uint8_t *controller = command;
-  const uint8_t *code_hash = command + 32;
-  uint32_t code_len = load_u32(command + 64);
-  uint64_t min_item_gas = load_u64(command + 68);
-  uint64_t min_memo_gas = load_u64(command + 76);
+  const uint8_t *code_hash = command;
+  uint32_t code_len = load_u32(command + 32);
+  uint64_t min_item_gas = load_u64(command + 36);
+  uint64_t min_memo_gas = load_u64(command + 44);
 
-  if (!nonce_is_fresh(sender, nonce)) {
+  if (!nonce_is_fresh(submitter, nonce)) {
     write_rejected(request_id, REJECT_NONCE);
     return;
   }
@@ -203,26 +182,16 @@ static void create_service(const uint8_t request_id[32],
 
   uint8_t key[SYSTEM_KEY_MAX];
   uint8_t encoded_sid[4];
-  uint8_t receipt[37];
+  uint8_t receipt[5];
   store_u32(encoded_sid, (uint32_t)sid);
   receipt[0] = 0;
   copy(receipt + 1, encoded_sid, sizeof(encoded_sid));
-  copy(receipt + 5, controller, 32);
 
   size_t key_size =
       prefixed_key(key, RECEIPT_PREFIX, sizeof(RECEIPT_PREFIX) - 1, request_id,
                    32);
   (void)minijam_storage_write(key, key_size, receipt, sizeof(receipt));
-  key_size = prefixed_key(key, CONTROLLER_PREFIX,
-                          sizeof(CONTROLLER_PREFIX) - 1, encoded_sid, 4);
-  (void)minijam_storage_write(key, key_size, controller, 32);
-  key_size =
-      prefixed_key(key, SERVICES_PREFIX, sizeof(SERVICES_PREFIX) - 1,
-                   controller, 32);
-  copy(key + key_size, encoded_sid, 4);
-  key_size += 4;
-  (void)minijam_storage_write(key, key_size, encoded_sid, 4);
-  write_nonce(sender, nonce);
+  write_nonce(submitter, nonce);
 }
 
 MINIJAM_REFINE { return minijam_refine_ok(0, 0); }
@@ -240,7 +209,7 @@ MINIJAM_ACCUMULATE {
   for (uint32_t i = 0; i < count; ++i) {
     if ((size_t)(end - cursor) < 73) return;
     const uint8_t *request_id = cursor;
-    const uint8_t *sender = cursor + 32;
+    const uint8_t *submitter = cursor + 32;
     const uint8_t *encoded_nonce = cursor + 64;
     const uint8_t *encoded_command = cursor + 72;
     uint64_t nonce = load_u64(cursor + 64);
@@ -248,24 +217,25 @@ MINIJAM_ACCUMULATE {
     cursor += 73;
 
     if (command == 0) {
-      if ((size_t)(end - cursor) < 84) return;
-      if (request_id_matches(request_id, sender, encoded_nonce, encoded_command,
-                             85))
-        create_service(request_id, sender, nonce, cursor);
+      /* CreateService payload after its SCALE enum tag:
+       * code_hash(32) + code_len(4) + min_item_gas(8) + min_memo_gas(8). */
+      if ((size_t)(end - cursor) < 52) return;
+      if (request_id_matches(request_id, submitter, encoded_nonce, encoded_command,
+                             53))
+        create_service(request_id, submitter, nonce, cursor);
       else
         write_rejected(request_id, REJECT_REQUEST_ID);
-      cursor += 84;
+      cursor += 52;
     } else if (command == 1) {
-      if ((size_t)(end - cursor) < 88) return;
-      if (!request_id_matches(request_id, sender, encoded_nonce,
-                              encoded_command, 89))
+      if ((size_t)(end - cursor) < 20) return;
+      if (!request_id_matches(request_id, submitter, encoded_nonce,
+                              encoded_command, 21))
         write_rejected(request_id, REJECT_REQUEST_ID);
-      else if (is_allocation_upgrade(cursor, load_u32(cursor + 32),
-                                     cursor + 36, load_u32(cursor + 68),
-                                     load_u64(cursor + 72),
-                                     load_u64(cursor + 80)))
-        apply_allocation(cursor, load_u64(cursor + 80));
-      cursor += 88;
+      else {
+        apply_allocation(cursor);
+        write_nonce(submitter, nonce);
+      }
+      cursor += 20;
     } else {
       write_rejected(request_id, REJECT_COMMAND);
       return;

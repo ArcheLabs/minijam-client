@@ -37,7 +37,6 @@ decl_runtime_apis! {
         fn get_service_info(service_id: u32) -> Option<Vec<u8>>;
         fn get_service_storage(service_id: u32, key: Vec<u8>) -> Option<Vec<u8>>;
         fn get_service_preimage(service_id: u32, code_hash: Hash) -> Option<Vec<u8>>;
-        fn get_service_controller(service_id: u32) -> Option<Vec<u8>>;
         fn get_protocol_state(key: [u8; 31]) -> Option<Vec<u8>>;
     }
 }

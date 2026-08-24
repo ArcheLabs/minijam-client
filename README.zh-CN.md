@@ -14,7 +14,8 @@ MiniJAM Playground API 是公开的开发者 API，并且有意支持跨域浏�
 localhost 应用、社区 MiniJAM 应用和第三方开发者前端直接调用。
 
 CORS 不是授权边界。读取接口公开；状态变更仍由 signed action、sr25519 钱包签名
-和重放保护强制授权。创建和升级 Service 仍要求 Controller；普通 Work 在
+和重放保护强制授权。Service 创建是无 owner 的；支持升级时由 Service 自身
+定义的 JamScript 管理策略授权；普通 Work 在
 Experience 层 permissionless，由 runtime Ingress Relayer 提交。API 不使用 Cookie
 Session，也不启用 credentialed CORS。
 

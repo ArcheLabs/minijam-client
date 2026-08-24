@@ -379,18 +379,6 @@ where
         }
     })?;
 
-    module.register_method("minijam_getServiceController", {
-        let client = client.clone();
-        move |params, _, _| -> RpcResult<Option<String>> {
-            let service_id: u32 = params.one()?;
-            let encoded = client
-                .runtime_api()
-                .get_service_controller(best_hash(&client), service_id)
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
-        }
-    })?;
-
     module.register_method("minijam_getFinalizedContext", {
         let client = client.clone();
         move |_, _, _| -> RpcResult<FinalizedContextV1> {
@@ -442,18 +430,6 @@ where
             let encoded = client
                 .runtime_api()
                 .get_service_preimage(block_hash, service_id, code_hash.to_fixed_bytes())
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
-        }
-    })?;
-
-    module.register_method("minijam_getServiceControllerAt", {
-        let client = client.clone();
-        move |params, _, _| -> RpcResult<Option<String>> {
-            let (block_hash, service_id): (sp_core::H256, u32) = params.parse()?;
-            let encoded = client
-                .runtime_api()
-                .get_service_controller(block_hash, service_id)
                 .map_err(runtime_api_error)?;
             Ok(encoded.map(|bytes| hex_encode(&bytes)))
         }

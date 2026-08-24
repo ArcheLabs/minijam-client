@@ -16,8 +16,9 @@ applications, community MiniJAM apps, and third-party developer frontends.
 
 CORS is not an authorization boundary. Read access is public, while mutation
 authorization remains enforced by signed actions, sr25519 wallet signatures,
-and replay protection. Service creation and upgrades remain Controller-only;
-ordinary Work is permissionless at the Experience layer and is submitted by
+and replay protection. Service creation is ownerless; service upgrades, when
+supported, are authorized by the Service-defined JamScript management policy.
+Ordinary Work is permissionless at the Experience layer and is submitted by
 the runtime Ingress Relayer. The API does not use cookie sessions or
 credentialed CORS.
 

@@ -15,7 +15,7 @@ if ! docker info >/dev/null 2>&1; then
   exit 77
 fi
 if [[ -z "${MINIJAM_E2E_WALLET_SEED:-}" ]]; then
-  echo "MINIJAM_E2E_WALLET_SEED must contain the 32-byte controller seed" >&2
+  echo "MINIJAM_E2E_WALLET_SEED must contain the 32-byte submitter seed" >&2
   exit 2
 fi
 for required in \

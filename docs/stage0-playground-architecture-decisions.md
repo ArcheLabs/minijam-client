@@ -1,5 +1,8 @@
 # Stage 0 Playground Architecture Decisions
 
+> Historical Controller-era decisions. Superseded by ownerless System ABI V2
+> and Service-defined JamScript management policy for the current release.
+
 Status: accepted for Stage 0. These decisions clarify product and protocol
 boundaries; deviations are temporary only where explicitly stated.
 
