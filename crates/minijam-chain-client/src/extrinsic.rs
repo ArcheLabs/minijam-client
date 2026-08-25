@@ -1,5 +1,5 @@
 use frame_system;
-use minijam_protocol::{Hash, SystemCommandV2};
+use minijam_protocol::Hash;
 use minijam_runtime::RuntimeCall;
 use parity_scale_codec::Encode;
 use sp_core::{sr25519, Pair, H256};
@@ -54,6 +54,7 @@ pub fn sign_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minijam_protocol::SystemCommandV2;
     use parity_scale_codec::{Decode, Encode};
     use serde::Deserialize;
 
