@@ -29,6 +29,8 @@ pub enum ChainClientError {
     Dispatch(String),
     #[error("invalid chain response: {0}")]
     Decode(String),
+    #[error("transaction terminal failure: {0}")]
+    TransactionFailed(String),
     #[error("input exceeds runtime bounds")]
     InputTooLarge,
 }
@@ -233,8 +235,13 @@ impl MiniJamChainClient {
         &self,
         command: SystemCommandV2,
     ) -> Result<Submission, ChainClientError> {
-        let prepared = self.prepare_system_command(command).await?;
+        let _system_op = self.system_op_lock.lock().await;
+        // Keep the account nonce reservation and the complete watcher
+        // lifecycle in the same submission critical section. Otherwise a
+        // normal call could claim the same account nonce between prepare and
+        // submit.
         let _submission = self.submit_lock.lock().await;
+        let prepared = self.prepare_system_command_inner(command).await?;
         match rpc::submit_and_watch_extrinsic(
             &*self.rpc.lock().await,
             &prepared.encoded_extrinsic,
@@ -244,7 +251,7 @@ impl MiniJamChainClient {
         {
             Ok((extrinsic_hash, statuses)) => {
                 self.commit_prepared_nonce(&prepared).await;
-                let included_block = statuses.iter().find_map(|status| {
+                let included_block = statuses.iter().rev().find_map(|status| {
                     let value = status.get("inBlock").or_else(|| status.get("finalized"))?;
                     let value = value
                         .as_str()?
@@ -261,15 +268,10 @@ impl MiniJamChainClient {
                     Some(hash)
                 });
                 let dispatch_error = if let Some(block) = included_block {
-                    rpc::events_at(&*self.rpc.lock().await, block)
+                    rpc::dispatch_error_at(&*self.rpc.lock().await, block, extrinsic_hash)
                         .await
                         .ok()
-                        .and_then(|events| {
-                            events.into_iter().find_map(|event| {
-                                let rendered = format!("{event:?}");
-                                rendered.contains("ExtrinsicFailed").then_some(rendered)
-                            })
-                        })
+                        .flatten()
                 } else {
                     None
                 };
@@ -307,6 +309,13 @@ impl MiniJamChainClient {
         command: SystemCommandV2,
     ) -> Result<PreparedSystemOperation, ChainClientError> {
         let _system_op = self.system_op_lock.lock().await;
+        self.prepare_system_command_inner(command).await
+    }
+
+    async fn prepare_system_command_inner(
+        &self,
+        command: SystemCommandV2,
+    ) -> Result<PreparedSystemOperation, ChainClientError> {
         let account = sp_runtime::MultiSigner::Sr25519(self.signer.public()).into_account();
         let sender = system_op_sender(&account);
         let next_system_nonce = self.next_system_op_nonce.lock().await;
@@ -348,6 +357,7 @@ impl MiniJamChainClient {
         &self,
         prepared: PreparedSystemOperation,
     ) -> Result<Submission, ChainClientError> {
+        let _system_op = self.system_op_lock.lock().await;
         let _submission = self.submit_lock.lock().await;
         match rpc::submit_extrinsic(&*self.rpc.lock().await, &prepared.encoded_extrinsic).await {
             Ok(extrinsic_hash) => {

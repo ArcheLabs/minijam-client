@@ -64,6 +64,19 @@ pub async fn events_at(
     rpc: &WsClient,
     block_hash: Hash,
 ) -> Result<Vec<minijam_runtime::RuntimeEvent>, ChainClientError> {
+    Ok(event_records_at(rpc, block_hash)
+        .await?
+        .into_iter()
+        .map(|record| record.event)
+        .collect())
+}
+
+type EventRecord = frame_system::EventRecord<minijam_runtime::RuntimeEvent, sp_core::H256>;
+
+pub async fn event_records_at(
+    rpc: &WsClient,
+    block_hash: Hash,
+) -> Result<Vec<EventRecord>, ChainClientError> {
     let mut key = sp_core::twox_128(b"System").to_vec();
     key.extend_from_slice(&sp_core::twox_128(b"Events"));
     let encoded: Option<String> = rpc
@@ -74,10 +87,90 @@ pub async fn events_at(
         return Ok(Vec::new());
     };
     let bytes = decode_hex(&encoded)?;
-    let records: Vec<frame_system::EventRecord<minijam_runtime::RuntimeEvent, sp_core::H256>> =
-        Decode::decode(&mut bytes.as_slice())
-            .map_err(|error| ChainClientError::Decode(error.to_string()))?;
-    Ok(records.into_iter().map(|record| record.event).collect())
+    let records: Vec<EventRecord> = Decode::decode(&mut bytes.as_slice())
+        .map_err(|error| ChainClientError::Decode(error.to_string()))?;
+    Ok(records)
+}
+
+pub async fn dispatch_error_at(
+    rpc: &WsClient,
+    block_hash: Hash,
+    extrinsic_hash: Hash,
+) -> Result<Option<String>, ChainClientError> {
+    let index = block_extrinsic_index(rpc, block_hash, extrinsic_hash).await?;
+    let Some(index) = index else {
+        return Err(ChainClientError::Decode(
+            "included extrinsic was not found in block".into(),
+        ));
+    };
+    let records = event_records_at(rpc, block_hash).await?;
+    Ok(dispatch_error_from_records(&records, index))
+}
+
+fn dispatch_error_from_records(records: &[EventRecord], index: u32) -> Option<String> {
+    records.iter().find_map(|record| {
+        if record.phase != frame_system::Phase::ApplyExtrinsic(index) {
+            return None;
+        }
+        match &record.event {
+            minijam_runtime::RuntimeEvent::System(frame_system::Event::ExtrinsicFailed {
+                dispatch_error,
+                ..
+            }) => Some(format!("{dispatch_error:?}")),
+            _ => None,
+        }
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WatchStatus {
+    Continue,
+    Final,
+    Failed,
+}
+
+fn classify_watch_status(status: &serde_json::Value) -> WatchStatus {
+    if status.get("dropped").is_some()
+        || status.get("invalid").is_some()
+        || status.get("usurped").is_some()
+        || status.get("finalityTimeout").is_some()
+    {
+        WatchStatus::Failed
+    } else if status.get("finalized").is_some() {
+        WatchStatus::Final
+    } else {
+        // InBlock is deliberately non-final. Retracted also keeps the stream
+        // alive because a later canonical InBlock may follow it.
+        WatchStatus::Continue
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct BlockResponse {
+    block: BlockBody,
+}
+
+#[derive(serde::Deserialize)]
+struct BlockBody {
+    extrinsics: Vec<String>,
+}
+
+async fn block_extrinsic_index(
+    rpc: &WsClient,
+    block_hash: Hash,
+    extrinsic_hash: Hash,
+) -> Result<Option<u32>, ChainClientError> {
+    let block: BlockResponse = rpc
+        .request("chain_getBlock", rpc_params![hex(&block_hash)])
+        .await
+        .map_err(map_rpc)?;
+    for (index, encoded) in block.block.extrinsics.iter().enumerate() {
+        let bytes = decode_hex(encoded)?;
+        if minijam_protocol::blake2_256(&bytes) == extrinsic_hash {
+            return Ok(Some(index as u32));
+        }
+    }
+    Ok(None)
 }
 
 pub async fn account_nonce(rpc: &WsClient, account: [u8; 32]) -> Result<u32, ChainClientError> {
@@ -134,16 +227,17 @@ pub async fn submit_and_watch_extrinsic(
             .map_err(|_| ChainClientError::Rpc("timed out waiting for transaction status".into()))?
             .ok_or_else(|| ChainClientError::Rpc("transaction status subscription ended".into()))?;
         let status = status.map_err(|error| ChainClientError::Rpc(error.to_string()))?;
-        let terminal = status.get("inBlock").is_some()
-            || status.get("finalized").is_some()
-            || status.get("dropped").is_some()
-            || status.get("invalid").is_some()
-            || status.get("usurped").is_some()
-            || status.get("retracted").is_some();
-        statuses.push(status);
-        if terminal {
-            return Ok((extrinsic_hash, statuses));
+        match classify_watch_status(&status) {
+            WatchStatus::Failed => {
+                return Err(ChainClientError::TransactionFailed(status.to_string()));
+            }
+            WatchStatus::Final => {
+                statuses.push(status);
+                return Ok((extrinsic_hash, statuses));
+            }
+            WatchStatus::Continue => {}
         }
+        statuses.push(status);
     }
 }
 
@@ -229,5 +323,58 @@ mod tests {
             [0x61; 32].into()
         );
         assert!(!encoded.starts_with("0x"));
+    }
+
+    #[test]
+    fn watcher_keeps_non_final_states_and_retries_terminal_failures() {
+        assert_eq!(
+            classify_watch_status(&serde_json::json!({"inBlock": hex(&[1; 32])})),
+            WatchStatus::Continue
+        );
+        assert_eq!(
+            classify_watch_status(&serde_json::json!({"retracted": hex(&[1; 32])})),
+            WatchStatus::Continue
+        );
+        assert_eq!(
+            classify_watch_status(&serde_json::json!({"finalized": hex(&[2; 32])})),
+            WatchStatus::Final
+        );
+        for status in [
+            serde_json::json!({"dropped": null}),
+            serde_json::json!({"invalid": null}),
+            serde_json::json!({"usurped": hex(&[3; 32])}),
+            serde_json::json!({"finalityTimeout": null}),
+        ] {
+            assert_eq!(classify_watch_status(&status), WatchStatus::Failed);
+        }
+    }
+
+    #[test]
+    fn dispatch_failure_is_scoped_to_the_matching_extrinsic_phase() {
+        let records = vec![
+            frame_system::EventRecord {
+                phase: frame_system::Phase::ApplyExtrinsic(0),
+                event: minijam_runtime::RuntimeEvent::System(
+                    frame_system::Event::ExtrinsicSuccess {
+                        dispatch_info: Default::default(),
+                    },
+                ),
+                topics: Vec::new(),
+            },
+            frame_system::EventRecord {
+                phase: frame_system::Phase::ApplyExtrinsic(1),
+                event: minijam_runtime::RuntimeEvent::System(
+                    frame_system::Event::ExtrinsicFailed {
+                        dispatch_error: sp_runtime::DispatchError::Other("unrelated"),
+                        dispatch_info: Default::default(),
+                    },
+                ),
+                topics: Vec::new(),
+            },
+        ];
+        assert!(dispatch_error_from_records(&records, 0).is_none());
+        assert!(dispatch_error_from_records(&records, 1)
+            .expect("matching failure")
+            .contains("unrelated"));
     }
 }
