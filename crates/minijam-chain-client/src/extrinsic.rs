@@ -98,8 +98,8 @@ mod tests {
             command: Box::new(SystemCommandV2::CreateService {
                 code_hash,
                 code_len: 69_414,
-                min_item_gas: 0,
-                min_memo_gas: 0,
+                min_item_gas: 1,
+                min_memo_gas: 1,
             }),
         });
         let bytes = sign_call(&pair, 0, [0x22; 32], call);
@@ -125,8 +125,8 @@ mod tests {
                     SystemCommandV2::CreateService {
                         code_hash,
                         code_len: 69_414,
-                        min_item_gas: 0,
-                        min_memo_gas: 0,
+                        min_item_gas: 1,
+                        min_memo_gas: 1,
                     }
                 );
             }
@@ -139,8 +139,8 @@ mod tests {
                     SystemCommandV2::CreateService {
                         code_hash,
                         code_len: 69_414,
-                        min_item_gas: 0,
-                        min_memo_gas: 0,
+                        min_item_gas: 1,
+                        min_memo_gas: 1,
                     }
                 );
             }

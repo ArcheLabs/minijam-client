@@ -38,6 +38,14 @@ pub struct Submission {
     pub extrinsic_hash: Hash,
     pub submitted_nonce: u32,
     pub correlation: Hash,
+    pub lifecycle: Option<TransactionLifecycle>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionLifecycle {
+    pub statuses: Vec<serde_json::Value>,
+    pub included_block: Option<Hash>,
+    pub dispatch_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -226,7 +234,72 @@ impl MiniJamChainClient {
         command: SystemCommandV2,
     ) -> Result<Submission, ChainClientError> {
         let prepared = self.prepare_system_command(command).await?;
-        self.submit_prepared_extrinsic(prepared).await
+        let _submission = self.submit_lock.lock().await;
+        match rpc::submit_and_watch_extrinsic(
+            &*self.rpc.lock().await,
+            &prepared.encoded_extrinsic,
+            self.request_timeout,
+        )
+        .await
+        {
+            Ok((extrinsic_hash, statuses)) => {
+                self.commit_prepared_nonce(&prepared).await;
+                let included_block = statuses.iter().find_map(|status| {
+                    let value = status.get("inBlock").or_else(|| status.get("finalized"))?;
+                    let value = value
+                        .as_str()?
+                        .strip_prefix("0x")
+                        .unwrap_or(value.as_str()?);
+                    if value.len() != 64 {
+                        return None;
+                    }
+                    let mut hash = [0u8; 32];
+                    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+                        hash[index] =
+                            u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
+                    }
+                    Some(hash)
+                });
+                let dispatch_error = if let Some(block) = included_block {
+                    rpc::events_at(&*self.rpc.lock().await, block)
+                        .await
+                        .ok()
+                        .and_then(|events| {
+                            events.into_iter().find_map(|event| {
+                                let rendered = format!("{event:?}");
+                                rendered.contains("ExtrinsicFailed").then_some(rendered)
+                            })
+                        })
+                } else {
+                    None
+                };
+                // The account nonce is consumed by an included extrinsic even
+                // when dispatch fails, but the pallet's system-op nonce is
+                // advanced only after successful queueing. Re-read it after a
+                // dispatch failure instead of creating a local nonce gap.
+                if dispatch_error.is_some() {
+                    self.next_system_op_nonce.lock().await.take();
+                }
+                Ok(Submission {
+                    extrinsic_hash,
+                    submitted_nonce: prepared.submitted_nonce,
+                    correlation: prepared.correlation,
+                    lifecycle: Some(TransactionLifecycle {
+                        statuses,
+                        included_block,
+                        dispatch_error,
+                    }),
+                })
+            }
+            Err(error) => {
+                self.next_nonce.lock().await.invalidate();
+                self.next_system_op_nonce.lock().await.take();
+                if matches!(error, ChainClientError::Rpc(_)) {
+                    let _ = self.reconnect().await;
+                }
+                Err(error)
+            }
+        }
     }
 
     async fn prepare_system_command(
@@ -236,16 +309,24 @@ impl MiniJamChainClient {
         let _system_op = self.system_op_lock.lock().await;
         let account = sp_runtime::MultiSigner::Sr25519(self.signer.public()).into_account();
         let sender = system_op_sender(&account);
-        let mut next_system_nonce = self.next_system_op_nonce.lock().await;
+        let next_system_nonce = self.next_system_op_nonce.lock().await;
         let system_nonce = match *next_system_nonce {
             Some(nonce) => nonce,
             None => rpc::system_op_nonce(&*self.rpc.lock().await, sender).await?,
         };
-        *next_system_nonce = Some(system_nonce.saturating_add(1));
         let correlation =
             minijam_protocol::SystemOpV2::compute_request_id(&sender, system_nonce, &command);
-        let _submission = self.submit_lock.lock().await;
-        let submitted_nonce = self.allocate_nonce().await?;
+        let submitted_nonce = {
+            let current = self.next_nonce.lock().await;
+            match current.peek() {
+                Some(nonce) => nonce,
+                None => {
+                    let account =
+                        sp_runtime::MultiSigner::Sr25519(self.signer.public()).into_account();
+                    rpc::account_nonce(&*self.rpc.lock().await, account.into()).await?
+                }
+            }
+        };
         let genesis = rpc::genesis_hash(&*self.rpc.lock().await).await?;
         let encoded_extrinsic = extrinsic::sign_call(
             &self.signer,
@@ -269,26 +350,42 @@ impl MiniJamChainClient {
     ) -> Result<Submission, ChainClientError> {
         let _submission = self.submit_lock.lock().await;
         match rpc::submit_extrinsic(&*self.rpc.lock().await, &prepared.encoded_extrinsic).await {
-            Ok(extrinsic_hash) => Ok(Submission {
-                extrinsic_hash,
-                submitted_nonce: prepared.submitted_nonce,
-                correlation: prepared.correlation,
-            }),
-            Err(error) if matches!(&error, ChainClientError::Rpc(message) if message.contains("Already Imported") || message.contains("already imported") || message.contains("Stale")) => {
+            Ok(extrinsic_hash) => {
+                self.commit_prepared_nonce(&prepared).await;
+                Ok(Submission {
+                    extrinsic_hash,
+                    submitted_nonce: prepared.submitted_nonce,
+                    correlation: prepared.correlation,
+                    lifecycle: None,
+                })
+            }
+            Err(error) if matches!(&error, ChainClientError::Rpc(message) if message.contains("Already Imported") || message.contains("already imported")) =>
+            {
+                self.commit_prepared_nonce(&prepared).await;
                 Ok(Submission {
                     extrinsic_hash: minijam_protocol::blake2_256(&prepared.encoded_extrinsic),
                     submitted_nonce: prepared.submitted_nonce,
                     correlation: prepared.correlation,
+                    lifecycle: None,
                 })
             }
             Err(error) => {
                 self.next_nonce.lock().await.invalidate();
+                self.next_system_op_nonce.lock().await.take();
                 if matches!(error, ChainClientError::Rpc(_)) {
                     let _ = self.reconnect().await;
                 }
                 Err(error)
             }
         }
+    }
+
+    async fn commit_prepared_nonce(&self, prepared: &PreparedSystemOperation) {
+        self.next_nonce
+            .lock()
+            .await
+            .commit(prepared.submitted_nonce);
+        *self.next_system_op_nonce.lock().await = Some(prepared.system_op_nonce.saturating_add(1));
     }
 
     pub async fn submit_preimage(&self, bytes: Vec<u8>) -> Result<Submission, ChainClientError> {
@@ -356,6 +453,7 @@ impl MiniJamChainClient {
                 extrinsic_hash,
                 submitted_nonce: nonce,
                 correlation,
+                lifecycle: None,
             }),
             Err(error) => {
                 self.next_nonce.lock().await.invalidate();
@@ -465,6 +563,14 @@ struct NonceCursor {
 }
 
 impl NonceCursor {
+    fn peek(&self) -> Option<u32> {
+        self.next
+    }
+
+    fn commit(&mut self, nonce: u32) {
+        self.next = Some(nonce.saturating_add(1));
+    }
+
     fn take(&mut self) -> Option<u32> {
         let nonce = self.next?;
         self.next = Some(nonce.saturating_add(1));
@@ -495,6 +601,8 @@ mod tests {
         cursor.invalidate();
         assert_eq!(cursor.take(), None);
         assert_eq!(cursor.initialize(20), 20);
+        cursor.commit(20);
+        assert_eq!(cursor.peek(), Some(21));
     }
 
     #[test]

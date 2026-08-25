@@ -1,4 +1,8 @@
-use jsonrpsee::{core::client::ClientT, rpc_params, ws_client::WsClient};
+use jsonrpsee::{
+    core::client::{ClientT, SubscriptionClientT},
+    rpc_params,
+    ws_client::WsClient,
+};
 use minijam_protocol::Hash;
 use parity_scale_codec::Decode;
 use serde::Deserialize;
@@ -97,6 +101,50 @@ pub async fn submit_extrinsic(rpc: &WsClient, encoded: &[u8]) -> Result<Hash, Ch
         .await
         .map_err(map_rpc)?;
     decode_hash(&result)
+}
+
+/// Submit through the transaction watcher. A hash returned by
+/// `author_submitExtrinsic` only proves pool acceptance; the watcher gives us
+/// the subsequent ready/in-block/finalized/dropped status.
+pub async fn submit_and_watch_extrinsic(
+    rpc: &WsClient,
+    encoded: &[u8],
+    timeout: std::time::Duration,
+) -> Result<(Hash, Vec<serde_json::Value>), ChainClientError> {
+    let mut subscription = rpc
+        .subscribe::<serde_json::Value, _>(
+            "author_submitAndWatchExtrinsic",
+            rpc_params![hex(encoded)],
+            "author_unwatchExtrinsic",
+        )
+        .await
+        .map_err(map_rpc)?;
+    let started = std::time::Instant::now();
+    let mut statuses = Vec::new();
+    let extrinsic_hash = minijam_protocol::blake2_256(encoded);
+    loop {
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(ChainClientError::Rpc(
+                "timed out waiting for transaction status".into(),
+            ));
+        }
+        let status = tokio::time::timeout(remaining, subscription.next())
+            .await
+            .map_err(|_| ChainClientError::Rpc("timed out waiting for transaction status".into()))?
+            .ok_or_else(|| ChainClientError::Rpc("transaction status subscription ended".into()))?;
+        let status = status.map_err(|error| ChainClientError::Rpc(error.to_string()))?;
+        let terminal = status.get("inBlock").is_some()
+            || status.get("finalized").is_some()
+            || status.get("dropped").is_some()
+            || status.get("invalid").is_some()
+            || status.get("usurped").is_some()
+            || status.get("retracted").is_some();
+        statuses.push(status);
+        if terminal {
+            return Ok((extrinsic_hash, statuses));
+        }
+    }
 }
 
 pub fn hex(bytes: &[u8]) -> String {
