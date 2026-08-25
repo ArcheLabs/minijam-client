@@ -6,7 +6,7 @@ mod rpc;
 
 pub use events::{FinalityObservation, FinalizedEvent};
 pub use extrinsic::sign_call as sign_runtime_call;
-pub use rpc::FinalizedContext;
+pub use rpc::{DispatchOutcome, FinalizedContext};
 
 use std::time::Duration;
 
@@ -48,6 +48,8 @@ pub struct TransactionLifecycle {
     pub statuses: Vec<serde_json::Value>,
     pub included_block: Option<Hash>,
     pub included_extrinsic_index: Option<u32>,
+    pub dispatch_outcome: Option<DispatchOutcome>,
+    /// Compatibility projection; `dispatch_outcome` is authoritative.
     pub dispatch_error: Option<String>,
 }
 
@@ -251,51 +253,8 @@ impl MiniJamChainClient {
         .await
         {
             Ok((extrinsic_hash, statuses)) => {
-                self.commit_prepared_nonce(&prepared).await;
-                let included_block = statuses.iter().rev().find_map(|status| {
-                    let value = status.get("inBlock").or_else(|| status.get("finalized"))?;
-                    let value = value
-                        .as_str()?
-                        .strip_prefix("0x")
-                        .unwrap_or(value.as_str()?);
-                    if value.len() != 64 {
-                        return None;
-                    }
-                    let mut hash = [0u8; 32];
-                    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
-                        hash[index] =
-                            u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
-                    }
-                    Some(hash)
-                });
-                let dispatch_error = if let Some(block) = included_block {
-                    rpc::dispatch_error_at(&*self.rpc.lock().await, block, extrinsic_hash).await?
-                } else {
-                    None
-                };
-                let included_extrinsic_index = if let Some(block) = included_block {
-                    rpc::extrinsic_index_at(&*self.rpc.lock().await, block, extrinsic_hash).await?
-                } else {
-                    None
-                };
-                // The account nonce is consumed by an included extrinsic even
-                // when dispatch fails, but the pallet's system-op nonce is
-                // advanced only after successful queueing. Re-read it after a
-                // dispatch failure instead of creating a local nonce gap.
-                if dispatch_error.is_some() {
-                    self.next_system_op_nonce.lock().await.take();
-                }
-                Ok(Submission {
-                    extrinsic_hash,
-                    submitted_nonce: prepared.submitted_nonce,
-                    correlation: prepared.correlation,
-                    lifecycle: Some(TransactionLifecycle {
-                        statuses,
-                        included_block,
-                        included_extrinsic_index,
-                        dispatch_error,
-                    }),
-                })
+                self.complete_prepared_submission(prepared, extrinsic_hash, statuses)
+                    .await
             }
             Err(error) => {
                 self.next_nonce.lock().await.invalidate();
@@ -363,25 +322,16 @@ impl MiniJamChainClient {
     ) -> Result<Submission, ChainClientError> {
         let _system_op = self.system_op_lock.lock().await;
         let _submission = self.submit_lock.lock().await;
-        match rpc::submit_extrinsic(&*self.rpc.lock().await, &prepared.encoded_extrinsic).await {
-            Ok(extrinsic_hash) => {
-                self.commit_prepared_nonce(&prepared).await;
-                Ok(Submission {
-                    extrinsic_hash,
-                    submitted_nonce: prepared.submitted_nonce,
-                    correlation: prepared.correlation,
-                    lifecycle: None,
-                })
-            }
-            Err(error) if matches!(&error, ChainClientError::Rpc(message) if message.contains("Already Imported") || message.contains("already imported")) =>
-            {
-                self.commit_prepared_nonce(&prepared).await;
-                Ok(Submission {
-                    extrinsic_hash: minijam_protocol::blake2_256(&prepared.encoded_extrinsic),
-                    submitted_nonce: prepared.submitted_nonce,
-                    correlation: prepared.correlation,
-                    lifecycle: None,
-                })
+        match rpc::submit_and_watch_extrinsic(
+            &*self.rpc.lock().await,
+            &prepared.encoded_extrinsic,
+            self.request_timeout,
+        )
+        .await
+        {
+            Ok((extrinsic_hash, statuses)) => {
+                self.complete_prepared_submission(prepared, extrinsic_hash, statuses)
+                    .await
             }
             Err(error) => {
                 self.next_nonce.lock().await.invalidate();
@@ -394,12 +344,85 @@ impl MiniJamChainClient {
         }
     }
 
-    async fn commit_prepared_nonce(&self, prepared: &PreparedSystemOperation) {
+    async fn complete_prepared_submission(
+        &self,
+        prepared: PreparedSystemOperation,
+        extrinsic_hash: Hash,
+        statuses: Vec<serde_json::Value>,
+    ) -> Result<Submission, ChainClientError> {
+        let included_block = statuses.iter().rev().find_map(|status| {
+            let value = status.get("inBlock").or_else(|| status.get("finalized"))?;
+            let value = value
+                .as_str()?
+                .strip_prefix("0x")
+                .unwrap_or(value.as_str()?);
+            if value.len() != 64 {
+                return None;
+            }
+            let mut hash = [0u8; 32];
+            for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+                hash[index] = u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
+            }
+            Some(hash)
+        });
+        let block = included_block.ok_or_else(|| {
+            ChainClientError::Decode("finalized transaction has no included block".into())
+        });
+
+        // Finalized means the account nonce was consumed even if dispatch
+        // failed. The system-op nonce remains unknown until exact attribution.
+        self.commit_account_nonce(&prepared).await;
+        let (included_extrinsic_index, dispatch_outcome) = match block {
+            Ok(block) => {
+                match rpc::dispatch_outcome_at(&*self.rpc.lock().await, block, extrinsic_hash).await
+                {
+                    Ok(value) => value,
+                    Err(error) => {
+                        self.invalidate_system_op_nonce().await;
+                        return Err(error);
+                    }
+                }
+            }
+            Err(error) => {
+                self.invalidate_system_op_nonce().await;
+                return Err(error);
+            }
+        };
+        let dispatch_error = match &dispatch_outcome {
+            DispatchOutcome::Success => None,
+            DispatchOutcome::Failed(error) => Some(error.clone()),
+        };
+        match dispatch_outcome {
+            DispatchOutcome::Success => self.commit_system_op_nonce(&prepared).await,
+            DispatchOutcome::Failed(_) => self.invalidate_system_op_nonce().await,
+        }
+        Ok(Submission {
+            extrinsic_hash,
+            submitted_nonce: prepared.submitted_nonce,
+            correlation: prepared.correlation,
+            lifecycle: Some(TransactionLifecycle {
+                statuses,
+                included_block,
+                included_extrinsic_index: Some(included_extrinsic_index),
+                dispatch_outcome: Some(dispatch_outcome),
+                dispatch_error,
+            }),
+        })
+    }
+
+    async fn commit_account_nonce(&self, prepared: &PreparedSystemOperation) {
         self.next_nonce
             .lock()
             .await
             .commit(prepared.submitted_nonce);
+    }
+
+    async fn commit_system_op_nonce(&self, prepared: &PreparedSystemOperation) {
         *self.next_system_op_nonce.lock().await = Some(prepared.system_op_nonce.saturating_add(1));
+    }
+
+    async fn invalidate_system_op_nonce(&self) {
+        self.next_system_op_nonce.lock().await.take();
     }
 
     pub async fn submit_preimage(&self, bytes: Vec<u8>) -> Result<Submission, ChainClientError> {

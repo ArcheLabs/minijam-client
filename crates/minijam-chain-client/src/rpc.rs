@@ -9,6 +9,12 @@ use serde::Deserialize;
 
 use crate::ChainClientError;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DispatchOutcome {
+    Success,
+    Failed(String),
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FinalizedContext {
@@ -92,11 +98,11 @@ pub async fn event_records_at(
     Ok(records)
 }
 
-pub async fn dispatch_error_at(
+pub async fn dispatch_outcome_at(
     rpc: &WsClient,
     block_hash: Hash,
     extrinsic_hash: Hash,
-) -> Result<Option<String>, ChainClientError> {
+) -> Result<(u32, DispatchOutcome), ChainClientError> {
     let index = extrinsic_index_at(rpc, block_hash, extrinsic_hash).await?;
     let Some(index) = index else {
         return Err(ChainClientError::Decode(
@@ -104,22 +110,35 @@ pub async fn dispatch_error_at(
         ));
     };
     let records = event_records_at(rpc, block_hash).await?;
-    Ok(dispatch_error_from_records(&records, index))
+    Ok((index, dispatch_outcome_from_records(&records, index)?))
 }
 
-fn dispatch_error_from_records(records: &[EventRecord], index: u32) -> Option<String> {
-    records.iter().find_map(|record| {
-        if record.phase != frame_system::Phase::ApplyExtrinsic(index) {
-            return None;
-        }
-        match &record.event {
-            minijam_runtime::RuntimeEvent::System(frame_system::Event::ExtrinsicFailed {
-                dispatch_error,
-                ..
-            }) => Some(format!("{dispatch_error:?}")),
-            _ => None,
-        }
-    })
+fn dispatch_outcome_from_records(
+    records: &[EventRecord],
+    index: u32,
+) -> Result<DispatchOutcome, ChainClientError> {
+    records
+        .iter()
+        .find_map(|record| {
+            if record.phase != frame_system::Phase::ApplyExtrinsic(index) {
+                return None;
+            }
+            match &record.event {
+                minijam_runtime::RuntimeEvent::System(frame_system::Event::ExtrinsicSuccess {
+                    ..
+                }) => Some(Ok(DispatchOutcome::Success)),
+                minijam_runtime::RuntimeEvent::System(frame_system::Event::ExtrinsicFailed {
+                    dispatch_error,
+                    ..
+                }) => Some(Ok(DispatchOutcome::Failed(format!("{dispatch_error:?}")))),
+                _ => None,
+            }
+        })
+        .unwrap_or_else(|| {
+            Err(ChainClientError::Decode(
+                "missing System dispatch outcome for included extrinsic".into(),
+            ))
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -372,9 +391,14 @@ mod tests {
                 topics: Vec::new(),
             },
         ];
-        assert!(dispatch_error_from_records(&records, 0).is_none());
-        assert!(dispatch_error_from_records(&records, 1)
-            .expect("matching failure")
-            .contains("unrelated"));
+        assert_eq!(
+            dispatch_outcome_from_records(&records, 0).unwrap(),
+            DispatchOutcome::Success
+        );
+        assert_eq!(
+            dispatch_outcome_from_records(&records, 1).unwrap(),
+            DispatchOutcome::Failed("Other(\"unrelated\")".into())
+        );
+        assert!(dispatch_outcome_from_records(&records, 2).is_err());
     }
 }
