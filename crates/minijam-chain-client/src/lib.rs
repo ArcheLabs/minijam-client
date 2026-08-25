@@ -269,18 +269,12 @@ impl MiniJamChainClient {
                     Some(hash)
                 });
                 let dispatch_error = if let Some(block) = included_block {
-                    rpc::dispatch_error_at(&*self.rpc.lock().await, block, extrinsic_hash)
-                        .await
-                        .ok()
-                        .flatten()
+                    rpc::dispatch_error_at(&*self.rpc.lock().await, block, extrinsic_hash).await?
                 } else {
                     None
                 };
                 let included_extrinsic_index = if let Some(block) = included_block {
-                    rpc::extrinsic_index_at(&*self.rpc.lock().await, block, extrinsic_hash)
-                        .await
-                        .ok()
-                        .flatten()
+                    rpc::extrinsic_index_at(&*self.rpc.lock().await, block, extrinsic_hash).await?
                 } else {
                     None
                 };
