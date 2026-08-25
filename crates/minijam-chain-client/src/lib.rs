@@ -47,6 +47,7 @@ pub struct Submission {
 pub struct TransactionLifecycle {
     pub statuses: Vec<serde_json::Value>,
     pub included_block: Option<Hash>,
+    pub included_extrinsic_index: Option<u32>,
     pub dispatch_error: Option<String>,
 }
 
@@ -275,6 +276,14 @@ impl MiniJamChainClient {
                 } else {
                     None
                 };
+                let included_extrinsic_index = if let Some(block) = included_block {
+                    rpc::extrinsic_index_at(&*self.rpc.lock().await, block, extrinsic_hash)
+                        .await
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
                 // The account nonce is consumed by an included extrinsic even
                 // when dispatch fails, but the pallet's system-op nonce is
                 // advanced only after successful queueing. Re-read it after a
@@ -289,6 +298,7 @@ impl MiniJamChainClient {
                     lifecycle: Some(TransactionLifecycle {
                         statuses,
                         included_block,
+                        included_extrinsic_index,
                         dispatch_error,
                     }),
                 })

@@ -97,7 +97,7 @@ pub async fn dispatch_error_at(
     block_hash: Hash,
     extrinsic_hash: Hash,
 ) -> Result<Option<String>, ChainClientError> {
-    let index = block_extrinsic_index(rpc, block_hash, extrinsic_hash).await?;
+    let index = extrinsic_index_at(rpc, block_hash, extrinsic_hash).await?;
     let Some(index) = index else {
         return Err(ChainClientError::Decode(
             "included extrinsic was not found in block".into(),
@@ -155,7 +155,7 @@ struct BlockBody {
     extrinsics: Vec<String>,
 }
 
-async fn block_extrinsic_index(
+pub async fn extrinsic_index_at(
     rpc: &WsClient,
     block_hash: Hash,
     extrinsic_hash: Hash,
