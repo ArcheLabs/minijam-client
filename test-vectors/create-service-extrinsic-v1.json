@@ -1,0 +1,12 @@
+{
+  "runtime_spec_version": 1,
+  "transaction_version": 1,
+  "account_nonce": 0,
+  "genesis_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+  "signer_seed_documentation": "public sr25519 test seed [7; 32] (not stored as a secret); sr25519 signatures are randomized, so the fixture is decoded and field-checked rather than byte-compared against a newly signed value",
+  "code_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+  "code_len": 69414,
+  "min_item_gas": 0,
+  "min_memo_gas": 0,
+  "encoded_extrinsic": "0x750284007c0f469d3bd340bae718203fa30ca071a5e37c751e891dbded837b213d45d91d014c982dc7af87b83d2270ccd90f81a8aae191c2d0bb93f7b8f7c85e249dceab27858411400fa1d9f72161ca98645ce10db02b6e50533fe783b0c83f024b0fca8a0000000805001111111111111111111111111111111111111111111111111111111111111111260f010000000000000000000000000000000000"
+}

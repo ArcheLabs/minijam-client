@@ -78,6 +78,22 @@ private jambda source code.
 
 ## Public release notes
 
+## CreateService transaction identity (2026-08-25)
+
+- The release node was rebuilt from `5947c50699863948c51028bc346980481d839884`
+  with production Jambda `e52307a726868205a151e6917a0a70a79965a028`; its
+  identity is `minijam-node 0.1.0-5947c506998` and SHA256
+  `5909559283e059329747134ed1b397e3eaf5a41042439e43acaa22436db1fcc0`.
+- `minijam-chain-client` has an exact CreateService signed-extrinsic
+  decode/re-encode regression test, inner-call field assertions, and the
+  deterministic vector `test-vectors/create-service-extrinsic-v1.json`.
+- Local runtime metadata and a fresh node fingerprint both SHA256 to
+  `4123d54d8e8042e5ba9028c737b2f7e315cae1f6e177ae721ba72bbd1cb9e18c`
+  (56,804 bytes; spec/transaction versions 1/1).
+- The fresh rebuilt node returned a CreateService extrinsic hash but did not
+  keep it pending or include it; the deployment blocker is recorded in the
+  MINI Cells append-only evidence rather than attributed to a codec panic.
+
 - Public protocol, pallet, simulator, and node sources are present in this
   repository.
 - Full Runtime and node builds currently require access to the private jambda
