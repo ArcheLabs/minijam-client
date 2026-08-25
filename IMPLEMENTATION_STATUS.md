@@ -86,7 +86,7 @@ private jambda source code.
   `5909559283e059329747134ed1b397e3eaf5a41042439e43acaa22436db1fcc0`.
 - `minijam-chain-client` has an exact CreateService signed-extrinsic
   decode/re-encode regression test, inner-call field assertions, and the
-  deterministic vector `test-vectors/create-service-extrinsic-v1.json`.
+  golden vector `test-vectors/create-service-extrinsic-v1.json`.
 - Local runtime metadata and a fresh node fingerprint both SHA256 to
   `4123d54d8e8042e5ba9028c737b2f7e315cae1f6e177ae721ba72bbd1cb9e18c`
   (56,804 bytes; spec/transaction versions 1/1).
