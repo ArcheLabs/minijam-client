@@ -1638,6 +1638,7 @@ mod tests {
                 extrinsic_hash: [seed; 32],
                 submitted_nonce: seed as u32,
                 correlation: [seed.wrapping_add(1); 32],
+                lifecycle: None,
             }
         }
     }
@@ -1710,6 +1711,7 @@ mod tests {
                 extrinsic_hash: [prepared.submitted_nonce as u8; 32],
                 submitted_nonce: prepared.submitted_nonce,
                 correlation: prepared.correlation,
+                lifecycle: None,
             })
         }
 
