@@ -266,7 +266,10 @@ pub struct WorkTask {
 pub type ExecutionLaneId = u16;
 pub const DEFAULT_EXECUTION_LANES: ExecutionLaneId = 4;
 
-pub fn deterministic_lane_for_work(work_id: WorkId, lane_count: ExecutionLaneId) -> ExecutionLaneId {
+pub fn deterministic_lane_for_work(
+    work_id: WorkId,
+    lane_count: ExecutionLaneId,
+) -> ExecutionLaneId {
     assert!(lane_count > 0);
     (work_id % lane_count as u64) as ExecutionLaneId
 }
@@ -280,15 +283,22 @@ pub struct WorkerTaskV2 {
 impl WorkerTaskV2 {
     pub fn from_v1(task: WorkTask, lane_count: ExecutionLaneId) -> Self {
         let execution_lane = deterministic_lane_for_work(task.work_id, lane_count);
-        Self { task, execution_lane }
+        Self {
+            task,
+            execution_lane,
+        }
     }
 }
 
 /// Assign ready tasks without observing poll/completion order.  The returned
 /// vector is sorted by `(lane, work_id)` so the submission queue can remain
 /// single-threaded and nonce-safe after lane-local computation completes.
-pub fn assign_tasks_to_lanes(mut tasks: Vec<WorkTask>, lane_count: ExecutionLaneId) -> Vec<WorkerTaskV2> {
-    let mut assigned: Vec<_> = tasks.drain(..)
+pub fn assign_tasks_to_lanes(
+    mut tasks: Vec<WorkTask>,
+    lane_count: ExecutionLaneId,
+) -> Vec<WorkerTaskV2> {
+    let mut assigned: Vec<_> = tasks
+        .drain(..)
         .map(|task| WorkerTaskV2::from_v1(task, lane_count))
         .collect();
     assigned.sort_by_key(|task| (task.execution_lane, task.task.work_id));
@@ -302,6 +312,16 @@ pub struct LaneExecutionResult<T> {
     pub started_at: std::time::Instant,
     pub finished_at: std::time::Instant,
     pub result: Result<T, WorkerError>,
+}
+
+/// Diagnostic overlap predicate for node-side lane evidence.  It is kept
+/// outside consensus data: timestamps are local execution observations, not
+/// protocol state.
+pub fn intervals_overlap<T, U>(
+    left: &LaneExecutionResult<T>,
+    right: &LaneExecutionResult<U>,
+) -> bool {
+    left.started_at < right.finished_at && right.started_at < left.finished_at
 }
 
 /// Execute independent lane work concurrently and return results in stable
@@ -326,7 +346,9 @@ where
     let (sender, receiver) = std::sync::mpsc::channel();
     let mut handles = Vec::new();
     for lane_tasks in lanes {
-        if lane_tasks.is_empty() { continue; }
+        if lane_tasks.is_empty() {
+            continue;
+        }
         let sender = sender.clone();
         let execute = Arc::clone(&execute);
         handles.push(thread::spawn(move || {
@@ -335,15 +357,71 @@ where
                 let work_id = task.task.work_id;
                 let result = execute(task.task);
                 let finished_at = std::time::Instant::now();
-                let _ = sender.send(LaneExecutionResult { work_id, lane_id: task.execution_lane, started_at, finished_at, result });
+                let _ = sender.send(LaneExecutionResult {
+                    work_id,
+                    lane_id: task.execution_lane,
+                    started_at,
+                    finished_at,
+                    result,
+                });
             }
         }));
     }
     drop(sender);
-    for handle in handles { let _ = handle.join(); }
+    for handle in handles {
+        let _ = handle.join();
+    }
     let mut results: Vec<_> = receiver.into_iter().collect();
     results.sort_by_key(|item| (item.lane_id, item.work_id));
     results
+}
+
+/// Scoped variant used by the production candidate path.  It permits the
+/// lane workers to borrow the runner's protocol-state source while retaining
+/// the same deterministic lane assignment and stable result ordering.
+pub fn execute_tasks_on_lanes_scoped<T, F>(
+    tasks: Vec<WorkerTaskV2>,
+    lane_count: ExecutionLaneId,
+    execute: F,
+) -> Vec<LaneExecutionResult<T>>
+where
+    T: Send,
+    F: Fn(WorkTask) -> Result<T, WorkerError> + Send + Sync,
+{
+    assert!(lane_count > 0);
+    let mut lanes: Vec<Vec<WorkerTaskV2>> = (0..lane_count).map(|_| Vec::new()).collect();
+    for task in tasks {
+        lanes[task.execution_lane.min(lane_count - 1) as usize].push(task);
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        for lane_tasks in lanes {
+            if lane_tasks.is_empty() {
+                continue;
+            }
+            let sender = sender.clone();
+            let execute_ref = &execute;
+            scope.spawn(move || {
+                for task in lane_tasks {
+                    let started_at = std::time::Instant::now();
+                    let work_id = task.task.work_id;
+                    let result = execute_ref(task.task);
+                    let finished_at = std::time::Instant::now();
+                    let _ = sender.send(LaneExecutionResult {
+                        work_id,
+                        lane_id: task.execution_lane,
+                        started_at,
+                        finished_at,
+                        result,
+                    });
+                }
+            });
+        }
+        drop(sender);
+        let mut results: Vec<_> = receiver.into_iter().collect();
+        results.sort_by_key(|item| (item.lane_id, item.work_id));
+        results
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -436,7 +514,8 @@ impl WorkerMetrics {
 
     pub fn record_refine_started(&self, queue_depth: usize) {
         self.refine_started_total.fetch_add(1, Ordering::Relaxed);
-        self.candidate_queue_depth.store(queue_depth as u64, Ordering::Relaxed);
+        self.candidate_queue_depth
+            .store(queue_depth as u64, Ordering::Relaxed);
     }
 
     pub fn record_refine_completed(&self) {
@@ -1807,7 +1886,8 @@ where
         let tasks = self.chain.pending_work_tasks().await?;
         let mut nonce = self.chain.account_nonce(pair.public().0)?;
         let genesis_hash = self.chain.genesis_hash()?;
-        let mut tx_hashes = Vec::new();
+        let mut candidate_tasks = Vec::new();
+        let mut bundles = std::collections::HashMap::new();
         for task in tasks {
             if !task.assigned_workers.contains(&worker_id) || task.candidate_producer != worker_id {
                 continue;
@@ -1824,8 +1904,23 @@ where
                 &self.decoder,
             )
             .map_err(WorkerError::Bundle)?;
-            let candidate =
-                prepare_candidate_envelope(&self.chain, chain_id, core_index, &task, &bundle)?;
+            bundles.insert(task.work_id, bundle);
+            candidate_tasks.push(task);
+        }
+        let lane_tasks = assign_tasks_to_lanes(candidate_tasks, DEFAULT_EXECUTION_LANES);
+        let bundles = Arc::new(bundles);
+        let chain = &self.chain;
+        let mut executions =
+            execute_tasks_on_lanes_scoped(lane_tasks, DEFAULT_EXECUTION_LANES, |task| {
+                let bundle = bundles.get(&task.work_id).ok_or_else(|| {
+                    WorkerError::Refine("candidate bundle missing from lane input".into())
+                })?;
+                prepare_candidate_envelope(chain, chain_id, core_index, &task, bundle)
+            });
+        executions.sort_by_key(|execution| execution.work_id);
+        let mut tx_hashes = Vec::new();
+        for execution in executions {
+            let candidate = execution.result?;
             let submission =
                 prepare_signed_candidate_submission(pair, nonce, genesis_hash, candidate.envelope);
             tx_hashes.push(
@@ -1869,20 +1964,46 @@ mod tests {
 
     #[test]
     fn lane_executor_runs_independent_work_and_returns_stable_order() {
-        let tasks = (0..4u64).map(|work_id| {
-            let raw = vec![work_id as u8];
-            WorkerTaskV2::from_v1(task(work_id, 1, [work_id as u8; 32], &raw), 4)
-        }).collect();
+        let tasks = (0..4u64)
+            .map(|work_id| {
+                let raw = vec![work_id as u8];
+                WorkerTaskV2::from_v1(task(work_id, 1, [work_id as u8; 32], &raw), 4)
+            })
+            .collect();
         let results = execute_tasks_on_lanes(tasks, 4, |task| {
             std::thread::sleep(std::time::Duration::from_millis(10));
             Ok(task.work_id)
         });
-        assert_eq!(results.iter().map(|item| item.work_id).collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+        assert_eq!(
+            results.iter().map(|item| item.work_id).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
         assert!(results.iter().all(|item| item.result.is_ok()));
         let overlap = results.iter().enumerate().any(|(i, left)| {
-            results.iter().skip(i + 1).any(|right| left.started_at < right.finished_at && right.started_at < left.finished_at)
+            results
+                .iter()
+                .skip(i + 1)
+                .any(|right| intervals_overlap(left, right))
         });
         assert!(overlap, "lane executor must overlap independent tasks");
+    }
+
+    #[test]
+    fn scoped_lane_executor_supports_borrowed_production_state() {
+        let tasks = (0..2u64)
+            .map(|work_id| {
+                let raw = vec![work_id as u8];
+                WorkerTaskV2::from_v1(task(work_id, 1, [work_id as u8; 32], &raw), 2)
+            })
+            .collect();
+        let marker = String::from("borrowed-state");
+        let results = execute_tasks_on_lanes_scoped(tasks, 2, |task| {
+            assert_eq!(marker, "borrowed-state");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            Ok(task.work_id)
+        });
+        assert_eq!(results.len(), 2);
+        assert!(intervals_overlap(&results[0], &results[1]));
     }
     use futures::executor::block_on;
     use jam_codec::Encode as JamEncode;
