@@ -259,6 +259,93 @@ pub struct WorkTask {
     pub bundle_ref: ContentRef,
 }
 
+/// Stage0 lane identity used by the MINI Cells concurrency compatibility
+/// layer.  This is deliberately a worker-wrapper concept; canonical JAM
+/// work-package bytes are unchanged and no full JAM multi-core conformance is
+/// implied.
+pub type ExecutionLaneId = u16;
+pub const DEFAULT_EXECUTION_LANES: ExecutionLaneId = 4;
+
+pub fn deterministic_lane_for_work(work_id: WorkId, lane_count: ExecutionLaneId) -> ExecutionLaneId {
+    assert!(lane_count > 0);
+    (work_id % lane_count as u64) as ExecutionLaneId
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkerTaskV2 {
+    pub task: WorkTask,
+    pub execution_lane: ExecutionLaneId,
+}
+
+impl WorkerTaskV2 {
+    pub fn from_v1(task: WorkTask, lane_count: ExecutionLaneId) -> Self {
+        let execution_lane = deterministic_lane_for_work(task.work_id, lane_count);
+        Self { task, execution_lane }
+    }
+}
+
+/// Assign ready tasks without observing poll/completion order.  The returned
+/// vector is sorted by `(lane, work_id)` so the submission queue can remain
+/// single-threaded and nonce-safe after lane-local computation completes.
+pub fn assign_tasks_to_lanes(mut tasks: Vec<WorkTask>, lane_count: ExecutionLaneId) -> Vec<WorkerTaskV2> {
+    let mut assigned: Vec<_> = tasks.drain(..)
+        .map(|task| WorkerTaskV2::from_v1(task, lane_count))
+        .collect();
+    assigned.sort_by_key(|task| (task.execution_lane, task.task.work_id));
+    assigned
+}
+
+#[derive(Debug)]
+pub struct LaneExecutionResult<T> {
+    pub work_id: WorkId,
+    pub lane_id: ExecutionLaneId,
+    pub started_at: std::time::Instant,
+    pub finished_at: std::time::Instant,
+    pub result: Result<T, WorkerError>,
+}
+
+/// Execute independent lane work concurrently and return results in stable
+/// `(lane, work_id)` order.  This is a compatibility executor for workloads
+/// whose PVM instances are already isolated by the caller; it does not alter
+/// canonical JAM bytes or submission nonce handling.
+pub fn execute_tasks_on_lanes<T, F>(
+    tasks: Vec<WorkerTaskV2>,
+    lane_count: ExecutionLaneId,
+    execute: F,
+) -> Vec<LaneExecutionResult<T>>
+where
+    T: Send + 'static,
+    F: Fn(WorkTask) -> Result<T, WorkerError> + Send + Sync + 'static,
+{
+    assert!(lane_count > 0);
+    let mut lanes: Vec<Vec<WorkerTaskV2>> = (0..lane_count).map(|_| Vec::new()).collect();
+    for task in tasks {
+        lanes[task.execution_lane.min(lane_count - 1) as usize].push(task);
+    }
+    let execute = Arc::new(execute);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut handles = Vec::new();
+    for lane_tasks in lanes {
+        if lane_tasks.is_empty() { continue; }
+        let sender = sender.clone();
+        let execute = Arc::clone(&execute);
+        handles.push(thread::spawn(move || {
+            for task in lane_tasks {
+                let started_at = std::time::Instant::now();
+                let work_id = task.task.work_id;
+                let result = execute(task.task);
+                let finished_at = std::time::Instant::now();
+                let _ = sender.send(LaneExecutionResult { work_id, lane_id: task.execution_lane, started_at, finished_at, result });
+            }
+        }));
+    }
+    drop(sender);
+    for handle in handles { let _ = handle.join(); }
+    let mut results: Vec<_> = receiver.into_iter().collect();
+    results.sort_by_key(|item| (item.lane_id, item.work_id));
+    results
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VoteTask {
     pub work_id: WorkId,
@@ -317,6 +404,10 @@ pub struct WorkerMetrics {
     vote_tasks_seen_total: AtomicU64,
     bundle_ready_total: AtomicU64,
     bundle_rejected_total: AtomicU64,
+    refine_started_total: AtomicU64,
+    refine_completed_total: AtomicU64,
+    refine_failed_total: AtomicU64,
+    candidate_queue_depth: AtomicU64,
 }
 
 impl WorkerMetrics {
@@ -343,6 +434,19 @@ impl WorkerMetrics {
         self.bundle_rejected_total.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn record_refine_started(&self, queue_depth: usize) {
+        self.refine_started_total.fetch_add(1, Ordering::Relaxed);
+        self.candidate_queue_depth.store(queue_depth as u64, Ordering::Relaxed);
+    }
+
+    pub fn record_refine_completed(&self) {
+        self.refine_completed_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_refine_failed(&self) {
+        self.refine_failed_total.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn render_prometheus(&self) -> String {
         format!(
             concat!(
@@ -360,13 +464,29 @@ impl WorkerMetrics {
                 "minijam_worker_bundle_ready_total {}\n",
                 "# HELP minijam_worker_bundle_rejected_total Bundles rejected during fetch or verification.\n",
                 "# TYPE minijam_worker_bundle_rejected_total counter\n",
-                "minijam_worker_bundle_rejected_total {}\n"
+                "minijam_worker_bundle_rejected_total {}\n",
+                "# HELP minijam_worker_refine_started_total Refine executions started.\n",
+                "# TYPE minijam_worker_refine_started_total counter\n",
+                "minijam_worker_refine_started_total {}\n",
+                "# HELP minijam_worker_refine_completed_total Refine executions completed.\n",
+                "# TYPE minijam_worker_refine_completed_total counter\n",
+                "minijam_worker_refine_completed_total {}\n",
+                "# HELP minijam_worker_refine_failed_total Refine executions failed.\n",
+                "# TYPE minijam_worker_refine_failed_total counter\n",
+                "minijam_worker_refine_failed_total {}\n",
+                "# HELP minijam_worker_candidate_queue_depth Candidate submission queue depth.\n",
+                "# TYPE minijam_worker_candidate_queue_depth gauge\n",
+                "minijam_worker_candidate_queue_depth {}\n"
             ),
             self.polls_total.load(Ordering::Relaxed),
             self.tasks_processed_total.load(Ordering::Relaxed),
             self.vote_tasks_seen_total.load(Ordering::Relaxed),
             self.bundle_ready_total.load(Ordering::Relaxed),
-            self.bundle_rejected_total.load(Ordering::Relaxed)
+            self.bundle_rejected_total.load(Ordering::Relaxed),
+            self.refine_started_total.load(Ordering::Relaxed),
+            self.refine_completed_total.load(Ordering::Relaxed),
+            self.refine_failed_total.load(Ordering::Relaxed),
+            self.candidate_queue_depth.load(Ordering::Relaxed)
         )
     }
 }
@@ -1725,6 +1845,45 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_lane_assignment_is_deterministic() {
+        assert_eq!(deterministic_lane_for_work(0, DEFAULT_EXECUTION_LANES), 0);
+        assert_eq!(deterministic_lane_for_work(7, DEFAULT_EXECUTION_LANES), 3);
+        assert_eq!(deterministic_lane_for_work(8, DEFAULT_EXECUTION_LANES), 0);
+        assert!(std::panic::catch_unwind(|| deterministic_lane_for_work(1, 0)).is_err());
+    }
+
+    #[test]
+    fn metrics_expose_refine_lane_counters() {
+        let metrics = WorkerMetrics::new();
+        metrics.record_refine_started(2);
+        metrics.record_refine_completed();
+        metrics.record_refine_failed();
+        let rendered = metrics.render_prometheus();
+        assert!(rendered.contains("minijam_worker_refine_started_total 1"));
+        assert!(rendered.contains("minijam_worker_refine_completed_total 1"));
+        assert!(rendered.contains("minijam_worker_refine_failed_total 1"));
+        assert!(rendered.contains("minijam_worker_candidate_queue_depth 2"));
+    }
+
+    #[test]
+    fn lane_executor_runs_independent_work_and_returns_stable_order() {
+        let tasks = (0..4u64).map(|work_id| {
+            let raw = vec![work_id as u8];
+            WorkerTaskV2::from_v1(task(work_id, 1, [work_id as u8; 32], &raw), 4)
+        }).collect();
+        let results = execute_tasks_on_lanes(tasks, 4, |task| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            Ok(task.work_id)
+        });
+        assert_eq!(results.iter().map(|item| item.work_id).collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+        assert!(results.iter().all(|item| item.result.is_ok()));
+        let overlap = results.iter().enumerate().any(|(i, left)| {
+            results.iter().skip(i + 1).any(|right| left.started_at < right.finished_at && right.started_at < left.finished_at)
+        });
+        assert!(overlap, "lane executor must overlap independent tasks");
+    }
     use futures::executor::block_on;
     use jam_codec::Encode as JamEncode;
     use jp_core_primitives::{
