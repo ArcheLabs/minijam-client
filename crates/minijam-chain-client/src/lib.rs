@@ -10,6 +10,8 @@ pub use rpc::{DispatchOutcome, FinalizedContext};
 
 use std::time::Duration;
 
+use jam_codec::Decode as JamDecode;
+use jp_core_primitives::types::ServiceInfo;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use minijam_protocol::{CanonicalPreimageBytes, ContentRef, Hash, SystemCommandV2, WorkId};
 use minijam_runtime::RuntimeCall;
@@ -172,6 +174,21 @@ impl MiniJamChainClient {
             serde_json::json!([rpc::hex(&block), service_id]),
         )
         .await
+    }
+
+    /// Return the canonical code hash without exposing Jambda's ServiceInfo
+    /// representation to workload repositories.
+    pub async fn service_code_hash_at(
+        &self,
+        block: Hash,
+        service_id: u32,
+    ) -> Result<Option<Hash>, ChainClientError> {
+        let Some(bytes) = self.service_info_at(block, service_id).await? else {
+            return Ok(None);
+        };
+        let info = ServiceInfo::decode(&mut bytes.as_slice())
+            .map_err(|error| ChainClientError::Decode(error.to_string()))?;
+        Ok(Some(info.code_hash.0))
     }
 
     pub async fn service_storage_at(

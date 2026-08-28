@@ -1,4 +1,3 @@
-use frame_system;
 use minijam_protocol::Hash;
 use minijam_runtime::RuntimeCall;
 use parity_scale_codec::Encode;

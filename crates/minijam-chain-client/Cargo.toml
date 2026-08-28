@@ -8,6 +8,8 @@ license.workspace = true
 frame-system.workspace = true
 futures.workspace = true
 jsonrpsee = { workspace = true, features = ["ws-client"] }
+jam-codec = "0.1.1"
+jp-core-primitives = { path = "../../external/jambda/crates/core-primitives" }
 minijam-protocol = { path = "../minijam-protocol" }
 minijam-runtime = { path = "../../runtime" }
 pallet-minijam = { path = "../../pallets/minijam" }

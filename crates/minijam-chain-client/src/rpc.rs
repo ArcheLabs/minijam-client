@@ -278,7 +278,7 @@ fn decode_hash(value: &str) -> Result<Hash, ChainClientError> {
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, ChainClientError> {
     let value = value.strip_prefix("0x").unwrap_or(value);
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(ChainClientError::Decode("odd-length hex".into()));
     }
     (0..value.len())

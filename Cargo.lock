@@ -5211,6 +5211,8 @@ version = "0.1.0"
 dependencies = [
  "frame-system",
  "futures",
+ "jam-codec",
+ "jp-core-primitives",
  "jsonrpsee",
  "minijam-protocol",
  "minijam-runtime",

@@ -1334,7 +1334,7 @@ pub mod pallet {
 
         fn allocation_relayer_account() -> Result<T::AccountId, DispatchError> {
             AllocationRelayer::<T>::get()
-                .or_else(|| IngressRelayer::<T>::get())
+                .or_else(IngressRelayer::<T>::get)
                 .ok_or(Error::<T>::AllocationRelayerNotConfigured.into())
         }
 
