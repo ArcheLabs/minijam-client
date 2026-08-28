@@ -5374,6 +5374,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "minijam-pvm-executor"
+version = "0.1.0"
+dependencies = [
+ "jp-vm-engine",
+ "jp-vm-interp",
+ "jp-vm-primitives",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "minijam-rpc-runtime-api"
 version = "0.1.0"
 dependencies = [
