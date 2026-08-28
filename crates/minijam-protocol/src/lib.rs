@@ -9,12 +9,6 @@ pub mod stage0 {
     pub const CORE_INDEX: u16 = 0;
     pub const AUTH_CODE_HOST: u32 = 0;
     pub const AUTH_CODE_HASH: [u8; 32] = [0; 32];
-    // Local MINI Cells compatibility probe: match JAM 0.7.2's Refine ceiling.
-    // MINI Cells' measured candidate is ~42.4M gas; keep the protocol default
-    // at the JAM-compatible 1B ceiling rather than carrying an exploratory 5B.
-    pub const REFINE_GAS_LIMIT: u64 = 1_000_000_000;
-    pub const ACCUMULATE_GAS_LIMIT: u64 = 1_000_000_000;
-
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct FinalizedContextV1 {
         pub block_hash: Hash,

@@ -10,6 +10,7 @@ clap = { workspace = true, features = ["derive"] }
 futures.workspace = true
 jam-codec = { version = "0.1.1", default-features = false }
 jambda-minijam-executive = { path = "../../external/jambda/crates/minijam-executive", features = ["std"] }
+jambda-minijam-spec = { path = "../../external/jambda/crates/minijam-spec" }
 jambda-refine = { path = "../../external/jambda/crates/refine", default-features = false }
 jambda-state-backend = { path = "../../external/jambda/crates/state-backend" }
 jp-core-primitives = { path = "../../external/jambda/crates/core-primitives", default-features = false }

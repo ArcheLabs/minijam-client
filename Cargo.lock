@@ -3879,6 +3879,7 @@ dependencies = [
  "jambda-accumulate",
  "jambda-authorizations",
  "jambda-history",
+ "jambda-minijam-spec",
  "jambda-preimages",
  "jambda-safrole",
  "jambda-state-backend",
@@ -3890,6 +3891,13 @@ dependencies = [
  "minijam-protocol",
  "parity-scale-codec",
  "spin 0.10.0",
+]
+
+[[package]]
+name = "jambda-minijam-spec"
+version = "0.0.1"
+dependencies = [
+ "jp-core-primitives",
 ]
 
 [[package]]
@@ -5384,6 +5392,7 @@ dependencies = [
  "frame-system-rpc-runtime-api",
  "jam-codec",
  "jambda-minijam-executive",
+ "jambda-minijam-spec",
  "jp-core-primitives",
  "jp-vm-predecode",
  "minijam-jamcore-api",
@@ -5434,6 +5443,7 @@ dependencies = [
  "bounded-collections 0.2.4",
  "cid",
  "jam-codec",
+ "jambda-minijam-spec",
  "jambda-refine",
  "jp-core-primitives",
  "minijam-protocol",
@@ -5450,6 +5460,7 @@ dependencies = [
  "futures",
  "jam-codec",
  "jambda-minijam-executive",
+ "jambda-minijam-spec",
  "jambda-refine",
  "jambda-state-backend",
  "jp-core-primitives",

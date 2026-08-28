@@ -19,10 +19,10 @@ use std::{
 };
 
 use jam_codec::{Decode as JamDecode, Encode as JamEncode};
+use jambda_minijam_spec::MiniJamSpec;
 use jambda_state_backend::StateBackend;
 use jp_core_primitives::{
     error::DataBaseError,
-    spec::TinySpec,
     state::{column, ColumnFamily, StateKey, StoreChange, StoreOp},
     traits::DataBase,
 };
@@ -52,6 +52,7 @@ pub struct WorkerConfig {
     pub submit_candidates: bool,
     pub submit_support_votes: bool,
     pub poll_interval: Duration,
+    pub execution_lanes: ExecutionLaneId,
     pub recovery_db_path: Option<PathBuf>,
     pub metrics_bind: Option<String>,
     pub health_bind: Option<String>,
@@ -72,6 +73,7 @@ impl Default for WorkerConfig {
             submit_candidates: false,
             submit_support_votes: false,
             poll_interval: Duration::from_millis(1_000),
+            execution_lanes: DEFAULT_EXECUTION_LANES,
             recovery_db_path: None,
             metrics_bind: None,
             health_bind: Some("127.0.0.1:8082".into()),
@@ -92,6 +94,9 @@ impl WorkerConfig {
         }
         if self.poll_interval.is_zero() {
             return Err(ConfigError::ZeroPollInterval);
+        }
+        if self.execution_lanes == 0 {
+            return Err(ConfigError::ZeroExecutionLanes);
         }
         if self.request_timeout.is_zero() {
             return Err(ConfigError::ZeroRequestTimeout);
@@ -115,6 +120,7 @@ pub enum ConfigError {
     MissingRpcUrl,
     MissingIpfsGateway,
     ZeroPollInterval,
+    ZeroExecutionLanes,
     ZeroRequestTimeout,
     ZeroMaxBundleBytes,
 }
@@ -184,6 +190,9 @@ impl WorkerConfigFile {
             if let Some(poll_interval_ms) = worker.poll_interval_ms {
                 config.poll_interval = Duration::from_millis(poll_interval_ms);
             }
+            if let Some(execution_lanes) = worker.execution_lanes {
+                config.execution_lanes = execution_lanes;
+            }
             if let Some(recovery_db_path) = worker.recovery_db_path {
                 config.recovery_db_path = Some(recovery_db_path);
             }
@@ -227,6 +236,7 @@ struct WorkerSectionConfigFile {
     submit_candidates: Option<bool>,
     submit_support_votes: Option<bool>,
     poll_interval_ms: Option<u64>,
+    execution_lanes: Option<ExecutionLaneId>,
     recovery_db_path: Option<PathBuf>,
 }
 
@@ -259,12 +269,11 @@ pub struct WorkTask {
     pub bundle_ref: ContentRef,
 }
 
-/// Stage0 lane identity used by the MINI Cells concurrency compatibility
-/// layer.  This is deliberately a worker-wrapper concept; canonical JAM
-/// work-package bytes are unchanged and no full JAM multi-core conformance is
-/// implied.
+/// Worker-local lane identity. Lanes are an execution strategy, not a
+/// MiniJamSpec or consensus parameter; canonical work-package bytes and
+/// result ordering remain unchanged.
 pub type ExecutionLaneId = u16;
-pub const DEFAULT_EXECUTION_LANES: ExecutionLaneId = 4;
+pub const DEFAULT_EXECUTION_LANES: ExecutionLaneId = 1;
 
 pub fn deterministic_lane_for_work(
     work_id: WorkId,
@@ -1271,14 +1280,14 @@ where
     })?;
     let input = bundle.into_work_report_input(core_index);
     let db = ProtocolStateDb::new(state, lookup_anchor);
-    let mut backend = StateBackend::<TinySpec, _>::new_tiny(db);
+    let mut backend = StateBackend::<MiniJamSpec, _>::new(db);
     backend
-        .load_tiny_from_db()
+        .load_from_db()
         .map_err(|error| WorkerError::Refine(format!("failed to load Jambda state: {error:?}")))?;
     let output = jambda_refine::compute_work_report::<
-        TinySpec,
+        MiniJamSpec,
         ProtocolStateDb<'_, S>,
-        StateBackend<TinySpec, ProtocolStateDb<'_, S>>,
+        StateBackend<MiniJamSpec, ProtocolStateDb<'_, S>>,
         InterpBackend,
         jp_vm_engine::InnerEngine<InterpBackend>,
     >(&backend, input, InterpBackend::default())
@@ -1883,6 +1892,31 @@ where
         core_index: u16,
         metrics: Option<&WorkerMetrics>,
     ) -> Result<Vec<Hash>, WorkerError> {
+        self.submit_candidate_reports_with_lanes(
+            worker_id,
+            pair,
+            chain_id,
+            core_index,
+            DEFAULT_EXECUTION_LANES,
+            metrics,
+        )
+        .await
+    }
+
+    pub async fn submit_candidate_reports_with_lanes(
+        &self,
+        worker_id: WorkerId,
+        pair: &sr25519::Pair,
+        chain_id: Hash,
+        core_index: u16,
+        execution_lanes: ExecutionLaneId,
+        metrics: Option<&WorkerMetrics>,
+    ) -> Result<Vec<Hash>, WorkerError> {
+        if execution_lanes == 0 {
+            return Err(WorkerError::Refine(
+                "execution_lanes must be greater than zero".into(),
+            ));
+        }
         let tasks = self.chain.pending_work_tasks().await?;
         let mut nonce = self.chain.account_nonce(pair.public().0)?;
         let genesis_hash = self.chain.genesis_hash()?;
@@ -1907,16 +1941,15 @@ where
             bundles.insert(task.work_id, bundle);
             candidate_tasks.push(task);
         }
-        let lane_tasks = assign_tasks_to_lanes(candidate_tasks, DEFAULT_EXECUTION_LANES);
+        let lane_tasks = assign_tasks_to_lanes(candidate_tasks, execution_lanes);
         let bundles = Arc::new(bundles);
         let chain = &self.chain;
-        let mut executions =
-            execute_tasks_on_lanes_scoped(lane_tasks, DEFAULT_EXECUTION_LANES, |task| {
-                let bundle = bundles.get(&task.work_id).ok_or_else(|| {
-                    WorkerError::Refine("candidate bundle missing from lane input".into())
-                })?;
-                prepare_candidate_envelope(chain, chain_id, core_index, &task, bundle)
-            });
+        let mut executions = execute_tasks_on_lanes_scoped(lane_tasks, execution_lanes, |task| {
+            let bundle = bundles.get(&task.work_id).ok_or_else(|| {
+                WorkerError::Refine("candidate bundle missing from lane input".into())
+            })?;
+            prepare_candidate_envelope(chain, chain_id, core_index, &task, bundle)
+        });
         executions.sort_by_key(|execution| execution.work_id);
         let mut tx_hashes = Vec::new();
         for execution in executions {
@@ -1943,9 +1976,10 @@ mod tests {
 
     #[test]
     fn execution_lane_assignment_is_deterministic() {
-        assert_eq!(deterministic_lane_for_work(0, DEFAULT_EXECUTION_LANES), 0);
-        assert_eq!(deterministic_lane_for_work(7, DEFAULT_EXECUTION_LANES), 3);
-        assert_eq!(deterministic_lane_for_work(8, DEFAULT_EXECUTION_LANES), 0);
+        assert_eq!(DEFAULT_EXECUTION_LANES, 1);
+        assert_eq!(deterministic_lane_for_work(0, 4), 0);
+        assert_eq!(deterministic_lane_for_work(7, 4), 3);
+        assert_eq!(deterministic_lane_for_work(8, 4), 0);
         assert!(std::panic::catch_unwind(|| deterministic_lane_for_work(1, 0)).is_err());
     }
 

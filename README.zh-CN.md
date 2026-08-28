@@ -5,7 +5,11 @@ English | 简体中文
 > MiniJAM Season 2 是 Experience Network，仍处于早期开发阶段。
 >
 
-MiniJAM 是一个运行精简版 JAM 协议的独立 Polkadot SDK 链。
+MiniJAM 是一个运行 MiniJamSpec v1 网络 profile 和精简 JAM 协议面的独立
+Polkadot SDK 链。MiniJamSpec 独立于 JAM TinySpec 和 FullSpec。
+
+参见 [MiniJamSpec](docs/minijam-spec.md)、[执行边界](docs/execution-boundary.md)
+和[兼容性矩阵](docs/compatibility-matrix.md)。
 
 ## Playground API
 
@@ -158,7 +162,8 @@ cargo check \
 
 ## 构建并运行本地节点
 
-当前已经包含节点源码、链配置、RPC 接线、Aura 出块和 GRANDPA 服务。完整 Runtime 与节点构建当前仍需要在私有 jambda 中修复 `TinySpec` state backend 和 codec 路径上的 `generic_const_exprs` trait-solver overflow。
+当前已经包含节点源码、MiniJamSpec 链配置、RPC 接线、Aura 出块和 GRANDPA
+服务。完整 Runtime 与节点构建使用兼容性矩阵中锁定的 Jambda revision。
 
 Runtime 构建路径修复后，预期的本地节点流程如下：
 

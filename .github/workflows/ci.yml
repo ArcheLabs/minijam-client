@@ -119,6 +119,9 @@ jobs:
       - name: Check submodule pin
         run: ./scripts/check-submodule.sh
 
+      - name: Check MiniJamSpec production boundary
+        run: ./scripts/check-minijam-boundary.sh
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 

@@ -2148,6 +2148,9 @@ pub mod pallet {
             Ok(())
         }
 
+        // Retained for decoding legacy fuel reservations; Season 2 execution
+        // does not call the service-fuel charging path.
+        #[allow(dead_code)]
         fn decode_work_report(bytes: &[u8]) -> Result<WorkReport, ExecutionFailure> {
             let mut input = bytes;
             let report = WorkReport::decode(&mut input).map_err(|_| ExecutionFailure::Fatal)?;
@@ -2157,6 +2160,7 @@ pub mod pallet {
             Ok(report)
         }
 
+        #[allow(dead_code)]
         fn reserve_work_fuel(
             package: &WorkPackage,
         ) -> Result<
@@ -2205,6 +2209,7 @@ pub mod pallet {
                 .map_err(|_| Error::<T>::TooManyServicesPerWork.into())
         }
 
+        #[allow(dead_code)]
         fn release_work_fuel(work_id: WorkId, work: &mut WorkRecord<T>) -> DispatchResult {
             if work.fuel_reservation.is_empty() {
                 return Ok(());
@@ -2242,6 +2247,7 @@ pub mod pallet {
             Ok(())
         }
 
+        #[allow(dead_code)]
         fn settle_imported_work_fuel(
             work_id: WorkId,
             work: &mut WorkRecord<T>,
@@ -2338,6 +2344,7 @@ pub mod pallet {
             Ok(())
         }
 
+        #[allow(dead_code)]
         fn fuel_cost(refine_gas: u64, accumulate_gas: u64) -> BalanceOf<T> {
             let refine_cost = refine_gas
                 .saturated_into::<BalanceOf<T>>()

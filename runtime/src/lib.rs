@@ -37,6 +37,9 @@ pub const SLOT_DURATION: u64 = MILLI_SECS_PER_BLOCK;
 pub const BLOCK_HASH_COUNT: BlockNumber = 2_400;
 pub const UNIT: Balance = 1_000_000_000_000;
 pub const EXISTENTIAL_DEPOSIT: Balance = 1_000_000_000;
+/// Aggregate STF admission budget for Refine plus Accumulate. It is runtime
+/// policy, not the MiniJamSpec per-Refine ceiling.
+pub const MAX_EXECUTION_GAS: u64 = 6_000_000_000;
 
 pub type Signature = MultiSignature;
 pub type AccountId = <<Signature as Verify>::Signer as IdentifyAccount>::AccountId;
@@ -260,16 +263,12 @@ impl pallet_minijam::Config for Runtime {
     type FaucetCooldownBlocks = FaucetCooldownBlocks;
     type RefineGasPrice = RefineGasPrice;
     type AccumulateGasPrice = AccumulateGasPrice;
-    // MINI Cells' deterministic Refine workload is intentionally compute-heavy.
-    // Keep the local development chain from expiring an otherwise valid report
-    // while a worker executes the PVM candidate.
     type ReportSubmissionDeadline = ConstU32<600>;
     type VoteWindow = ConstU32<600>;
     type MaxCandidateRounds = ConstU8<3>;
     type MaxPendingWorks = ConstU32<64>;
     type MaxExecutionReports = ConstU32<4>;
-    // Local MINI Cells compatibility budget: 5B Refine plus 1B Accumulate.
-    type MaxExecutionGas = ConstU64<6_000_000_000>;
+    type MaxExecutionGas = ConstU64<MAX_EXECUTION_GAS>;
     type MaxWorkPackageBytes = ConstU32<1_048_576>;
     type MaxBundleBytes = ConstU64<16_777_216>;
     type MaxServicesPerWork = ConstU32<64>;
@@ -323,6 +322,8 @@ mod stage0_economics_tests {
         assert_noop, assert_ok,
         traits::{Get, Hooks},
     };
+    use jambda_minijam_spec::MiniJamSpec;
+    use jp_core_primitives::spec::ChainSpec;
     use minijam_protocol::SystemCommandV2;
     use sp_runtime::BuildStorage;
 
@@ -381,8 +382,7 @@ mod stage0_economics_tests {
     fn stage0_execution_gas_covers_refine_and_accumulate_limits() {
         assert!(
             <<Runtime as pallet_minijam::Config>::MaxExecutionGas as Get<u64>>::get()
-                >= minijam_protocol::stage0::REFINE_GAS_LIMIT
-                    .saturating_add(minijam_protocol::stage0::ACCUMULATE_GAS_LIMIT)
+                >= MiniJamSpec::MAX_REFINE_GAS.saturating_mul(2)
         );
     }
 
