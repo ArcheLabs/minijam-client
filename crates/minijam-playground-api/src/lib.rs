@@ -996,6 +996,7 @@ impl Playground {
         Ok(operations)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_operation(
         &self,
         operation_id: &str,
@@ -1428,8 +1429,8 @@ fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, ApiError> {
         .collect()
 }
 
-fn decode_state_value(encoded: &[u8]) -> Result<Vec<u8>, ApiError> {
-    StateValue::decode(&mut encoded.as_ref())
+fn decode_state_value(mut encoded: &[u8]) -> Result<Vec<u8>, ApiError> {
+    StateValue::decode(&mut encoded)
         .map(StateValue::into_inner)
         .map_err(|error| ApiError::Chain(error.to_string()))
 }
@@ -1638,6 +1639,7 @@ mod tests {
                 extrinsic_hash: [seed; 32],
                 submitted_nonce: seed as u32,
                 correlation: [seed.wrapping_add(1); 32],
+                lifecycle: None,
             }
         }
     }
@@ -1710,6 +1712,7 @@ mod tests {
                 extrinsic_hash: [prepared.submitted_nonce as u8; 32],
                 submitted_nonce: prepared.submitted_nonce,
                 correlation: prepared.correlation,
+                lifecycle: None,
             })
         }
 
@@ -1901,8 +1904,10 @@ mod tests {
     async fn service_reads_are_bound_to_one_finalized_context() {
         let temp = tempfile::tempdir().unwrap();
         let chain = Arc::new(MockChain::new());
-        let mut info = jp_core_primitives::types::ServiceInfo::default();
-        info.code_hash = jp_core_primitives::crypto::OpaqueHash([22; 32]);
+        let info = jp_core_primitives::types::ServiceInfo {
+            code_hash: jp_core_primitives::crypto::OpaqueHash([22; 32]),
+            ..Default::default()
+        };
         let info_value = StateValue::try_from(jam_codec::Encode::encode(&info)).unwrap();
         *chain.service_info.lock().unwrap() = Some(parity_scale_codec::Encode::encode(&info_value));
         let preimage_value = StateValue::try_from(b"service-code".to_vec()).unwrap();

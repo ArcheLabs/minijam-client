@@ -929,10 +929,12 @@ impl WorkerSignedTxContext for BlockingHttpWorkerChainSource {
     }
 }
 
+type PendingStateWrites = BTreeMap<(ColumnFamily, Vec<u8>), Vec<u8>>;
+
 struct ProtocolStateDb<'a, S> {
     source: &'a S,
     block_hash: [u8; 32],
-    writes: Mutex<BTreeMap<(ColumnFamily, Vec<u8>), Vec<u8>>>,
+    writes: Mutex<PendingStateWrites>,
     deletes: Mutex<BTreeMap<(ColumnFamily, Vec<u8>), ()>>,
 }
 
@@ -1290,7 +1292,7 @@ where
         StateBackend<MiniJamSpec, ProtocolStateDb<'_, S>>,
         InterpBackend,
         jp_vm_engine::InnerEngine<InterpBackend>,
-    >(&backend, input, InterpBackend::default())
+    >(&backend, input, InterpBackend)
     .map_err(|error| WorkerError::Refine(format!("Jambda refine failed: {error:?}")))?;
     let canonical_report = output.report.encode();
     let projected_metadata =
@@ -1484,7 +1486,7 @@ impl std::error::Error for HttpError {}
 
 fn decode_hex(input: &str) -> Result<Vec<u8>, WorkerError> {
     let hex = input.strip_prefix("0x").unwrap_or(input);
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(WorkerError::Chain("hex input has odd length".into()));
     }
     let mut output = Vec::with_capacity(hex.len() / 2);
@@ -2068,12 +2070,16 @@ mod tests {
 
     #[test]
     fn config_rejects_zero_limits() {
-        let mut config = WorkerConfig::default();
-        config.max_bundle_bytes = 0;
+        let config = WorkerConfig {
+            max_bundle_bytes: 0,
+            ..WorkerConfig::default()
+        };
         assert_eq!(config.validate(), Err(ConfigError::ZeroMaxBundleBytes));
 
-        let mut config = WorkerConfig::default();
-        config.poll_interval = Duration::ZERO;
+        let config = WorkerConfig {
+            poll_interval: Duration::ZERO,
+            ..WorkerConfig::default()
+        };
         assert_eq!(config.validate(), Err(ConfigError::ZeroPollInterval));
     }
 
@@ -2611,7 +2617,7 @@ mod tests {
         assert_eq!(submission.vote.verdict, Verdict::Support);
         assert!(sr25519::Pair::verify(
             &sr25519::Signature::from_raw(submission.signature),
-            &submission.vote.signing_hash(),
+            submission.vote.signing_hash(),
             &pair.public(),
         ));
         assert!(submission.extrinsic_hex.starts_with("0x"));

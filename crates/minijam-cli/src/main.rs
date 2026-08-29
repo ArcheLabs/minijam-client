@@ -564,7 +564,7 @@ fn parse_hex_array<const N: usize>(input: &str) -> Result<[u8; N], Box<dyn Error
 
 fn parse_hex_bytes(input: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     let hex = input.strip_prefix("0x").unwrap_or(input);
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(Box::new(CliError("hex input must have even length".into())));
     }
     let mut output = Vec::with_capacity(hex.len() / 2);

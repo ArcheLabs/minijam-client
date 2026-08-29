@@ -505,8 +505,8 @@ async fn ready() -> impl IntoResponse {
     )
 }
 
-fn decode_service_info(bytes: &[u8]) -> Result<ServiceInfo, RpcError> {
-    let value = minijam_protocol::StateValue::decode(&mut bytes.as_ref())
+fn decode_service_info(mut bytes: &[u8]) -> Result<ServiceInfo, RpcError> {
+    let value = minijam_protocol::StateValue::decode(&mut bytes)
         .map_err(|error| RpcError::Chain(error.to_string()))?;
     let bytes = value.into_inner();
     ServiceInfo::decode(&mut bytes.as_slice())

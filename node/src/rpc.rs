@@ -513,7 +513,7 @@ fn parse_hex_array<const N: usize>(input: &str) -> Result<[u8; N], ErrorObjectOw
 
 fn parse_hex_vec(input: &str) -> Result<Vec<u8>, ErrorObjectOwned> {
     let hex = input.strip_prefix("0x").unwrap_or(input);
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(invalid_params("hex input must have an even length"));
     }
     hex.as_bytes()
