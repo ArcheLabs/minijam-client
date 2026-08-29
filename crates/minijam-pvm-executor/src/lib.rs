@@ -3,6 +3,8 @@
 //! Workload repositories implement [`Host`] and do not depend on Jambda VM
 //! internals. Jambda remains the execution implementation behind this crate.
 
+pub mod host_abi;
+
 use jp_vm_engine::{run_standalone, StandaloneProgram};
 use jp_vm_interp::{memory::InnerInterpMemory, register::InterpRegister, InterpBackend};
 use jp_vm_primitives::{
@@ -13,12 +15,7 @@ use jp_vm_primitives::{
 };
 
 const HOST_NONE: u64 = u64::MAX;
-const HOST_GAS: u32 = 0;
-const HOST_FETCH: u32 = 1;
-const HOST_READ: u32 = 3;
-const HOST_WRITE: u32 = 4;
-const HOST_YIELD: u32 = 25;
-const HOST_LOG: u32 = 100;
+use host_abi::MiniJamHostCall;
 
 /// Workload-owned host state exposed through the stable MiniJAM SDK calls.
 pub trait Host {
@@ -100,9 +97,10 @@ impl<H: Host> HostCallTrait<InterpRegister, InnerInterpMemory> for HostBridge<'_
         let set_result = |state: &mut VmState<InterpRegister, InnerInterpMemory>, value: u64| {
             state.registers.set_a0(value);
         };
-        match id {
-            HOST_GAS => set_result(state, (*gas).max(0) as u64),
-            HOST_FETCH => {
+        let call = MiniJamHostCall::try_from(id).map_err(|_| VmError::Panic)?;
+        match call {
+            MiniJamHostCall::Gas => set_result(state, (*gas).max(0) as u64),
+            MiniJamHostCall::Fetch => {
                 let ptr = arg(7) as u32;
                 let offset = arg(8) as usize;
                 let capacity = arg(9) as usize;
@@ -120,7 +118,7 @@ impl<H: Host> HostCallTrait<InterpRegister, InnerInterpMemory> for HostBridge<'_
                     .map_err(|_| VmError::Panic)?;
                 set_result(state, item.len() as u64);
             }
-            HOST_READ => {
+            MiniJamHostCall::Read => {
                 let key_ptr = arg(8) as u32;
                 let key_len = arg(9) as usize;
                 let out_ptr = arg(10) as u32;
@@ -141,7 +139,7 @@ impl<H: Host> HostCallTrait<InterpRegister, InnerInterpMemory> for HostBridge<'_
                     .map_err(|_| VmError::Panic)?;
                 set_result(state, value.len() as u64);
             }
-            HOST_WRITE => {
+            MiniJamHostCall::Write => {
                 let key_ptr = arg(7) as u32;
                 let key_len = arg(8) as usize;
                 let value_ptr = arg(9) as u32;
@@ -163,7 +161,7 @@ impl<H: Host> HostCallTrait<InterpRegister, InnerInterpMemory> for HostBridge<'_
                 }
                 set_result(state, 0);
             }
-            HOST_YIELD => {
+            MiniJamHostCall::Yield => {
                 let ptr = arg(7) as u32;
                 let mut value = vec![0; 32];
                 state
@@ -173,7 +171,7 @@ impl<H: Host> HostCallTrait<InterpRegister, InnerInterpMemory> for HostBridge<'_
                 self.0.yield_value(value);
                 set_result(state, 0);
             }
-            HOST_LOG => {
+            MiniJamHostCall::Log => {
                 let ptr = arg(7) as u32;
                 let len = arg(8) as usize;
                 let mut message = vec![0; len];
@@ -184,7 +182,7 @@ impl<H: Host> HostCallTrait<InterpRegister, InnerInterpMemory> for HostBridge<'_
                 self.0.log(&message);
                 set_result(state, 0);
             }
-            _ => set_result(state, 0),
+            MiniJamHostCall::New | MiniJamHostCall::Transfer => return Err(VmError::Panic),
         }
         Ok(ExitKind::Continue)
     }
@@ -200,5 +198,23 @@ mod tests {
         encode_fnencode(0, &mut encoded);
         encode_fnencode(128, &mut encoded);
         assert_eq!(encoded, vec![0, 128, 128]);
+    }
+
+    #[test]
+    fn unknown_hostcall_fails_closed() {
+        let result = MiniJamHostCall::try_from(999);
+        assert!(result.is_err(), "unknown host call must not be successful");
+    }
+
+    #[test]
+    fn unsupported_canonical_hostcalls_fail_closed() {
+        assert!(matches!(
+            MiniJamHostCall::try_from(18),
+            Ok(MiniJamHostCall::New)
+        ));
+        assert!(matches!(
+            MiniJamHostCall::try_from(20),
+            Ok(MiniJamHostCall::Transfer)
+        ));
     }
 }
