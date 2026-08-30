@@ -19,10 +19,10 @@ use std::{
 };
 
 use jam_codec::{Decode as JamDecode, Encode as JamEncode};
+use jambda_minijam_spec::MiniJamSpec;
 use jambda_state_backend::StateBackend;
 use jp_core_primitives::{
     error::DataBaseError,
-    spec::TinySpec,
     state::{column, ColumnFamily, StateKey, StoreChange, StoreOp},
     traits::DataBase,
 };
@@ -52,6 +52,7 @@ pub struct WorkerConfig {
     pub submit_candidates: bool,
     pub submit_support_votes: bool,
     pub poll_interval: Duration,
+    pub execution_lanes: ExecutionLaneId,
     pub recovery_db_path: Option<PathBuf>,
     pub metrics_bind: Option<String>,
     pub health_bind: Option<String>,
@@ -72,6 +73,7 @@ impl Default for WorkerConfig {
             submit_candidates: false,
             submit_support_votes: false,
             poll_interval: Duration::from_millis(1_000),
+            execution_lanes: DEFAULT_EXECUTION_LANES,
             recovery_db_path: None,
             metrics_bind: None,
             health_bind: Some("127.0.0.1:8082".into()),
@@ -92,6 +94,9 @@ impl WorkerConfig {
         }
         if self.poll_interval.is_zero() {
             return Err(ConfigError::ZeroPollInterval);
+        }
+        if self.execution_lanes == 0 {
+            return Err(ConfigError::ZeroExecutionLanes);
         }
         if self.request_timeout.is_zero() {
             return Err(ConfigError::ZeroRequestTimeout);
@@ -115,6 +120,7 @@ pub enum ConfigError {
     MissingRpcUrl,
     MissingIpfsGateway,
     ZeroPollInterval,
+    ZeroExecutionLanes,
     ZeroRequestTimeout,
     ZeroMaxBundleBytes,
 }
@@ -184,6 +190,9 @@ impl WorkerConfigFile {
             if let Some(poll_interval_ms) = worker.poll_interval_ms {
                 config.poll_interval = Duration::from_millis(poll_interval_ms);
             }
+            if let Some(execution_lanes) = worker.execution_lanes {
+                config.execution_lanes = execution_lanes;
+            }
             if let Some(recovery_db_path) = worker.recovery_db_path {
                 config.recovery_db_path = Some(recovery_db_path);
             }
@@ -227,6 +236,7 @@ struct WorkerSectionConfigFile {
     submit_candidates: Option<bool>,
     submit_support_votes: Option<bool>,
     poll_interval_ms: Option<u64>,
+    execution_lanes: Option<ExecutionLaneId>,
     recovery_db_path: Option<PathBuf>,
 }
 
@@ -257,6 +267,170 @@ pub struct WorkTask {
     pub package_hash: Hash,
     pub canonical_work_package: Vec<u8>,
     pub bundle_ref: ContentRef,
+}
+
+/// Worker-local lane identity. Lanes are an execution strategy, not a
+/// MiniJamSpec or consensus parameter; canonical work-package bytes and
+/// result ordering remain unchanged.
+pub type ExecutionLaneId = u16;
+pub const DEFAULT_EXECUTION_LANES: ExecutionLaneId = 1;
+
+pub fn deterministic_lane_for_work(
+    work_id: WorkId,
+    lane_count: ExecutionLaneId,
+) -> ExecutionLaneId {
+    assert!(lane_count > 0);
+    (work_id % lane_count as u64) as ExecutionLaneId
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkerTaskV2 {
+    pub task: WorkTask,
+    pub execution_lane: ExecutionLaneId,
+}
+
+impl WorkerTaskV2 {
+    pub fn from_v1(task: WorkTask, lane_count: ExecutionLaneId) -> Self {
+        let execution_lane = deterministic_lane_for_work(task.work_id, lane_count);
+        Self {
+            task,
+            execution_lane,
+        }
+    }
+}
+
+/// Assign ready tasks without observing poll/completion order.  The returned
+/// vector is sorted by `(lane, work_id)` so the submission queue can remain
+/// single-threaded and nonce-safe after lane-local computation completes.
+pub fn assign_tasks_to_lanes(
+    mut tasks: Vec<WorkTask>,
+    lane_count: ExecutionLaneId,
+) -> Vec<WorkerTaskV2> {
+    let mut assigned: Vec<_> = tasks
+        .drain(..)
+        .map(|task| WorkerTaskV2::from_v1(task, lane_count))
+        .collect();
+    assigned.sort_by_key(|task| (task.execution_lane, task.task.work_id));
+    assigned
+}
+
+#[derive(Debug)]
+pub struct LaneExecutionResult<T> {
+    pub work_id: WorkId,
+    pub lane_id: ExecutionLaneId,
+    pub started_at: std::time::Instant,
+    pub finished_at: std::time::Instant,
+    pub result: Result<T, WorkerError>,
+}
+
+/// Diagnostic overlap predicate for node-side lane evidence.  It is kept
+/// outside consensus data: timestamps are local execution observations, not
+/// protocol state.
+pub fn intervals_overlap<T, U>(
+    left: &LaneExecutionResult<T>,
+    right: &LaneExecutionResult<U>,
+) -> bool {
+    left.started_at < right.finished_at && right.started_at < left.finished_at
+}
+
+/// Execute independent lane work concurrently and return results in stable
+/// `(lane, work_id)` order.  This is a compatibility executor for workloads
+/// whose PVM instances are already isolated by the caller; it does not alter
+/// canonical JAM bytes or submission nonce handling.
+pub fn execute_tasks_on_lanes<T, F>(
+    tasks: Vec<WorkerTaskV2>,
+    lane_count: ExecutionLaneId,
+    execute: F,
+) -> Vec<LaneExecutionResult<T>>
+where
+    T: Send + 'static,
+    F: Fn(WorkTask) -> Result<T, WorkerError> + Send + Sync + 'static,
+{
+    assert!(lane_count > 0);
+    let mut lanes: Vec<Vec<WorkerTaskV2>> = (0..lane_count).map(|_| Vec::new()).collect();
+    for task in tasks {
+        lanes[task.execution_lane.min(lane_count - 1) as usize].push(task);
+    }
+    let execute = Arc::new(execute);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut handles = Vec::new();
+    for lane_tasks in lanes {
+        if lane_tasks.is_empty() {
+            continue;
+        }
+        let sender = sender.clone();
+        let execute = Arc::clone(&execute);
+        handles.push(thread::spawn(move || {
+            for task in lane_tasks {
+                let started_at = std::time::Instant::now();
+                let work_id = task.task.work_id;
+                let result = execute(task.task);
+                let finished_at = std::time::Instant::now();
+                let _ = sender.send(LaneExecutionResult {
+                    work_id,
+                    lane_id: task.execution_lane,
+                    started_at,
+                    finished_at,
+                    result,
+                });
+            }
+        }));
+    }
+    drop(sender);
+    for handle in handles {
+        let _ = handle.join();
+    }
+    let mut results: Vec<_> = receiver.into_iter().collect();
+    results.sort_by_key(|item| (item.lane_id, item.work_id));
+    results
+}
+
+/// Scoped variant used by the production candidate path.  It permits the
+/// lane workers to borrow the runner's protocol-state source while retaining
+/// the same deterministic lane assignment and stable result ordering.
+pub fn execute_tasks_on_lanes_scoped<T, F>(
+    tasks: Vec<WorkerTaskV2>,
+    lane_count: ExecutionLaneId,
+    execute: F,
+) -> Vec<LaneExecutionResult<T>>
+where
+    T: Send,
+    F: Fn(WorkTask) -> Result<T, WorkerError> + Send + Sync,
+{
+    assert!(lane_count > 0);
+    let mut lanes: Vec<Vec<WorkerTaskV2>> = (0..lane_count).map(|_| Vec::new()).collect();
+    for task in tasks {
+        lanes[task.execution_lane.min(lane_count - 1) as usize].push(task);
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        for lane_tasks in lanes {
+            if lane_tasks.is_empty() {
+                continue;
+            }
+            let sender = sender.clone();
+            let execute_ref = &execute;
+            scope.spawn(move || {
+                for task in lane_tasks {
+                    let started_at = std::time::Instant::now();
+                    let work_id = task.task.work_id;
+                    let result = execute_ref(task.task);
+                    let finished_at = std::time::Instant::now();
+                    let _ = sender.send(LaneExecutionResult {
+                        work_id,
+                        lane_id: task.execution_lane,
+                        started_at,
+                        finished_at,
+                        result,
+                    });
+                }
+            });
+        }
+        drop(sender);
+        let mut results: Vec<_> = receiver.into_iter().collect();
+        results.sort_by_key(|item| (item.lane_id, item.work_id));
+        results
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -317,6 +491,10 @@ pub struct WorkerMetrics {
     vote_tasks_seen_total: AtomicU64,
     bundle_ready_total: AtomicU64,
     bundle_rejected_total: AtomicU64,
+    refine_started_total: AtomicU64,
+    refine_completed_total: AtomicU64,
+    refine_failed_total: AtomicU64,
+    candidate_queue_depth: AtomicU64,
 }
 
 impl WorkerMetrics {
@@ -343,6 +521,20 @@ impl WorkerMetrics {
         self.bundle_rejected_total.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn record_refine_started(&self, queue_depth: usize) {
+        self.refine_started_total.fetch_add(1, Ordering::Relaxed);
+        self.candidate_queue_depth
+            .store(queue_depth as u64, Ordering::Relaxed);
+    }
+
+    pub fn record_refine_completed(&self) {
+        self.refine_completed_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_refine_failed(&self) {
+        self.refine_failed_total.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn render_prometheus(&self) -> String {
         format!(
             concat!(
@@ -360,13 +552,29 @@ impl WorkerMetrics {
                 "minijam_worker_bundle_ready_total {}\n",
                 "# HELP minijam_worker_bundle_rejected_total Bundles rejected during fetch or verification.\n",
                 "# TYPE minijam_worker_bundle_rejected_total counter\n",
-                "minijam_worker_bundle_rejected_total {}\n"
+                "minijam_worker_bundle_rejected_total {}\n",
+                "# HELP minijam_worker_refine_started_total Refine executions started.\n",
+                "# TYPE minijam_worker_refine_started_total counter\n",
+                "minijam_worker_refine_started_total {}\n",
+                "# HELP minijam_worker_refine_completed_total Refine executions completed.\n",
+                "# TYPE minijam_worker_refine_completed_total counter\n",
+                "minijam_worker_refine_completed_total {}\n",
+                "# HELP minijam_worker_refine_failed_total Refine executions failed.\n",
+                "# TYPE minijam_worker_refine_failed_total counter\n",
+                "minijam_worker_refine_failed_total {}\n",
+                "# HELP minijam_worker_candidate_queue_depth Candidate submission queue depth.\n",
+                "# TYPE minijam_worker_candidate_queue_depth gauge\n",
+                "minijam_worker_candidate_queue_depth {}\n"
             ),
             self.polls_total.load(Ordering::Relaxed),
             self.tasks_processed_total.load(Ordering::Relaxed),
             self.vote_tasks_seen_total.load(Ordering::Relaxed),
             self.bundle_ready_total.load(Ordering::Relaxed),
-            self.bundle_rejected_total.load(Ordering::Relaxed)
+            self.bundle_rejected_total.load(Ordering::Relaxed),
+            self.refine_started_total.load(Ordering::Relaxed),
+            self.refine_completed_total.load(Ordering::Relaxed),
+            self.refine_failed_total.load(Ordering::Relaxed),
+            self.candidate_queue_depth.load(Ordering::Relaxed)
         )
     }
 }
@@ -423,11 +631,18 @@ pub fn spawn_worker_health_server(
             let mut request = [0u8; 1024];
             let count = stream.read(&mut request).unwrap_or_default();
             let request = String::from_utf8_lossy(&request[..count]);
-            let (status, body) = if request.starts_with("GET /health/live ") {
+            let (status, body) = if request.starts_with("GET /health/live ")
+                || request.starts_with("GET /healthz ")
+            {
                 ("200 OK", "live\n")
-            } else if request.starts_with("GET /health/ready ") && health.is_ready() {
+            } else if (request.starts_with("GET /health/ready ")
+                || request.starts_with("GET /readyz "))
+                && health.is_ready()
+            {
                 ("200 OK", "ready\n")
-            } else if request.starts_with("GET /health/ready ") {
+            } else if request.starts_with("GET /health/ready ")
+                || request.starts_with("GET /readyz ")
+            {
                 ("503 Service Unavailable", "not ready\n")
             } else {
                 ("404 Not Found", "not found\n")
@@ -714,10 +929,12 @@ impl WorkerSignedTxContext for BlockingHttpWorkerChainSource {
     }
 }
 
+type PendingStateWrites = BTreeMap<(ColumnFamily, Vec<u8>), Vec<u8>>;
+
 struct ProtocolStateDb<'a, S> {
     source: &'a S,
     block_hash: [u8; 32],
-    writes: Mutex<BTreeMap<(ColumnFamily, Vec<u8>), Vec<u8>>>,
+    writes: Mutex<PendingStateWrites>,
     deletes: Mutex<BTreeMap<(ColumnFamily, Vec<u8>), ()>>,
 }
 
@@ -1065,17 +1282,17 @@ where
     })?;
     let input = bundle.into_work_report_input(core_index);
     let db = ProtocolStateDb::new(state, lookup_anchor);
-    let mut backend = StateBackend::<TinySpec, _>::new_tiny(db);
+    let mut backend = StateBackend::<MiniJamSpec, _>::new(db);
     backend
-        .load_tiny_from_db()
+        .load_from_db()
         .map_err(|error| WorkerError::Refine(format!("failed to load Jambda state: {error:?}")))?;
     let output = jambda_refine::compute_work_report::<
-        TinySpec,
+        MiniJamSpec,
         ProtocolStateDb<'_, S>,
-        StateBackend<TinySpec, ProtocolStateDb<'_, S>>,
+        StateBackend<MiniJamSpec, ProtocolStateDb<'_, S>>,
         InterpBackend,
         jp_vm_engine::InnerEngine<InterpBackend>,
-    >(&backend, input, InterpBackend::default())
+    >(&backend, input, InterpBackend)
     .map_err(|error| WorkerError::Refine(format!("Jambda refine failed: {error:?}")))?;
     let canonical_report = output.report.encode();
     let projected_metadata =
@@ -1269,7 +1486,7 @@ impl std::error::Error for HttpError {}
 
 fn decode_hex(input: &str) -> Result<Vec<u8>, WorkerError> {
     let hex = input.strip_prefix("0x").unwrap_or(input);
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(WorkerError::Chain("hex input has odd length".into()));
     }
     let mut output = Vec::with_capacity(hex.len() / 2);
@@ -1677,10 +1894,36 @@ where
         core_index: u16,
         metrics: Option<&WorkerMetrics>,
     ) -> Result<Vec<Hash>, WorkerError> {
+        self.submit_candidate_reports_with_lanes(
+            worker_id,
+            pair,
+            chain_id,
+            core_index,
+            DEFAULT_EXECUTION_LANES,
+            metrics,
+        )
+        .await
+    }
+
+    pub async fn submit_candidate_reports_with_lanes(
+        &self,
+        worker_id: WorkerId,
+        pair: &sr25519::Pair,
+        chain_id: Hash,
+        core_index: u16,
+        execution_lanes: ExecutionLaneId,
+        metrics: Option<&WorkerMetrics>,
+    ) -> Result<Vec<Hash>, WorkerError> {
+        if execution_lanes == 0 {
+            return Err(WorkerError::Refine(
+                "execution_lanes must be greater than zero".into(),
+            ));
+        }
         let tasks = self.chain.pending_work_tasks().await?;
         let mut nonce = self.chain.account_nonce(pair.public().0)?;
         let genesis_hash = self.chain.genesis_hash()?;
-        let mut tx_hashes = Vec::new();
+        let mut candidate_tasks = Vec::new();
+        let mut bundles = std::collections::HashMap::new();
         for task in tasks {
             if !task.assigned_workers.contains(&worker_id) || task.candidate_producer != worker_id {
                 continue;
@@ -1697,8 +1940,22 @@ where
                 &self.decoder,
             )
             .map_err(WorkerError::Bundle)?;
-            let candidate =
-                prepare_candidate_envelope(&self.chain, chain_id, core_index, &task, &bundle)?;
+            bundles.insert(task.work_id, bundle);
+            candidate_tasks.push(task);
+        }
+        let lane_tasks = assign_tasks_to_lanes(candidate_tasks, execution_lanes);
+        let bundles = Arc::new(bundles);
+        let chain = &self.chain;
+        let mut executions = execute_tasks_on_lanes_scoped(lane_tasks, execution_lanes, |task| {
+            let bundle = bundles.get(&task.work_id).ok_or_else(|| {
+                WorkerError::Refine("candidate bundle missing from lane input".into())
+            })?;
+            prepare_candidate_envelope(chain, chain_id, core_index, &task, bundle)
+        });
+        executions.sort_by_key(|execution| execution.work_id);
+        let mut tx_hashes = Vec::new();
+        for execution in executions {
+            let candidate = execution.result?;
             let submission =
                 prepare_signed_candidate_submission(pair, nonce, genesis_hash, candidate.envelope);
             tx_hashes.push(
@@ -1718,6 +1975,72 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_lane_assignment_is_deterministic() {
+        assert_eq!(DEFAULT_EXECUTION_LANES, 1);
+        assert_eq!(deterministic_lane_for_work(0, 4), 0);
+        assert_eq!(deterministic_lane_for_work(7, 4), 3);
+        assert_eq!(deterministic_lane_for_work(8, 4), 0);
+        assert!(std::panic::catch_unwind(|| deterministic_lane_for_work(1, 0)).is_err());
+    }
+
+    #[test]
+    fn metrics_expose_refine_lane_counters() {
+        let metrics = WorkerMetrics::new();
+        metrics.record_refine_started(2);
+        metrics.record_refine_completed();
+        metrics.record_refine_failed();
+        let rendered = metrics.render_prometheus();
+        assert!(rendered.contains("minijam_worker_refine_started_total 1"));
+        assert!(rendered.contains("minijam_worker_refine_completed_total 1"));
+        assert!(rendered.contains("minijam_worker_refine_failed_total 1"));
+        assert!(rendered.contains("minijam_worker_candidate_queue_depth 2"));
+    }
+
+    #[test]
+    fn lane_executor_runs_independent_work_and_returns_stable_order() {
+        let tasks = (0..4u64)
+            .map(|work_id| {
+                let raw = vec![work_id as u8];
+                WorkerTaskV2::from_v1(task(work_id, 1, [work_id as u8; 32], &raw), 4)
+            })
+            .collect();
+        let results = execute_tasks_on_lanes(tasks, 4, |task| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            Ok(task.work_id)
+        });
+        assert_eq!(
+            results.iter().map(|item| item.work_id).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        assert!(results.iter().all(|item| item.result.is_ok()));
+        let overlap = results.iter().enumerate().any(|(i, left)| {
+            results
+                .iter()
+                .skip(i + 1)
+                .any(|right| intervals_overlap(left, right))
+        });
+        assert!(overlap, "lane executor must overlap independent tasks");
+    }
+
+    #[test]
+    fn scoped_lane_executor_supports_borrowed_production_state() {
+        let tasks = (0..2u64)
+            .map(|work_id| {
+                let raw = vec![work_id as u8];
+                WorkerTaskV2::from_v1(task(work_id, 1, [work_id as u8; 32], &raw), 2)
+            })
+            .collect();
+        let marker = String::from("borrowed-state");
+        let results = execute_tasks_on_lanes_scoped(tasks, 2, |task| {
+            assert_eq!(marker, "borrowed-state");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            Ok(task.work_id)
+        });
+        assert_eq!(results.len(), 2);
+        assert!(intervals_overlap(&results[0], &results[1]));
+    }
     use futures::executor::block_on;
     use jam_codec::Encode as JamEncode;
     use jp_core_primitives::{
@@ -1747,12 +2070,16 @@ mod tests {
 
     #[test]
     fn config_rejects_zero_limits() {
-        let mut config = WorkerConfig::default();
-        config.max_bundle_bytes = 0;
+        let config = WorkerConfig {
+            max_bundle_bytes: 0,
+            ..WorkerConfig::default()
+        };
         assert_eq!(config.validate(), Err(ConfigError::ZeroMaxBundleBytes));
 
-        let mut config = WorkerConfig::default();
-        config.poll_interval = Duration::ZERO;
+        let config = WorkerConfig {
+            poll_interval: Duration::ZERO,
+            ..WorkerConfig::default()
+        };
         assert_eq!(config.validate(), Err(ConfigError::ZeroPollInterval));
     }
 
@@ -2290,7 +2617,7 @@ mod tests {
         assert_eq!(submission.vote.verdict, Verdict::Support);
         assert!(sr25519::Pair::verify(
             &sr25519::Signature::from_raw(submission.signature),
-            &submission.vote.signing_hash(),
+            submission.vote.signing_hash(),
             &pair.public(),
         ));
         assert!(submission.extrinsic_hex.starts_with("0x"));

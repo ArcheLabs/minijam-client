@@ -5,10 +5,12 @@ use std::sync::Arc;
 use bounded_collections::BoundedVec;
 use cid::Cid;
 use jam_codec::Encode;
+use jambda_minijam_spec::MiniJamSpec;
 use jambda_refine::{ImportProofBundle, MiniJamWorkBundleV1, WorkReportInput};
 use jp_core_primitives::{
     crypto::OpaqueHash,
     simple::{ByteSequence, TimeSlot},
+    spec::ChainSpec,
     traits::JamHash,
     work::{ExtrinsicSpec, RefineContext, WorkItem, WorkPackage},
 };
@@ -80,8 +82,8 @@ pub fn build_work_package(input: BuildWorkInput) -> Result<BuiltWorkPackage, Bui
         items: vec![WorkItem {
             service: input.service_id,
             code_hash: OpaqueHash(input.service_code_hash),
-            refine_gas_limit: stage0::REFINE_GAS_LIMIT,
-            accumulate_gas_limit: stage0::ACCUMULATE_GAS_LIMIT,
+            refine_gas_limit: MiniJamSpec::MAX_REFINE_GAS,
+            accumulate_gas_limit: MiniJamSpec::MAX_REFINE_GAS,
             export_count: 0,
             payload: ByteSequence::from(input.payload),
             import_segments: Vec::new(),
@@ -191,22 +193,23 @@ mod tests {
         assert_eq!(
             built.package_hash,
             [
-                232, 222, 89, 181, 93, 38, 165, 168, 60, 14, 235, 85, 123, 143, 207, 38, 13, 60, 8,
-                59, 120, 38, 76, 172, 105, 102, 82, 95, 20, 231, 7, 105,
+                47, 98, 49, 26, 164, 41, 251, 58, 132, 97, 92, 153, 45, 86, 97, 46, 205, 111, 170,
+                5, 41, 244, 133, 201, 146, 202, 66, 133, 104, 222, 222, 191,
             ]
         );
         assert_eq!(
             built.content_ref.content_hash,
             [
-                94, 164, 110, 27, 175, 56, 178, 208, 87, 133, 144, 165, 58, 89, 33, 205, 50, 194,
-                10, 33, 74, 58, 129, 223, 52, 7, 160, 54, 135, 113, 112, 144,
+                93, 171, 219, 123, 150, 170, 129, 204, 82, 12, 80, 76, 10, 19, 3, 55, 149, 91, 139,
+                119, 181, 241, 53, 138, 109, 169, 241, 130, 117, 136, 104, 96,
             ]
         );
         assert_eq!(
             built.content_ref.cid_v1.as_slice(),
             &[
-                1, 85, 160, 228, 2, 32, 94, 164, 110, 27, 175, 56, 178, 208, 87, 133, 144, 165, 58,
-                89, 33, 205, 50, 194, 10, 33, 74, 58, 129, 223, 52, 7, 160, 54, 135, 113, 112, 144,
+                1, 85, 160, 228, 2, 32, 93, 171, 219, 123, 150, 170, 129, 204, 82, 12, 80, 76, 10,
+                19, 3, 55, 149, 91, 139, 119, 181, 241, 53, 138, 109, 169, 241, 130, 117, 136, 104,
+                96,
             ]
         );
     }

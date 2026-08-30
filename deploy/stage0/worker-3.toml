@@ -3,6 +3,7 @@ rpc_url = "http://public-rpc:9944"
 
 [worker]
 poll_interval_ms = 1000
+execution_lanes = 1
 recovery_db_path = "/data/minijam-worker-3-state.toml"
 
 [metrics]

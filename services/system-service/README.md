@@ -2,10 +2,10 @@
 
 This directory contains the Stage-0 MiniJAM system service C source.
 
-The service decodes accumulated `SystemOpBatch` results and executes
+The service decodes the ownerless `SystemOpV2` batch and executes
 `CreateService` through the standard `NEW`, `WRITE`, and `YIELD` JAM host
-calls. The narrowly scoped native adapter remains responsible only for
-`UpgradeService`.
+calls. `ApplyAllocation` is a separate explicit command; it is never encoded
+as a code upgrade and no controller mapping is written.
 
 Use:
 

@@ -18,7 +18,7 @@ Stage 0 release stack 不是无需凭据的本地开发链。Authority keystore�
 
 release Compose Stack 会启动一个 MiniJAM Node、一个 Compiler API、一个 Playground API 和 bundle gateway、三个使用不同身份的 Worker，以及一个 Playground Web 前端。Playground API 预期可被浏览器公开调用；Node RPC、Compiler API、Worker 健康检查端点和 metrics 仍保持私有。
 
-MiniJAM Playground API 是公开的开发者 API，并且有意支持跨域浏览器客户端。它使用 permissive CORS；CORS 不是授权边界。状态变更仍由 signed action、sr25519 钱包签名、重放保护和 Service Controller 检查授权。
+MiniJAM Playground API 是公开的开发者 API，并且有意支持跨域浏览器客户端。它使用 permissive CORS；CORS 不是授权边界。状态变更仍由 signed action、sr25519 钱包签名、重放保护和 Service-defined management policy（如适用）授权。
 
 ## 要求
 

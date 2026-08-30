@@ -3836,8 +3836,6 @@ dependencies = [
  "jp-vm-engine",
  "jp-vm-primitives",
  "log",
- "minijam-protocol",
- "parity-scale-codec",
 ]
 
 [[package]]
@@ -3881,6 +3879,7 @@ dependencies = [
  "jambda-accumulate",
  "jambda-authorizations",
  "jambda-history",
+ "jambda-minijam-spec",
  "jambda-preimages",
  "jambda-safrole",
  "jambda-state-backend",
@@ -3892,6 +3891,13 @@ dependencies = [
  "minijam-protocol",
  "parity-scale-codec",
  "spin 0.10.0",
+]
+
+[[package]]
+name = "jambda-minijam-spec"
+version = "0.0.1"
+dependencies = [
+ "jp-core-primitives",
 ]
 
 [[package]]
@@ -5205,6 +5211,8 @@ version = "0.1.0"
 dependencies = [
  "frame-system",
  "futures",
+ "jam-codec",
+ "jp-core-primitives",
  "jsonrpsee",
  "minijam-protocol",
  "minijam-runtime",
@@ -5241,6 +5249,30 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "minijam-formal-rpc"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "cid",
+ "jam-codec",
+ "jp-core-primitives",
+ "minijam-chain-client",
+ "minijam-protocol",
+ "minijam-runtime",
+ "minijam-work-package-builder",
+ "pallet-minijam",
+ "parity-scale-codec",
+ "serde",
+ "serde_json",
+ "sp-core",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower-http 0.6.11",
 ]
 
 [[package]]
@@ -5344,6 +5376,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "minijam-pvm-executor"
+version = "0.1.0"
+dependencies = [
+ "jp-vm-engine",
+ "jp-vm-interp",
+ "jp-vm-primitives",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "minijam-rpc-runtime-api"
 version = "0.1.0"
 dependencies = [
@@ -5362,6 +5404,7 @@ dependencies = [
  "frame-system-rpc-runtime-api",
  "jam-codec",
  "jambda-minijam-executive",
+ "jambda-minijam-spec",
  "jp-core-primitives",
  "jp-vm-predecode",
  "minijam-jamcore-api",
@@ -5412,6 +5455,7 @@ dependencies = [
  "bounded-collections 0.2.4",
  "cid",
  "jam-codec",
+ "jambda-minijam-spec",
  "jambda-refine",
  "jp-core-primitives",
  "minijam-protocol",
@@ -5428,6 +5472,7 @@ dependencies = [
  "futures",
  "jam-codec",
  "jambda-minijam-executive",
+ "jambda-minijam-spec",
  "jambda-refine",
  "jambda-state-backend",
  "jp-core-primitives",
@@ -10529,6 +10574,7 @@ dependencies = [
  "futures-util",
  "http 1.4.2",
  "http-body 1.0.1",
+ "http-body-util",
  "pin-project-lite",
  "tower 0.5.3",
  "tower-layer",

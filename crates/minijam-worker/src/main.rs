@@ -44,6 +44,9 @@ struct Cli {
     poll_interval_ms: Option<u64>,
 
     #[arg(long)]
+    execution_lanes: Option<u16>,
+
+    #[arg(long)]
     state_db: Option<PathBuf>,
 
     #[arg(long)]
@@ -95,6 +98,9 @@ fn build_config(cli: &Cli) -> Result<WorkerConfig, String> {
     }
     if let Some(poll_interval_ms) = cli.poll_interval_ms {
         config.poll_interval = Duration::from_millis(poll_interval_ms);
+    }
+    if let Some(execution_lanes) = cli.execution_lanes {
+        config.execution_lanes = execution_lanes;
     }
     if let Some(state_db) = &cli.state_db {
         config.recovery_db_path = Some(state_db.clone());
@@ -163,10 +169,11 @@ fn main() {
     }
 
     eprintln!(
-        "minijam worker configured rpc={} ipfs_gateway={} poll_ms={} max_bundle_bytes={} state_db={} metrics={}",
+        "minijam worker configured rpc={} ipfs_gateway={} poll_ms={} execution_lanes={} max_bundle_bytes={} state_db={} metrics={}",
         config.rpc_url,
         config.ipfs_gateway,
         config.poll_interval.as_millis(),
+        config.execution_lanes,
         config.max_bundle_bytes,
         config
             .recovery_db_path
@@ -318,11 +325,12 @@ where
     D: minijam_worker_engine::WorkBundleDecoder,
 {
     let submitted_candidates = if config.submit_candidates {
-        block_on(runner.submit_candidate_reports(
+        block_on(runner.submit_candidate_reports_with_lanes(
             config.worker_id.unwrap(),
             signing_pair.expect("signing pair is checked before polling"),
             config.chain_id,
             config.core_index,
+            config.execution_lanes,
             Some(metrics),
         ))?
         .len()

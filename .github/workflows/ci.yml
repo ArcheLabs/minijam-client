@@ -6,6 +6,7 @@ on:
       - main
       - m9-stage0-local-e2e
       - m10-minimal-release
+      - agent/season2-release-readiness
   workflow_dispatch:
 
 permissions:
@@ -13,12 +14,14 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_TEST_THREADS: 1
 
 jobs:
   trusted-checks:
     name: Trusted checks
     if: github.repository == 'ArcheLabs/minijam-client'
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
 
     steps:
       - name: Checkout MiniJAM
@@ -75,6 +78,19 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
+      - name: Restore Cargo and Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.rustup/toolchains
+            target
+          key: season2-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            season2-ci-${{ runner.os }}-
+            stage0-release-${{ runner.os }}-
+
       - name: Install native build dependencies
         shell: bash
         run: |
@@ -103,11 +119,24 @@ jobs:
       - name: Check submodule pin
         run: ./scripts/check-submodule.sh
 
+      - name: Check MiniJamSpec production boundary
+        run: ./scripts/check-minijam-boundary.sh
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Run Season 2 fast gate
+        run: |
+          cargo test -p pallet-minijam
+          cargo test -p pallet-minijam-workers
+          cargo test -p minijam-playground-api
+          ./scripts/test-season2-hardening.sh
+
       - name: Test workspace
         run: cargo test --workspace
+
+      - name: Test long-running Jambda integration
+        run: cargo test --workspace -- --ignored
 
       - name: Check no_std public crates
         run: >

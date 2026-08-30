@@ -5,7 +5,13 @@ English | [Simplified Chinese](README.zh-CN.md)
 > MiniJAM Season 2 is an Experience Network and is still in early development.
 >
 
-MiniJAM is an independent Polkadot SDK chain running a simplified version of the JAM protocol.
+MiniJAM is an independent Polkadot SDK chain running the MiniJamSpec v1
+network profile and a deliberately small JAM protocol surface. MiniJamSpec is
+independent of JAM TinySpec and FullSpec.
+
+See [MiniJamSpec](docs/minijam-spec.md), the
+[execution boundary](docs/execution-boundary.md), and the
+[compatibility matrix](docs/compatibility-matrix.md).
 
 ## Playground API
 
@@ -16,8 +22,9 @@ applications, community MiniJAM apps, and third-party developer frontends.
 
 CORS is not an authorization boundary. Read access is public, while mutation
 authorization remains enforced by signed actions, sr25519 wallet signatures,
-and replay protection. Service creation and upgrades remain Controller-only;
-ordinary Work is permissionless at the Experience layer and is submitted by
+and replay protection. Service creation is ownerless; service upgrades, when
+supported, are authorized by the Service-defined JamScript management policy.
+Ordinary Work is permissionless at the Experience layer and is submitted by
 the runtime Ingress Relayer. The API does not use cookie sessions or
 credentialed CORS.
 
@@ -164,7 +171,9 @@ cargo check \
 
 ## Build and Run a Local Node
 
-The node source, chain specs, RPC wiring, Aura authoring, and GRANDPA service are present. Full Runtime and node builds currently require private jambda fixes for `generic_const_exprs` trait-solver overflows in the `TinySpec` state backend and codec path.
+The node source, MiniJamSpec chain profiles, RPC wiring, Aura authoring, and
+GRANDPA service are present. Full Runtime and node builds require the pinned
+Jambda revision from the compatibility matrix.
 
 The following commands are the intended local-node workflow once the Runtime build path is fixed:
 

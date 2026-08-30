@@ -1,4 +1,5 @@
 //! MiniJam node CLI.
+#![allow(clippy::result_large_err)]
 #![warn(missing_docs)]
 
 mod chain_spec;

@@ -189,11 +189,6 @@ impl_runtime_apis! {
                 .map(|value| value.encode())
         }
 
-        fn get_service_controller(service_id: u32) -> Option<Vec<u8>> {
-            pallet_minijam::Pallet::<Runtime>::get_service_controller(service_id)
-                .map(|value| value.encode())
-        }
-
         fn get_protocol_state(key: [u8; 31]) -> Option<Vec<u8>> {
             pallet_minijam::Pallet::<Runtime>::get_protocol_state(key)
                 .map(|value| value.encode())

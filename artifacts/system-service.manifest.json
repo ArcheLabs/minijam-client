@@ -1,12 +1,12 @@
 {
   "name": "minijam-system-service",
-  "abi_version": 1,
+  "abi_version": 2,
   "artifact": "system-service.blob",
   "debug_artifact": "system-service.polkavm",
-  "byte_len": 5725,
-  "sha256": "408f0322cdcad46c3b01b66e102881c6fc0f7c1b08642c97050a64c229b63397",
+  "byte_len": 4961,
+  "sha256": "def863ba5364bd7eccac35a1aced33e09a5867218a8287564b4e11c8df5c440a",
   "source": "services/system-service/src/service.c",
   "toolchain": "service-toolchain/compiler/toolchain.lock",
   "stage": 0,
-  "note": "CreateService executes in the Service 0 PVM; UpgradeService remains a documented Stage 0 native deviation."
+  "note": "Ownerless SystemOpV2 Service 0; CreateService and ApplyAllocation are explicit commands."
 }

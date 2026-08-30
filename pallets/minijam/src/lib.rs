@@ -37,17 +37,14 @@ pub mod pallet {
     use minijam_protocol::{
         blake2_256, CanonicalPreimageBytes, CanonicalReportBytes, CanonicalWorkPackageBytes,
         ContentRef, Hash, PreimageBatch, PreimageMetadataV1, ProtocolStateChange, ReportEnvelopeV1,
-        StateOperation, StateValue, SystemCommandV1, SystemOpBatch, SystemOpV1, WorkerTaskV1,
+        StateOperation, StateValue, SystemCommandV2, SystemOpBatch, SystemOpV2, WorkerTaskV1,
         WorkerVerificationTaskV1, PROTOCOL_VERSION_V1,
     };
     use minijam_state_adapter::{validate_execution_output, ValidatedDelta, ValidationError};
     use pallet_minijam_workers::RoundDecision;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
-    const ALLOCATION_SYSTEM_SERVICE_ID: u32 = u32::MAX;
     const ALLOCATION_SYSTEM_SENDER: [u8; 32] = [0xa1; 32];
-    const ALLOCATION_SYSTEM_CODE_HASH: Hash = [0xa2; 32];
-    const ALLOCATION_SYSTEM_MARKER: &[u8; 8] = b"allocv1\0";
     const ALLOCATION_RECEIPT_PREFIX: &[u8] = b"system/allocation/";
 
     pub type WorkId = u64;
@@ -55,7 +52,6 @@ pub mod pallet {
         <<T as Config>::Currency as Inspect<<T as frame_system::Config>::AccountId>>::Balance;
     const SYSTEM_SERVICE_ID: u32 = 0;
     const SYSTEM_STORAGE_RECEIPT_PREFIX: &[u8] = b"system/receipt/";
-    const SYSTEM_STORAGE_CONTROLLER_PREFIX: &[u8] = b"system/controller/";
 
     #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
     pub struct ServiceFuelAccount<Balance> {
@@ -198,7 +194,7 @@ pub mod pallet {
     #[scale_info(skip_type_params(T))]
     pub struct PendingSystemOp<T: Config> {
         pub submitter: T::AccountId,
-        pub op: SystemOpV1,
+        pub op: SystemOpV2,
     }
 
     #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
@@ -228,7 +224,7 @@ pub mod pallet {
     #[scale_info(skip_type_params(T))]
     pub struct QuarantinedSystemOp<T: Config> {
         pub submitter: T::AccountId,
-        pub op: SystemOpV1,
+        pub op: SystemOpV2,
         pub canonical_hash: Hash,
         pub error_code: ExecutionErrorCode,
         pub block_number: BlockNumberFor<T>,
@@ -479,6 +475,7 @@ pub mod pallet {
         pub protocol_state: Vec<(Vec<u8>, Vec<u8>)>,
         pub service_fuel: Vec<(u32, BalanceOf<T>)>,
         pub ingress_relayer: Option<T::AccountId>,
+        pub allocation_relayer: Option<T::AccountId>,
         #[serde(skip)]
         pub _phantom: core::marker::PhantomData<T>,
     }
@@ -489,9 +486,11 @@ pub mod pallet {
             if let Some(account) = &self.ingress_relayer {
                 IngressRelayer::<T>::put(account);
             }
-            if let Some(account) = &self.ingress_relayer {
-                // Minimal deployment fallback; this remains a separate
-                // storage key so it can be split without a protocol change.
+            if let Some(account) = &self.allocation_relayer {
+                AllocationRelayer::<T>::put(account);
+            } else if let Some(account) = &self.ingress_relayer {
+                // Keep old genesis patches compatible while allowing
+                // production deployments to use a distinct key.
                 AllocationRelayer::<T>::put(account);
             }
             for (key, value) in &self.protocol_state {
@@ -942,13 +941,13 @@ pub mod pallet {
         #[transactional]
         pub fn submit_system_op(
             origin: OriginFor<T>,
-            command: Box<SystemCommandV1>,
+            command: Box<SystemCommandV2>,
         ) -> DispatchResult {
             let submitter = Self::ensure_ingress_relayer(origin)?;
             Self::validate_system_command(&command)?;
             let sender = Self::system_op_sender(&submitter);
             let nonce = SystemOpNonces::<T>::get(sender);
-            let op = SystemOpV1::new(sender, nonce, *command);
+            let op = SystemOpV2::new(sender, nonce, *command);
             ensure!(
                 !PendingSystemOpKeys::<T>::contains_key(op.request_id),
                 Error::<T>::DuplicatePendingSystemOp
@@ -1281,7 +1280,7 @@ pub mod pallet {
             QuarantinedSystemOps::<T>::get()
         }
 
-        pub fn get_system_op(request_id: Hash) -> Option<SystemOpV1> {
+        pub fn get_system_op(request_id: Hash) -> Option<SystemOpV2> {
             PendingSystemOps::<T>::get()
                 .into_iter()
                 .find(|pending| pending.op.request_id == request_id)
@@ -1319,16 +1318,6 @@ pub mod pallet {
             ProtocolState::<T>::get(state_key)
         }
 
-        pub fn get_service_controller(service_id: u32) -> Option<StateValue> {
-            let mut key = Vec::from(SYSTEM_STORAGE_CONTROLLER_PREFIX);
-            key.extend_from_slice(&service_id.to_le_bytes());
-            let state_key =
-                StoreKey::new_service_storage_key(&SYSTEM_SERVICE_ID, &ByteSequence::from(key))
-                    .to_state_key()
-                    .0;
-            ProtocolState::<T>::get(state_key)
-        }
-
         pub fn get_protocol_state(key: [u8; 31]) -> Option<StateValue> {
             ProtocolState::<T>::get(key)
         }
@@ -1345,7 +1334,7 @@ pub mod pallet {
 
         fn allocation_relayer_account() -> Result<T::AccountId, DispatchError> {
             AllocationRelayer::<T>::get()
-                .or_else(|| IngressRelayer::<T>::get())
+                .or_else(IngressRelayer::<T>::get)
                 .ok_or(Error::<T>::AllocationRelayerNotConfigured.into())
         }
 
@@ -1878,9 +1867,13 @@ pub mod pallet {
         fn pending_system_ops_batch() -> Result<SystemOpBatch, ExecutionFailure> {
             let mut pending = PendingSystemOps::<T>::get().into_inner();
             pending.sort_by_key(|pending| {
-                (pending.op.sender, pending.op.nonce, pending.op.request_id)
+                (
+                    pending.op.submitter,
+                    pending.op.nonce,
+                    pending.op.request_id,
+                )
             });
-            let mut ops: Vec<SystemOpV1> = pending.into_iter().map(|pending| pending.op).collect();
+            let mut ops: Vec<SystemOpV2> = pending.into_iter().map(|pending| pending.op).collect();
             for encoded in Self::pending_allocation_inputs() {
                 let mut raw = encoded.as_slice();
                 let allocation = AllocationV1::<BalanceOf<T>>::decode(&mut raw)
@@ -1895,7 +1888,7 @@ pub mod pallet {
 
         fn allocation_system_op(
             allocation: &AllocationV1<BalanceOf<T>>,
-        ) -> Result<SystemOpV1, ExecutionFailure> {
+        ) -> Result<SystemOpV2, ExecutionFailure> {
             let amount = allocation.amount.saturated_into::<u64>();
             if amount.saturated_into::<BalanceOf<T>>() != allocation.amount {
                 return Err(ExecutionFailure::Fatal);
@@ -1909,23 +1902,13 @@ pub mod pallet {
                 return Err(ExecutionFailure::Fatal);
             }
 
-            let mut controller = [0u8; 32];
-            controller[..ALLOCATION_SYSTEM_MARKER.len()]
-                .copy_from_slice(ALLOCATION_SYSTEM_MARKER.as_slice());
-            controller[8..16].copy_from_slice(&allocation.allocation_id.to_le_bytes());
-            controller[16..20].copy_from_slice(&allocation.target_service.to_le_bytes());
-            controller[20..28].copy_from_slice(&amount.to_le_bytes());
-
-            Ok(SystemOpV1::new(
+            Ok(SystemOpV2::new(
                 ALLOCATION_SYSTEM_SENDER,
                 allocation.allocation_id,
-                SystemCommandV1::UpgradeService {
-                    controller,
-                    service_id: ALLOCATION_SYSTEM_SERVICE_ID,
-                    code_hash: ALLOCATION_SYSTEM_CODE_HASH,
-                    code_len: 1,
-                    min_item_gas: 1,
-                    min_memo_gas: service_info.min_memo_gas,
+                SystemCommandV2::ApplyAllocation {
+                    allocation_id: allocation.allocation_id,
+                    target_service: allocation.target_service,
+                    amount,
                 },
             ))
         }
@@ -2069,9 +2052,9 @@ pub mod pallet {
             });
         }
 
-        fn validate_system_command(command: &SystemCommandV1) -> DispatchResult {
+        fn validate_system_command(command: &SystemCommandV2) -> DispatchResult {
             match command {
-                SystemCommandV1::CreateService {
+                SystemCommandV2::CreateService {
                     code_len,
                     min_item_gas,
                     min_memo_gas,
@@ -2081,17 +2064,14 @@ pub mod pallet {
                     ensure!(*min_item_gas > 0, Error::<T>::InvalidSystemOp);
                     ensure!(*min_memo_gas > 0, Error::<T>::InvalidSystemOp);
                 }
-                SystemCommandV1::UpgradeService {
-                    service_id,
-                    code_len,
-                    min_item_gas,
-                    min_memo_gas,
-                    ..
+                SystemCommandV2::ApplyAllocation {
+                    allocation_id,
+                    target_service,
+                    amount,
                 } => {
-                    ensure!(*service_id > 0, Error::<T>::InvalidSystemOp);
-                    ensure!(*code_len > 0, Error::<T>::InvalidSystemOp);
-                    ensure!(*min_item_gas > 0, Error::<T>::InvalidSystemOp);
-                    ensure!(*min_memo_gas > 0, Error::<T>::InvalidSystemOp);
+                    ensure!(*allocation_id > 0, Error::<T>::InvalidSystemOp);
+                    ensure!(*target_service > 0, Error::<T>::InvalidSystemOp);
+                    ensure!(*amount > 0, Error::<T>::InvalidSystemOp);
                 }
             }
             Ok(())
@@ -2168,6 +2148,9 @@ pub mod pallet {
             Ok(())
         }
 
+        // Retained for decoding legacy fuel reservations; Season 2 execution
+        // does not call the service-fuel charging path.
+        #[allow(dead_code)]
         fn decode_work_report(bytes: &[u8]) -> Result<WorkReport, ExecutionFailure> {
             let mut input = bytes;
             let report = WorkReport::decode(&mut input).map_err(|_| ExecutionFailure::Fatal)?;
@@ -2177,6 +2160,7 @@ pub mod pallet {
             Ok(report)
         }
 
+        #[allow(dead_code)]
         fn reserve_work_fuel(
             package: &WorkPackage,
         ) -> Result<
@@ -2225,6 +2209,7 @@ pub mod pallet {
                 .map_err(|_| Error::<T>::TooManyServicesPerWork.into())
         }
 
+        #[allow(dead_code)]
         fn release_work_fuel(work_id: WorkId, work: &mut WorkRecord<T>) -> DispatchResult {
             if work.fuel_reservation.is_empty() {
                 return Ok(());
@@ -2262,6 +2247,7 @@ pub mod pallet {
             Ok(())
         }
 
+        #[allow(dead_code)]
         fn settle_imported_work_fuel(
             work_id: WorkId,
             work: &mut WorkRecord<T>,
@@ -2358,6 +2344,7 @@ pub mod pallet {
             Ok(())
         }
 
+        #[allow(dead_code)]
         fn fuel_cost(refine_gas: u64, accumulate_gas: u64) -> BalanceOf<T> {
             let refine_cost = refine_gas
                 .saturated_into::<BalanceOf<T>>()

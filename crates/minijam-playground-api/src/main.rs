@@ -24,6 +24,19 @@ async fn main() {
             .await
             .expect("connect MiniJAM chain"),
     );
+    let allocation_signer_uri =
+        std::env::var("MINIJAM_ALLOCATION_RELAYER_URI").unwrap_or_else(|_| signer_uri.clone());
+    let allocation_signer = sr25519::Pair::from_string(&allocation_signer_uri, None)
+        .expect("valid allocation relayer URI");
+    let allocation_chain = Arc::new(
+        minijam_chain_client::MiniJamChainClient::connect(
+            std::env::var("MINIJAM_RPC_URL").unwrap_or_else(|_| "ws://127.0.0.1:9944".into()),
+            allocation_signer,
+            Duration::from_secs(15),
+        )
+        .await
+        .expect("connect MiniJAM allocation chain"),
+    );
     let genesis_hash = match std::env::var("MINIJAM_GENESIS_HASH") {
         Ok(value) if !value.eq_ignore_ascii_case("rpc") => decode_hash(&value),
         _ => chain
@@ -40,7 +53,8 @@ async fn main() {
         },
     )
     .expect("open playground")
-    .with_chain(chain);
+    .with_chain(chain)
+    .with_allocation_chain(allocation_chain);
     playground.start_recovery();
     let listener = tokio::net::TcpListener::bind(bind)
         .await

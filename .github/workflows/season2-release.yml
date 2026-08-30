@@ -1,0 +1,142 @@
+name: Season 2 Release Gate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TEST_THREADS: 1
+
+jobs:
+  release-gate:
+    name: Season 2 build, E2E, and recovery smoke
+    if: github.repository == 'ArcheLabs/minijam-client'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout MiniJAM
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+
+      - name: Check Jambda App configuration
+        env:
+          JAMBDA_APP_CLIENT_ID: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          JAMBDA_APP_PRIVATE_KEY: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+        run: |
+          test -n "${JAMBDA_APP_CLIENT_ID}"
+          test -n "${JAMBDA_APP_PRIVATE_KEY}"
+
+      - name: Read and checkout pinned Jambda
+        id: jambda-pin
+        env:
+          JAMBDA_APP_CLIENT_ID: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          JAMBDA_APP_PRIVATE_KEY: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+        run: |
+          sha="$(git ls-tree HEAD external/jambda | awk '{print $3}')"
+          test "${#sha}" -eq 40
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+        shell: bash
+
+      - name: Create Jambda token
+        id: jambda-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+          owner: ArcheLabs
+          repositories: jambda
+          permission-contents: read
+
+      - name: Checkout pinned Jambda source
+        uses: actions/checkout@v4
+        with:
+          repository: ArcheLabs/jambda
+          ref: ${{ steps.jambda-pin.outputs.sha }}
+          token: ${{ steps.jambda-token.outputs.token }}
+          path: external/jambda
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-18 llvm-18-dev libclang-18-dev protobuf-compiler
+          echo "LLVM_CONFIG_PATH=$(command -v llvm-config-18)" >> "${GITHUB_ENV}"
+          echo "LIBCLANG_PATH=$($(command -v llvm-config-18) --libdir)" >> "${GITHUB_ENV}"
+          echo "CLANG_PATH=$(command -v clang-18)" >> "${GITHUB_ENV}"
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: season2-release-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: season2-release-${{ runner.os }}-
+
+      - name: Validate and test Rust
+        run: |
+          cargo fmt --all -- --check
+          cargo test -p pallet-minijam
+          cargo test -p pallet-minijam-workers
+          cargo test -p minijam-playground-api
+          cargo test --workspace
+          cargo test --workspace -- --ignored
+          cargo check -p minijam-runtime --no-default-features --target wasm32v1-none
+          ./scripts/test-season2-hardening.sh
+
+      - name: Build node and export fresh Season 2 chain spec
+        env:
+          MINIJAM_SEASON2_INGRESS_RELAYER_PUBLIC_KEY: ${{ vars.MINIJAM_SEASON2_INGRESS_RELAYER_PUBLIC_KEY }}
+          MINIJAM_SEASON2_ALLOCATION_RELAYER_PUBLIC_KEY: ${{ vars.MINIJAM_SEASON2_ALLOCATION_RELAYER_PUBLIC_KEY }}
+        run: |
+          test -n "${MINIJAM_SEASON2_INGRESS_RELAYER_PUBLIC_KEY}"
+          test -n "${MINIJAM_SEASON2_ALLOCATION_RELAYER_PUBLIC_KEY}"
+          cargo build --release -p minijam-node
+          ./scripts/export-season2-chain-specs.sh
+
+      - name: Build local Season 2 images
+        run: |
+          docker build --target node -t season2-node:gate . -f deploy/local/Dockerfile
+          docker build --target worker -t season2-worker:gate . -f deploy/local/Dockerfile
+          docker build --target playground -t season2-api:gate . -f deploy/local/Dockerfile
+          docker build --target compiler -t season2-compiler:gate . -f deploy/local/Dockerfile
+
+      - name: Install Playwright dependencies
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/playground-web/package-lock.json
+
+      - name: Run Season 2 Docker E2E and restart smoke
+        working-directory: apps/playground-web
+        env:
+          MINIJAM_E2E_PULL_POLICY: never
+          MINIJAM_E2E_WALLET_SEED: ${{ secrets.MINIJAM_E2E_WALLET_SEED }}
+          MINIJAM_RELAYER_URI: ${{ secrets.MINIJAM_SEASON2_INGRESS_RELAYER_URI }}
+          MINIJAM_ALLOCATION_RELAYER_URI: ${{ secrets.MINIJAM_SEASON2_ALLOCATION_RELAYER_URI }}
+          MINIJAM_WORKER_IPFS_GATEWAY: http://api:8080/ipfs
+          MINIJAM_NODE_IMAGE: season2-node:gate
+          MINIJAM_WORKER_IMAGE: season2-worker:gate
+          MINIJAM_API_IMAGE: season2-api:gate
+          MINIJAM_COMPILER_IMAGE: season2-compiler:gate
+          MINIJAM_SEASON2_CHAIN_SPEC_FILE: ${{ github.workspace }}/chain-specs/season2.json
+          MINIJAM_SEASON2_INGRESS_RELAYER_PUBLIC_KEY: ${{ vars.MINIJAM_SEASON2_INGRESS_RELAYER_PUBLIC_KEY }}
+          MINIJAM_SEASON2_ALLOCATION_RELAYER_PUBLIC_KEY: ${{ vars.MINIJAM_SEASON2_ALLOCATION_RELAYER_PUBLIC_KEY }}
+          MINIJAM_WORKER_KEY_FILE: ${{ runner.temp }}/season2-worker.seed
+          MINIJAM_SEASON2_WORKER_SEED: ${{ secrets.MINIJAM_SEASON2_WORKER_SEED }}
+        run: |
+          printf '%s\n' "${MINIJAM_SEASON2_WORKER_SEED}" > "${MINIJAM_WORKER_KEY_FILE}"
+          npm ci
+          npx playwright install --with-deps chromium
+          cd "${{ github.workspace }}"
+          ./scripts/test-season2-e2e.sh

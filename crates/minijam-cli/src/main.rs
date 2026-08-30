@@ -9,7 +9,7 @@ use std::{
 
 use clap::{Parser, Subcommand, ValueEnum};
 use minijam_protocol::{
-    ContentRef, Hash, OpposeReason, ReportEnvelopeV1, SystemCommandV1, Verdict, WorkerVoteV1,
+    ContentRef, Hash, OpposeReason, ReportEnvelopeV1, SystemCommandV2, Verdict, WorkerVoteV1,
     PROTOCOL_VERSION_V1,
 };
 use parity_scale_codec::{Decode, Encode};
@@ -90,22 +90,6 @@ enum Command {
     },
     SubmitCreateServiceSystemOp {
         #[arg(long)]
-        controller: String,
-        #[arg(long)]
-        code_hash: String,
-        #[arg(long)]
-        code_len: u32,
-        #[arg(long)]
-        min_item_gas: u64,
-        #[arg(long)]
-        min_memo_gas: u64,
-    },
-    SubmitUpgradeServiceSystemOp {
-        #[arg(long)]
-        controller: String,
-        #[arg(long)]
-        service_id: u32,
-        #[arg(long)]
         code_hash: String,
         #[arg(long)]
         code_len: u32,
@@ -167,9 +151,6 @@ enum Command {
         request_id: String,
     },
     GetSystemServiceInfo,
-    GetServiceController {
-        service_id: u32,
-    },
     GetProtocolState {
         key: String,
     },
@@ -278,36 +259,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
         }
         Command::SubmitCreateServiceSystemOp {
-            controller,
             code_hash,
             code_len,
             min_item_gas,
             min_memo_gas,
         } => {
-            let command = SystemCommandV1::CreateService {
-                controller: parse_hex_array::<32>(&controller)?,
-                code_hash: parse_hash(&code_hash)?,
-                code_len,
-                min_item_gas,
-                min_memo_gas,
-            };
-            print_call_data(
-                "MiniJam",
-                "submit_system_op",
-                call_data(CALL_SUBMIT_SYSTEM_OP, &command),
-            );
-        }
-        Command::SubmitUpgradeServiceSystemOp {
-            controller,
-            service_id,
-            code_hash,
-            code_len,
-            min_item_gas,
-            min_memo_gas,
-        } => {
-            let command = SystemCommandV1::UpgradeService {
-                controller: parse_hex_array::<32>(&controller)?,
-                service_id,
+            let command = SystemCommandV2::CreateService {
                 code_hash: parse_hash(&code_hash)?,
                 code_len,
                 min_item_gas,
@@ -402,11 +359,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         Command::GetSystemServiceInfo => {
             print_rpc_result(&cli.rpc, "minijam_getSystemServiceInfo", json!([]))?
         }
-        Command::GetServiceController { service_id } => print_rpc_result(
-            &cli.rpc,
-            "minijam_getServiceController",
-            json!([service_id]),
-        )?,
         Command::GetProtocolState { key } => {
             let key = parse_hex_array::<31>(&key)?;
             print_rpc_result(
@@ -612,7 +564,7 @@ fn parse_hex_array<const N: usize>(input: &str) -> Result<[u8; N], Box<dyn Error
 
 fn parse_hex_bytes(input: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     let hex = input.strip_prefix("0x").unwrap_or(input);
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(Box::new(CliError("hex input must have even length".into())));
     }
     let mut output = Vec::with_capacity(hex.len() / 2);

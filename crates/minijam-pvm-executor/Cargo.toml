@@ -1,0 +1,12 @@
+[package]
+name = "minijam-pvm-executor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+jp-vm-engine = { path = "../../external/jambda/vm/engine" }
+jp-vm-interp = { path = "../../external/jambda/vm/interp" }
+jp-vm-primitives = { path = "../../external/jambda/vm/primitives" }
+thiserror.workspace = true

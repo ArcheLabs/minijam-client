@@ -20,7 +20,7 @@ use minijam_jamcore_api::{
 use minijam_protocol::{
     blake2_256, BulletinEvidence, CanonicalReportBytes, ContentRef, PreimageMetadataV1,
     ProtocolStateChange, ReportEnvelopeV1, ReportMetadataV1, ReportSignatures, StateOperation,
-    StateValue, SystemCommandV1, Verdict, WorkerVoteV1, NS_SERVICE_STORAGE, PROTOCOL_VERSION_V1,
+    StateValue, SystemCommandV2, Verdict, WorkerVoteV1, NS_SERVICE_STORAGE, PROTOCOL_VERSION_V1,
 };
 use parity_scale_codec::Encode;
 use sp_core::{sr25519, Pair};
@@ -170,7 +170,7 @@ impl MiniJamExecutor for TestExecutor {
         if input.system_ops.iter().any(|op| {
             matches!(
                 op.command,
-                SystemCommandV1::CreateService { code_hash, .. } if code_hash == [0xee; 32]
+                SystemCommandV2::CreateService { code_hash, .. } if code_hash == [0xee; 32]
             )
         }) {
             return Err(MiniJamError::Execution(ExecutionOutcome::ServiceFailure));
@@ -294,6 +294,7 @@ fn new_test_ext() -> sp_io::TestExternalities {
         protocol_state: Vec::new(),
         service_fuel: Vec::new(),
         ingress_relayer: Some(5),
+        allocation_relayer: Some(5),
         _phantom: Default::default(),
     }
     .assimilate_storage(&mut storage)
@@ -311,6 +312,7 @@ fn test_ext_with_protocol_state(
         protocol_state,
         service_fuel: Vec::new(),
         ingress_relayer: Some(5),
+        allocation_relayer: Some(5),
         _phantom: Default::default(),
     }
     .assimilate_storage(&mut storage)
@@ -834,6 +836,7 @@ fn genesis_config_seeds_service_fuel() {
         protocol_state: Vec::new(),
         service_fuel: vec![(7, 250), (7, 50), (8, 0)],
         ingress_relayer: Some(5),
+        allocation_relayer: Some(5),
         _phantom: Default::default(),
     }
     .assimilate_storage(&mut storage)
@@ -991,8 +994,7 @@ fn queued_preimages_are_imported_with_next_virtual_block() {
 #[test]
 fn queued_system_ops_are_consumed_with_next_virtual_block() {
     new_test_ext().execute_with(|| {
-        let command = SystemCommandV1::CreateService {
-            controller: [5u8; 32],
+        let command = SystemCommandV2::CreateService {
             code_hash: [9u8; 32],
             code_len: 32,
             min_item_gas: 1,
@@ -1304,8 +1306,7 @@ fn invalid_system_ops_are_rejected_before_queueing() {
         assert_noop!(
             MiniJam::submit_system_op(
                 RuntimeOrigin::signed(5),
-                Box::new(SystemCommandV1::CreateService {
-                    controller: [5u8; 32],
+                Box::new(SystemCommandV2::CreateService {
                     code_hash: [9u8; 32],
                     code_len: 0,
                     min_item_gas: 1,
@@ -1323,8 +1324,7 @@ fn system_op_execution_failure_is_quarantined_without_panic() {
     new_test_ext().execute_with(|| {
         assert_ok!(MiniJam::submit_system_op(
             RuntimeOrigin::signed(5),
-            Box::new(SystemCommandV1::CreateService {
-                controller: [5u8; 32],
+            Box::new(SystemCommandV2::CreateService {
                 code_hash: [0xee; 32],
                 code_len: 32,
                 min_item_gas: 1,
@@ -1395,8 +1395,7 @@ fn root_manages_quarantined_system_ops() {
     new_test_ext().execute_with(|| {
         assert_ok!(MiniJam::submit_system_op(
             RuntimeOrigin::signed(5),
-            Box::new(SystemCommandV1::CreateService {
-                controller: [5u8; 32],
+            Box::new(SystemCommandV2::CreateService {
                 code_hash: [0xee; 32],
                 code_len: 32,
                 min_item_gas: 1,
@@ -1435,8 +1434,7 @@ fn root_manages_quarantined_system_ops() {
 
         assert_ok!(MiniJam::submit_system_op(
             RuntimeOrigin::signed(5),
-            Box::new(SystemCommandV1::CreateService {
-                controller: [5u8; 32],
+            Box::new(SystemCommandV2::CreateService {
                 code_hash: [0xee; 32],
                 code_len: 32,
                 min_item_gas: 1,

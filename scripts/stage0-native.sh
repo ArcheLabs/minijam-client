@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repository="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-runtime="${repository}/.local/stage0-native"
+runtime="${MINIJAM_NATIVE_RUNTIME_ROOT:-${repository}/.local/stage0-native}"
 data="${runtime}/data"
 logs="${runtime}/logs"
 run="${runtime}/run"
@@ -10,24 +10,37 @@ run="${runtime}/run"
 clang="${MINIJAM_CLANG:-/usr/lib/llvm-20/bin/clang}"
 clangxx="${MINIJAM_CLANGXX:-/usr/lib/llvm-20/bin/clang++}"
 converter="${repository}/service-toolchain/compiler/polkavm-to-jam/target/release/polkavm-to-jam"
+formal_rpc_enabled="${MINIJAM_ENABLE_FORMAL_RPC:-false}"
+formal_rpc_bind="${MINIJAM_FORMAL_RPC_BIND:-127.0.0.1:8090}"
+formal_rpc_url="${MINIJAM_FORMAL_RPC_URL:-http://127.0.0.1:8090}"
+worker_bundle_gateway="${MINIJAM_WORKER_BUNDLE_GATEWAY:-http://127.0.0.1:8080}"
+if [[ "${formal_rpc_enabled}" == "true" && -z "${MINIJAM_WORKER_BUNDLE_GATEWAY:-}" ]]; then
+  worker_bundle_gateway="${formal_rpc_url}"
+fi
 
 services=(
   node
   compiler-api
   playground-api
-  worker-1
-  worker-2
-  worker-3
-  playground-web
 )
 stop_order=(
   playground-web
   worker-3
   worker-2
   worker-1
+  formal-rpc
   playground-api
   compiler-api
   node
+)
+if [[ "${formal_rpc_enabled}" == "true" ]]; then
+  services+=(formal-rpc)
+fi
+services+=(
+  worker-1
+  worker-2
+  worker-3
+  playground-web
 )
 
 pid_file() {
@@ -62,6 +75,10 @@ check_artifacts() {
       missing=1
     fi
   done
+  if [[ "${formal_rpc_enabled}" == "true" && ! -x "${repository}/target/release/minijam-formal-rpc" ]]; then
+    echo "missing executable: ${repository}/target/release/minijam-formal-rpc" >&2
+    missing=1
+  fi
   if [[ ! -f "${repository}/apps/playground-web/dist/index.html" ]]; then
     echo "missing Web build: ${repository}/apps/playground-web/dist/index.html" >&2
     missing=1
@@ -161,6 +178,7 @@ stack_ready() {
   curl -fsS --max-time 2 http://127.0.0.1:4173 >/dev/null 2>&1 &&
     curl -fsS --max-time 2 http://127.0.0.1:8080/health/ready >/dev/null 2>&1 &&
     curl -fsS --max-time 2 http://127.0.0.1:8081/health/ready >/dev/null 2>&1 &&
+    { [[ "${formal_rpc_enabled}" != "true" ]] || curl -fsS --max-time 2 "${formal_rpc_url}/health/ready" >/dev/null 2>&1; } &&
     curl -fsS --max-time 2 http://127.0.0.1:8082/health/ready >/dev/null 2>&1 &&
     curl -fsS --max-time 2 http://127.0.0.1:8083/health/ready >/dev/null 2>&1 &&
     curl -fsS --max-time 2 http://127.0.0.1:8084/health/ready >/dev/null 2>&1
@@ -211,7 +229,7 @@ EOF
   git -C "${repository}" submodule update --init external/jambda
   rustup target add wasm32-unknown-unknown
   rustup target add wasm32v1-none
-  npm --prefix "${repository}/apps/playground-web" ci
+  npm --prefix "${repository}/apps/playground-web" ci --no-audit
 }
 
 build() {
@@ -221,6 +239,7 @@ build() {
       -p minijam-node \
       -p minijam-compiler-api \
       -p minijam-playground-api \
+      -p minijam-formal-rpc \
       -p minijam-worker
     cargo build --locked --release \
       --manifest-path service-toolchain/compiler/polkavm-to-jam/Cargo.toml
@@ -242,6 +261,7 @@ up() {
   mkdir -p \
     "${data}/node" \
     "${data}/playground/bundles" \
+    "${data}/formal-rpc/bundles" \
     "${data}/worker-1" \
     "${data}/worker-2" \
     "${data}/worker-3" \
@@ -286,6 +306,16 @@ up() {
       "${repository}/target/release/minijam-playground-api"
     wait_http playground-api http://127.0.0.1:8080/health/ready || exit 1
 
+    if [[ "${formal_rpc_enabled}" == "true" ]]; then
+      start_service formal-rpc env \
+        MINIJAM_FORMAL_RPC_BIND="${formal_rpc_bind}" \
+        MINIJAM_RPC_URL=ws://127.0.0.1:9944 \
+        MINIJAM_RELAYER_URI="${MINIJAM_FORMAL_RELAYER_URI:-//Alice}" \
+        MINIJAM_BUNDLE_DIR="${data}/formal-rpc/bundles" \
+        "${repository}/target/release/minijam-formal-rpc"
+      wait_http formal-rpc "${formal_rpc_url}/health/ready" || exit 1
+    fi
+
     start_service worker-1 \
       "${repository}/target/release/minijam-worker" \
       --rpc-url http://127.0.0.1:9944 \
@@ -297,7 +327,7 @@ up() {
       --state-db "${data}/worker-1/state.toml" \
       --health-bind 127.0.0.1:8082 \
       --metrics-bind 127.0.0.1:9616 \
-      --ipfs-gateway http://127.0.0.1:8080
+      --ipfs-gateway "${worker_bundle_gateway}"
     wait_http worker-1 http://127.0.0.1:8082/health/ready || exit 1
 
     start_service worker-2 \
@@ -311,7 +341,7 @@ up() {
       --state-db "${data}/worker-2/state.toml" \
       --health-bind 127.0.0.1:8083 \
       --metrics-bind 127.0.0.1:9617 \
-      --ipfs-gateway http://127.0.0.1:8080
+      --ipfs-gateway "${worker_bundle_gateway}"
     wait_http worker-2 http://127.0.0.1:8083/health/ready || exit 1
 
     start_service worker-3 \
@@ -325,7 +355,7 @@ up() {
       --state-db "${data}/worker-3/state.toml" \
       --health-bind 127.0.0.1:8084 \
       --metrics-bind 127.0.0.1:9618 \
-      --ipfs-gateway http://127.0.0.1:8080
+      --ipfs-gateway "${worker_bundle_gateway}"
     wait_http worker-3 http://127.0.0.1:8084/health/ready || exit 1
 
     start_service playground-web \

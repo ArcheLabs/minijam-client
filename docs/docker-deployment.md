@@ -18,7 +18,7 @@ Credentials are provisioned only in the maintainer-owned release environment and
 
 The release Compose stack starts one MiniJAM Node, one Compiler API, one Playground API and bundle gateway, three independently keyed Workers, and one Playground Web frontend. Playground API is intended to be publicly callable by browser clients; Node RPC, Compiler API, Worker health endpoints, and metrics remain private.
 
-The MiniJAM Playground API is a public developer API and intentionally supports cross-origin browser clients. Its CORS policy is permissive; CORS is not an authorization boundary. Mutation authorization remains enforced by signed actions, sr25519 wallet signatures, replay protection, and Service Controller checks.
+The MiniJAM Playground API is a public developer API and intentionally supports cross-origin browser clients. Its CORS policy is permissive; CORS is not an authorization boundary. Mutation authorization remains enforced by signed actions, sr25519 wallet signatures, replay protection, and Service-defined management policy where applicable.
 
 ## Requirements
 
