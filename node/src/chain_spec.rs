@@ -1,5 +1,7 @@
 use minijam_runtime::{
-    genesis_config_presets::{season2_config_genesis, stage0_config_genesis},
+    genesis_config_presets::{
+        season2_config_genesis, stage0_config_genesis, stage1_config_genesis,
+    },
     AccountId, WASM_BINARY,
 };
 use sc_service::{ChainType, Properties};
@@ -69,6 +71,33 @@ pub fn season2_chain_spec() -> Result<ChainSpec, String> {
         parse_relayer_public_key(&ingress)?,
         parse_relayer_public_key(&allocation)?,
     )
+}
+
+pub fn stage1_chain_spec() -> Result<ChainSpec, String> {
+    let ingress = std::env::var("MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY")
+        .map_err(|_| "MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY is required".to_string())?;
+    let allocation = std::env::var("MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY")
+        .map_err(|_| "MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY is required".to_string())?;
+    stage1_chain_spec_with_relayers(
+        parse_relayer_public_key(&ingress)?,
+        parse_relayer_public_key(&allocation)?,
+    )
+}
+
+pub fn stage1_chain_spec_with_relayers(
+    ingress_relayer: AccountId,
+    allocation_relayer: AccountId,
+) -> Result<ChainSpec, String> {
+    Ok(ChainSpec::builder(
+        WASM_BINARY.ok_or_else(|| "Stage-1 wasm not available".to_string())?,
+        None,
+    )
+    .with_name("MiniJAM Stage-1")
+    .with_id("minijam_stage1")
+    .with_chain_type(ChainType::Live)
+    .with_genesis_config_patch(stage1_config_genesis(ingress_relayer, allocation_relayer))
+    .with_properties(chain_properties())
+    .build())
 }
 
 pub fn season2_chain_spec_with_relayers(

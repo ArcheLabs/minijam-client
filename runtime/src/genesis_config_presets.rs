@@ -268,6 +268,19 @@ pub fn stage0_config_genesis(ingress_relayer: AccountId) -> Value {
     )
 }
 
+/// Fresh Stage-1 genesis. The historically documented public funding account
+/// is merely endowed through Balances; no runtime faucet semantics exist.
+pub fn stage1_config_genesis(ingress_relayer: AccountId, allocation_relayer: AccountId) -> Value {
+    testnet_genesis(
+        stage0_authorities(),
+        stage0_endowed_accounts(),
+        AccountId::new(STAGE0_SUDO_ACCOUNT),
+        stage0_workers(),
+        ingress_relayer,
+        allocation_relayer,
+    )
+}
+
 pub fn season2_config_genesis(ingress_relayer: AccountId, allocation_relayer: AccountId) -> Value {
     testnet_genesis(
         stage0_authorities(),
@@ -845,8 +858,6 @@ mod tests {
 
         assert_eq!(STAGE0_FAUCET_ACCOUNT, EXPECTED_FAUCET);
         assert_eq!(STAGE0_SUDO_ACCOUNT, EXPECTED_SUDO);
-        assert_eq!(crate::FaucetAccount::get(), AccountId::new(EXPECTED_FAUCET));
-
         let patch = stage0_config_genesis(AccountId::new([0x99; 32]));
         let sudo = section(&patch, "sudo", "sudo");
         assert_eq!(

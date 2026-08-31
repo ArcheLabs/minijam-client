@@ -1,5 +1,15 @@
 # MiniJAM Client
 
+MiniJAM Stage-1 is the current network generation and exposes
+application-neutral node, Work, state, and Service-lifecycle interfaces.
+Playground is a legacy Stage-0 developer product and is not part of the
+Stage-1 infrastructure dependency graph. Season 2 is a historical Experience
+Network profile, not the canonical Stage-1 deployment.
+
+Faucet funding is provided by an external funded account using ordinary
+Balances transfers. Faucet behavior is not part of the MiniJAM runtime
+protocol. The SS58 prefix remains 42.
+
 English | [Simplified Chinese](README.zh-CN.md)
 
 > MiniJAM Season 2 is an Experience Network and is still in early development.
@@ -13,9 +23,9 @@ See [MiniJamSpec](docs/minijam-spec.md), the
 [execution boundary](docs/execution-boundary.md), and the
 [compatibility matrix](docs/compatibility-matrix.md).
 
-## Playground API
+## Legacy Stage-0 Playground API
 
-The MiniJAM Playground API is a public developer API and intentionally supports
+The frozen Stage-0 MiniJAM Playground API is a public developer API and intentionally supports
 cross-origin browser clients. Its `/api/v1/*` routes use permissive CORS and
 allow arbitrary web applications, including jam-os, Playground, localhost
 applications, community MiniJAM apps, and third-party developer frontends.
