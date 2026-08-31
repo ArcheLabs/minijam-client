@@ -157,8 +157,7 @@ impl FormalRpc {
             let candidate = self
                 .chain
                 .candidate::<pallet_minijam::CandidateRecord<minijam_runtime::Runtime>>(
-                    work_id,
-                    work.round,
+                    work_id, work.round,
                 )
                 .await
                 .map_err(chain_error)?;
@@ -537,7 +536,9 @@ fn decode_action_receipts(bytes: &[u8]) -> Result<Vec<ActionReceiptResult>, RpcE
     if valid == 1 {
         let _ = take(&mut offset, 8)?;
     } else if valid != 0 {
-        return Err(RpcError::InvalidParams("invalid transition validity flag".into()));
+        return Err(RpcError::InvalidParams(
+            "invalid transition validity flag".into(),
+        ));
     }
     let _ = take(&mut offset, 32)?; // recovery commitment
     let count_bytes = take(&mut offset, 4)?;
@@ -552,12 +553,22 @@ fn decode_action_receipts(bytes: &[u8]) -> Result<Vec<ActionReceiptResult>, RpcE
             0 => "applied",
             1 => "failed",
             2 => "rejected",
-            _ => return Err(RpcError::InvalidParams("invalid action receipt status".into())),
+            _ => {
+                return Err(RpcError::InvalidParams(
+                    "invalid action receipt status".into(),
+                ))
+            }
         };
         let error_code = match take(&mut offset, 1)?[0] {
             0 => None,
-            1 => Some(u32::from_le_bytes(take(&mut offset, 4)?.try_into().unwrap())),
-            _ => return Err(RpcError::InvalidParams("invalid action receipt error flag".into())),
+            1 => Some(u32::from_le_bytes(
+                take(&mut offset, 4)?.try_into().unwrap(),
+            )),
+            _ => {
+                return Err(RpcError::InvalidParams(
+                    "invalid action receipt error flag".into(),
+                ))
+            }
         };
         receipts.push(ActionReceiptResult {
             action_hash: hex(hash),
@@ -568,7 +579,9 @@ fn decode_action_receipts(bytes: &[u8]) -> Result<Vec<ActionReceiptResult>, RpcE
     let recovery_len = u32::from_le_bytes(take(&mut offset, 4)?.try_into().unwrap()) as usize;
     let _ = take(&mut offset, recovery_len)?;
     if offset != bytes.len() {
-        return Err(RpcError::InvalidParams("trailing bytes in action receipt output".into()));
+        return Err(RpcError::InvalidParams(
+            "trailing bytes in action receipt output".into(),
+        ));
     }
     Ok(receipts)
 }
