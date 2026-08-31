@@ -13,7 +13,9 @@ use std::time::Duration;
 use jam_codec::Decode as JamDecode;
 use jp_core_primitives::types::ServiceInfo;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
-use minijam_protocol::{CanonicalPreimageBytes, ContentRef, Hash, SystemCommandV2, WorkId};
+use minijam_protocol::{
+    CanonicalPreimageBytes, ContentRef, Hash, StateValue, SystemCommandV2, WorkId,
+};
 use minijam_runtime::RuntimeCall;
 use parity_scale_codec::{Decode, Encode};
 use sp_core::{
@@ -112,6 +114,12 @@ impl MiniJamChainClient {
         Ok(())
     }
 
+    pub fn signer_account(&self) -> [u8; 32] {
+        let account: AccountId32 =
+            sp_runtime::MultiSigner::Sr25519(self.signer.public()).into_account();
+        account.into()
+    }
+
     pub async fn finalized_context(&self) -> Result<FinalizedContext, ChainClientError> {
         rpc::finalized_context(&*self.rpc.lock().await).await
     }
@@ -186,7 +194,10 @@ impl MiniJamChainClient {
         let Some(bytes) = self.service_info_at(block, service_id).await? else {
             return Ok(None);
         };
-        let info = ServiceInfo::decode(&mut bytes.as_slice())
+        let value = StateValue::decode(&mut bytes.as_slice())
+            .map_err(|error| ChainClientError::Decode(error.to_string()))?;
+        let value = value.into_inner();
+        let info = ServiceInfo::decode(&mut value.as_slice())
             .map_err(|error| ChainClientError::Decode(error.to_string()))?;
         Ok(Some(info.code_hash.0))
     }
@@ -262,13 +273,16 @@ impl MiniJamChainClient {
         // submit.
         let _submission = self.submit_lock.lock().await;
         let prepared = self.prepare_system_command_inner(command).await?;
-        match rpc::submit_and_watch_extrinsic(
-            &*self.rpc.lock().await,
-            &prepared.encoded_extrinsic,
-            self.request_timeout,
-        )
-        .await
-        {
+        // Drop the RPC mutex guard before dispatch attribution. Keeping the
+        // guard alive as the `match` scrutinee deadlocks the success arm when
+        // `complete_prepared_submission` reads the finalized block/events
+        // through the same client.
+        let watched = {
+            let rpc = self.rpc.lock().await;
+            rpc::submit_and_watch_extrinsic(&rpc, &prepared.encoded_extrinsic, self.request_timeout)
+                .await
+        };
+        match watched {
             Ok((extrinsic_hash, statuses)) => {
                 self.complete_prepared_submission(prepared, extrinsic_hash, statuses)
                     .await

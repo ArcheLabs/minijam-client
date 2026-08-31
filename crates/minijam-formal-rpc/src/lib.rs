@@ -20,8 +20,10 @@ use jp_core_primitives::{
     simple::ByteSequence,
     types::{Preimage, ServiceInfo},
 };
-use minijam_chain_client::{FinalizedContext, MiniJamChainClient};
-use minijam_protocol::{blake2_256, Hash, SystemReceiptV2};
+use minijam_chain_client::{
+    account_id_rpc_param, DispatchOutcome, FinalizedContext, MiniJamChainClient, Submission,
+};
+use minijam_protocol::{blake2_256, Hash, StateValue, SystemReceiptV2};
 use parity_scale_codec::Decode;
 use serde::{Deserialize, Serialize};
 use sp_core::{sr25519, Pair};
@@ -182,6 +184,24 @@ impl FormalRpc {
             .await
             .map_err(chain_error)?;
 
+        eprintln!(
+            "stage1 deployment submitted extrinsic={} block={} correlation={} signer={}",
+            hex(&submitted.extrinsic_hash),
+            submitted
+                .lifecycle
+                .as_ref()
+                .and_then(|lifecycle| lifecycle.included_block)
+                .map(|hash| hex(&hash))
+                .unwrap_or_else(|| "missing".into()),
+            hex(&submitted.correlation),
+            account_id_rpc_param(self.chain.signer_account()),
+        );
+        ensure_dispatch_success(&submitted, self.chain.signer_account())?;
+        eprintln!(
+            "stage1 deployment dispatch succeeded correlation={}",
+            hex(&submitted.correlation)
+        );
+
         let receipt = wait_for_system_receipt(&self.chain, submitted.correlation).await?;
         let service_id = match receipt {
             SystemReceiptV2::ServiceCreated { service_id } => service_id,
@@ -207,6 +227,25 @@ impl FormalRpc {
 
     fn save_bundle(&self, bytes: &[u8], expected_hash: Hash) -> Result<(), RpcError> {
         save_bundle_to_dir(&self.bundle_dir, bytes, expected_hash)
+    }
+}
+
+fn ensure_dispatch_success(submission: &Submission, signer: [u8; 32]) -> Result<(), RpcError> {
+    let lifecycle = submission.lifecycle.as_ref().ok_or_else(|| {
+        RpcError::Chain("deployment submission is missing its finalized lifecycle".into())
+    })?;
+    match lifecycle.dispatch_outcome.as_ref() {
+        Some(DispatchOutcome::Success) => Ok(()),
+        Some(DispatchOutcome::Failed(error)) => Err(RpcError::DeploymentDispatch {
+            extrinsic_hash: hex(&submission.extrinsic_hash),
+            block_hash: lifecycle.included_block.map(|hash| hex(&hash)),
+            dispatch_error: error.clone(),
+            correlation: hex(&submission.correlation),
+            signer_account: account_id_rpc_param(signer),
+        }),
+        None => Err(RpcError::Chain(
+            "deployment submission is missing its dispatch outcome".into(),
+        )),
     }
 }
 
@@ -246,17 +285,36 @@ async fn wait_for_system_receipt(
 ) -> Result<SystemReceiptV2, RpcError> {
     for _ in 0..120 {
         if let Some(receipt) = chain
-            .system_receipt::<SystemReceiptV2>(request_id)
+            .system_receipt::<StateValue>(request_id)
             .await
             .map_err(chain_error)?
         {
+            let receipt = decode_system_receipt(receipt)?;
+            eprintln!(
+                "stage1 deployment receipt finalized correlation={}",
+                hex(&request_id)
+            );
             return Ok(receipt);
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
-    Err(RpcError::Chain(
-        "timed out waiting for finalized deployment receipt".into(),
-    ))
+    Err(RpcError::Chain(format!(
+        "timed out waiting for finalized deployment receipt correlation={}",
+        hex(&request_id)
+    )))
+}
+
+fn decode_system_receipt(value: StateValue) -> Result<SystemReceiptV2, RpcError> {
+    let bytes = value.into_inner();
+    let mut input = bytes.as_slice();
+    let receipt = SystemReceiptV2::decode(&mut input)
+        .map_err(|error| RpcError::Chain(format!("invalid finalized SystemReceiptV2: {error}")))?;
+    if !input.is_empty() {
+        return Err(RpcError::Chain(
+            "invalid finalized SystemReceiptV2: trailing bytes".into(),
+        ));
+    }
+    Ok(receipt)
 }
 
 async fn wait_for_service_code_hash(
@@ -437,6 +495,14 @@ pub enum RpcError {
     CodeHashMismatch,
     #[error("deployment was rejected with code {0}")]
     DeploymentRejected(u32),
+    #[error("deployment extrinsic dispatch failed: {dispatch_error}")]
+    DeploymentDispatch {
+        extrinsic_hash: String,
+        block_hash: Option<String>,
+        dispatch_error: String,
+        correlation: String,
+        signer_account: String,
+    },
     #[error("work not found")]
     WorkNotFound,
     #[error("storage error: {0}")]
@@ -464,6 +530,23 @@ impl RpcError {
                 -32014,
                 format!("deployment rejected with code {code}"),
                 None,
+            ),
+            Self::DeploymentDispatch {
+                extrinsic_hash,
+                block_hash,
+                dispatch_error,
+                correlation,
+                signer_account,
+            } => (
+                -32015,
+                "deployment extrinsic dispatch failed".into(),
+                Some(serde_json::json!({
+                    "extrinsicHash": extrinsic_hash,
+                    "blockHash": block_hash,
+                    "dispatchError": dispatch_error,
+                    "correlation": correlation,
+                    "signerAccount": signer_account,
+                })),
             ),
             Self::WorkNotFound => (-32013, "work not found".into(), None),
             Self::Storage(message) => (-32020, message, None),
@@ -782,5 +865,66 @@ mod tests {
         let stored = std::fs::read(directory.path().join(hex_without_prefix(&hash))).unwrap();
         assert_eq!(stored, bytes);
         assert!(save_bundle_to_dir(directory.path(), b"tampered", hash).is_err());
+    }
+
+    fn deployment_submission(outcome: DispatchOutcome) -> Submission {
+        Submission {
+            extrinsic_hash: [0x11; 32],
+            submitted_nonce: 7,
+            correlation: [0x22; 32],
+            lifecycle: Some(minijam_chain_client::TransactionLifecycle {
+                statuses: Vec::new(),
+                included_block: Some([0x33; 32]),
+                included_extrinsic_index: Some(2),
+                dispatch_error: match &outcome {
+                    DispatchOutcome::Success => None,
+                    DispatchOutcome::Failed(error) => Some(error.clone()),
+                },
+                dispatch_outcome: Some(outcome),
+            }),
+        }
+    }
+
+    #[test]
+    fn deployment_dispatch_failure_is_immediate_and_diagnostic() {
+        let error = ensure_dispatch_success(
+            &deployment_submission(DispatchOutcome::Failed(
+                "Module(UnauthorizedIngress)".into(),
+            )),
+            [0x44; 32],
+        )
+        .unwrap_err();
+        let (code, message, data) = error.json_parts();
+        let data = data.expect("dispatch failure includes diagnostic data");
+        assert_eq!(code, -32015);
+        assert_eq!(message, "deployment extrinsic dispatch failed");
+        assert_eq!(data["extrinsicHash"], hex(&[0x11; 32]));
+        assert_eq!(data["blockHash"], hex(&[0x33; 32]));
+        assert_eq!(data["correlation"], hex(&[0x22; 32]));
+        assert_eq!(data["dispatchError"], "Module(UnauthorizedIngress)");
+        assert_eq!(data["signerAccount"], account_id_rpc_param([0x44; 32]));
+    }
+
+    #[test]
+    fn deployment_dispatch_success_continues_to_receipt_wait() {
+        assert!(ensure_dispatch_success(
+            &deployment_submission(DispatchOutcome::Success),
+            [0x44; 32]
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn system_receipt_decodes_from_runtime_state_value_wrapper() {
+        let encoded = parity_scale_codec::Encode::encode(&SystemReceiptV2::ServiceCreated {
+            service_id: 0xf3284af0,
+        });
+        let value = StateValue::try_from(encoded).unwrap();
+        assert_eq!(
+            decode_system_receipt(value).unwrap(),
+            SystemReceiptV2::ServiceCreated {
+                service_id: 0xf3284af0
+            }
+        );
     }
 }

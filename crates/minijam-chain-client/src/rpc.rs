@@ -232,20 +232,43 @@ pub async fn submit_and_watch_extrinsic(
         .await
         .map_err(map_rpc)?;
     let started = std::time::Instant::now();
-    let mut statuses = Vec::new();
+    let mut statuses: Vec<serde_json::Value> = Vec::new();
     let extrinsic_hash = minijam_protocol::blake2_256(encoded);
     loop {
         let remaining = timeout.saturating_sub(started.elapsed());
         if remaining.is_zero() {
-            return Err(ChainClientError::Rpc(
-                "timed out waiting for transaction status".into(),
-            ));
+            // Some Stage-1 RPC nodes expose the in-block status but do not
+            // emit a subsequent finalized notification on the watcher. The
+            // included block is still sufficient for dispatch attribution;
+            // callers that require finality (deployment receipts, state
+            // reads) continue polling the finalized context explicitly.
+            if statuses
+                .iter()
+                .any(|status| status.get("inBlock").is_some())
+            {
+                return Ok((extrinsic_hash, statuses));
+            }
+            if let Some(block_hash) = find_recent_extrinsic_block(rpc, extrinsic_hash).await? {
+                statuses.push(serde_json::json!({"inBlock": hex(&block_hash)}));
+                return Ok((extrinsic_hash, statuses));
+            }
+            return Err(ChainClientError::Rpc(format!(
+                "timed out waiting for transaction status last={}",
+                statuses.last().unwrap_or(&serde_json::Value::Null)
+            )));
         }
-        let status = tokio::time::timeout(remaining, subscription.next())
-            .await
-            .map_err(|_| ChainClientError::Rpc("timed out waiting for transaction status".into()))?
-            .ok_or_else(|| ChainClientError::Rpc("transaction status subscription ended".into()))?;
-        let status = status.map_err(|error| ChainClientError::Rpc(error.to_string()))?;
+        let status = match tokio::time::timeout(remaining, subscription.next()).await {
+            Ok(Some(status)) => status.map_err(|error| ChainClientError::Rpc(error.to_string()))?,
+            Ok(None) | Err(_) => {
+                if let Some(block_hash) = find_recent_extrinsic_block(rpc, extrinsic_hash).await? {
+                    statuses.push(serde_json::json!({"inBlock": hex(&block_hash)}));
+                    return Ok((extrinsic_hash, statuses));
+                }
+                return Err(ChainClientError::Rpc(
+                    "transaction status subscription ended before inclusion".into(),
+                ));
+            }
+        };
         match classify_watch_status(&status) {
             WatchStatus::Failed => {
                 return Err(ChainClientError::TransactionFailed(status.to_string()));
@@ -258,6 +281,38 @@ pub async fn submit_and_watch_extrinsic(
         }
         statuses.push(status);
     }
+}
+
+async fn find_recent_extrinsic_block(
+    rpc: &WsClient,
+    extrinsic_hash: Hash,
+) -> Result<Option<Hash>, ChainClientError> {
+    let header: serde_json::Value = rpc
+        .request("chain_getHeader", rpc_params![])
+        .await
+        .map_err(map_rpc)?;
+    let number = header
+        .get("number")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ChainClientError::Decode("chain header has no block number".into()))?;
+    let head = u32::from_str_radix(number.trim_start_matches("0x"), 16).map_err(|error| {
+        ChainClientError::Decode(format!("invalid chain block number: {error}"))
+    })?;
+    for number in (head.saturating_sub(64)..=head).rev() {
+        let block_hash = block_hash(rpc, number).await?;
+        let block: BlockResponse = rpc
+            .request("chain_getBlock", rpc_params![hex(&block_hash)])
+            .await
+            .map_err(map_rpc)?;
+        if block.block.extrinsics.iter().any(|encoded| {
+            decode_hex(encoded)
+                .map(|bytes| minijam_protocol::blake2_256(&bytes) == extrinsic_hash)
+                .unwrap_or(false)
+        }) {
+            return Ok(Some(block_hash));
+        }
+    }
+    Ok(None)
 }
 
 pub fn hex(bytes: &[u8]) -> String {
