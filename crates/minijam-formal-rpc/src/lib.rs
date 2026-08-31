@@ -138,7 +138,8 @@ impl FormalRpc {
             .await
             .map_err(chain_error)?
             .ok_or(RpcError::WorkNotFound)?;
-        let execution_receipt = if matches!(work.status, pallet_minijam::WorkStatus::Imported) {
+        let imported = matches!(work.status, pallet_minijam::WorkStatus::Imported);
+        let execution_receipt = if imported {
             self.chain
                 .execution_receipt(work_id)
                 .await
@@ -147,11 +148,33 @@ impl FormalRpc {
         } else {
             None
         };
+        // Candidate reports are retained by the pallet after import.  The
+        // successful work result blob is the canonical place where a
+        // service-specific runtime may carry ActionReceiptV1 entries.  Parse
+        // that wire format generically here; no Computer or service code is
+        // referenced by the RPC layer.
+        let action_receipts = if imported {
+            let candidate = self
+                .chain
+                .candidate::<pallet_minijam::CandidateRecord<minijam_runtime::Runtime>>(
+                    work_id,
+                    work.round,
+                )
+                .await
+                .map_err(chain_error)?;
+            candidate
+                .map(|record| decode_action_receipts(&record.envelope.canonical_report))
+                .transpose()?
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         Ok(WorkStatusResult {
             package_hash: hex(&package_hash),
             work_id: Some(work_id),
             status: WorkStatus::from(work.status),
             execution_receipt,
+            action_receipts,
             context: ContextResult::from(context),
         })
     }
@@ -476,7 +499,78 @@ pub struct WorkStatusResult {
     pub work_id: Option<u64>,
     pub status: WorkStatus,
     pub execution_receipt: Option<String>,
+    #[serde(rename = "actionReceipts")]
+    pub action_receipts: Vec<ActionReceiptResult>,
     pub context: ContextResult,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionReceiptResult {
+    pub action_hash: String,
+    pub status: &'static str,
+    pub error_code: Option<u32>,
+}
+
+/// Decode the JamScript RuntimeRefineOutputV1 receipt projection without
+/// depending on JamScript or Computer crates.  An ordinary JAM service output
+/// is simply ignored (returning an empty list); malformed version-1 output is
+/// rejected so callers never receive a fabricated receipt.
+fn decode_action_receipts(bytes: &[u8]) -> Result<Vec<ActionReceiptResult>, RpcError> {
+    if bytes.first().copied() != Some(1) {
+        return Ok(Vec::new());
+    }
+    let mut offset = 1usize;
+    let take = |offset: &mut usize, count: usize| -> Result<&[u8], RpcError> {
+        let end = offset
+            .checked_add(count)
+            .ok_or_else(|| RpcError::InvalidParams("action receipt output overflow".into()))?;
+        let value = bytes.get(*offset..end).ok_or_else(|| {
+            RpcError::InvalidParams("malformed RuntimeRefineOutputV1 receipt output".into())
+        })?;
+        *offset = end;
+        Ok(value)
+    };
+    let _ = take(&mut offset, 32)?; // parent root
+    let _ = take(&mut offset, 32)?; // new root
+    let valid = take(&mut offset, 1)?[0];
+    if valid == 1 {
+        let _ = take(&mut offset, 8)?;
+    } else if valid != 0 {
+        return Err(RpcError::InvalidParams("invalid transition validity flag".into()));
+    }
+    let _ = take(&mut offset, 32)?; // recovery commitment
+    let count_bytes = take(&mut offset, 4)?;
+    let count = u32::from_le_bytes(count_bytes.try_into().unwrap()) as usize;
+    if count > 1024 {
+        return Err(RpcError::InvalidParams("too many action receipts".into()));
+    }
+    let mut receipts = Vec::with_capacity(count);
+    for _ in 0..count {
+        let hash = take(&mut offset, 32)?;
+        let status = match take(&mut offset, 1)?[0] {
+            0 => "applied",
+            1 => "failed",
+            2 => "rejected",
+            _ => return Err(RpcError::InvalidParams("invalid action receipt status".into())),
+        };
+        let error_code = match take(&mut offset, 1)?[0] {
+            0 => None,
+            1 => Some(u32::from_le_bytes(take(&mut offset, 4)?.try_into().unwrap())),
+            _ => return Err(RpcError::InvalidParams("invalid action receipt error flag".into())),
+        };
+        receipts.push(ActionReceiptResult {
+            action_hash: hex(hash),
+            status,
+            error_code,
+        });
+    }
+    let recovery_len = u32::from_le_bytes(take(&mut offset, 4)?.try_into().unwrap()) as usize;
+    let _ = take(&mut offset, recovery_len)?;
+    if offset != bytes.len() {
+        return Err(RpcError::InvalidParams("trailing bytes in action receipt output".into()));
+    }
+    Ok(receipts)
 }
 
 #[derive(Debug, Error)]
@@ -776,6 +870,30 @@ pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error + Send + Syn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_generic_runtime_action_receipts() {
+        let mut bytes = vec![1u8];
+        bytes.extend([0u8; 32]);
+        bytes.extend([1u8; 32]);
+        bytes.push(0);
+        bytes.extend([2u8; 32]);
+        bytes.extend(1u32.to_le_bytes());
+        bytes.extend([3u8; 32]);
+        bytes.push(0);
+        bytes.push(1);
+        bytes.extend(77u32.to_le_bytes());
+        bytes.extend(0u32.to_le_bytes());
+        let receipts = decode_action_receipts(&bytes).unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].status, "applied");
+        assert_eq!(receipts[0].error_code, Some(77));
+    }
+
+    #[test]
+    fn ignores_non_runtime_service_output() {
+        assert!(decode_action_receipts(&[0, 1, 2]).unwrap().is_empty());
+    }
 
     #[test]
     fn submit_work_params_reject_application_gas_fields() {
