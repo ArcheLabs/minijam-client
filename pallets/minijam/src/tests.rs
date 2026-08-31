@@ -70,7 +70,6 @@ parameter_types! {
     pub const ChainId: [u8; 32] = [42; 32];
     pub const RewardPool: u64 = 100;
     pub const FuelEscrow: u64 = 101;
-    pub const FaucetAccount: u64 = 102;
     pub const TimelyVoteReward: u128 = 10;
     pub const MinimumAbsenceSlash: u128 = 10;
     pub const AbsenceSlash: sp_runtime::Perbill = sp_runtime::Perbill::from_percent(1);
@@ -79,8 +78,6 @@ parameter_types! {
     pub const CandidateBond: u128 = 100;
     pub const CandidateRejectionSlash: u128 = 10;
     pub const AcceptedSubmitterReward: u128 = 10;
-    pub const FaucetDripAmount: u128 = 25;
-    pub const FaucetCooldownBlocks: u64 = 10;
     pub const RefineGasPrice: u128 = 1;
     pub const AccumulateGasPrice: u128 = 1;
 }
@@ -130,9 +127,6 @@ impl pallet_minijam::Config for Test {
     type AcceptedSubmitterReward = AcceptedSubmitterReward;
     type RewardPool = RewardPool;
     type FuelEscrowAccount = FuelEscrow;
-    type FaucetAccount = FaucetAccount;
-    type FaucetDripAmount = FaucetDripAmount;
-    type FaucetCooldownBlocks = FaucetCooldownBlocks;
     type RefineGasPrice = RefineGasPrice;
     type AccumulateGasPrice = AccumulateGasPrice;
     type ReportSubmissionDeadline = frame_support::traits::ConstU32<20>;
@@ -597,34 +591,15 @@ fn submit_work_stores_package_hash_and_bundle_ref() {
 }
 
 #[test]
-fn claim_faucet_transfers_test_mini_and_records_cooldown() {
+fn ordinary_balances_transfer_remains_available() {
     new_test_ext().execute_with(|| {
-        System::set_block_number(7);
-
-        assert_ok!(MiniJam::claim_faucet(RuntimeOrigin::signed(5)));
-
-        assert_eq!(Balances::free_balance(5), 10_026);
-        assert_eq!(Balances::free_balance(FaucetAccount::get()), 975);
-        assert_eq!(pallet_minijam::LastFaucetClaims::<Test>::get(5), Some(7));
-    });
-}
-
-#[test]
-fn claim_faucet_enforces_per_account_cooldown() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(7);
-        assert_ok!(MiniJam::claim_faucet(RuntimeOrigin::signed(5)));
-
-        System::set_block_number(16);
-        assert_noop!(
-            MiniJam::claim_faucet(RuntimeOrigin::signed(5)),
-            pallet_minijam::Error::<Test>::FaucetOnCooldown
-        );
-
-        System::set_block_number(17);
-        assert_ok!(MiniJam::claim_faucet(RuntimeOrigin::signed(5)));
-        assert_eq!(Balances::free_balance(5), 10_051);
-        assert_eq!(pallet_minijam::LastFaucetClaims::<Test>::get(5), Some(17));
+        let before = Balances::free_balance(6);
+        assert_ok!(Balances::transfer_allow_death(
+            RuntimeOrigin::signed(5),
+            6,
+            25
+        ));
+        assert_eq!(Balances::free_balance(6), before + 25);
     });
 }
 

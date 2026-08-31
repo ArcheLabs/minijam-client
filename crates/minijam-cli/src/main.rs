@@ -22,7 +22,6 @@ const CALL_SUBMIT_CANDIDATE: u8 = 1;
 const CALL_SUBMIT_PREIMAGE: u8 = 4;
 const CALL_SUBMIT_SYSTEM_OP: u8 = 5;
 const CALL_FUND_SERVICE: u8 = 6;
-const CALL_CLAIM_FAUCET: u8 = 10;
 const CALL_SUBMIT_VOTE: u8 = 2;
 
 #[derive(Parser)]
@@ -98,7 +97,6 @@ enum Command {
         #[arg(long)]
         min_memo_gas: u64,
     },
-    ClaimFaucet,
     SubmitRawExtrinsic {
         #[arg(long)]
         extrinsic: String,
@@ -275,9 +273,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "submit_system_op",
                 call_data(CALL_SUBMIT_SYSTEM_OP, &command),
             );
-        }
-        Command::ClaimFaucet => {
-            print_call_data("MiniJam", "claim_faucet", call_data(CALL_CLAIM_FAUCET, &()));
         }
         Command::SubmitRawExtrinsic { extrinsic } => {
             let result = rpc_call(
@@ -604,11 +599,6 @@ mod tests {
     fn parse_hex_array_accepts_prefixed_hash() {
         let parsed = parse_hex_array::<4>("0x0102aAff").unwrap();
         assert_eq!(parsed, [1, 2, 170, 255]);
-    }
-
-    #[test]
-    fn claim_faucet_call_data_uses_minijam_pallet_and_call_index() {
-        assert_eq!(hex_encode(&call_data(CALL_CLAIM_FAUCET, &())), "0x080a");
     }
 
     #[test]

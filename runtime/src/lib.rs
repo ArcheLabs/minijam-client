@@ -131,8 +131,6 @@ parameter_types! {
     pub const MiniJamChainId: [u8; 32] = [77; 32];
     pub RewardPoolAccount: AccountId = AccountId::new([9; 32]);
     pub FuelEscrowAccount: AccountId = AccountId::new([7; 32]);
-    pub FaucetAccount: AccountId =
-        AccountId::new(genesis_config_presets::STAGE0_FAUCET_ACCOUNT);
     pub const MinimumWorkerStake: Balance = 1_000 * UNIT;
     pub const TimelyVoteReward: Balance = 0;
     pub const MinimumAbsenceSlash: Balance = UNIT;
@@ -142,8 +140,6 @@ parameter_types! {
     pub const CandidateBond: Balance = 0;
     pub const CandidateRejectionSlash: Balance = 0;
     pub const AcceptedSubmitterReward: Balance = 0;
-    pub const FaucetDripAmount: Balance = 100 * UNIT;
-    pub const FaucetCooldownBlocks: BlockNumber = 100;
     pub const RefineGasPrice: Balance = 0;
     pub const AccumulateGasPrice: Balance = 0;
 }
@@ -258,9 +254,6 @@ impl pallet_minijam::Config for Runtime {
     type AcceptedSubmitterReward = AcceptedSubmitterReward;
     type RewardPool = RewardPoolAccount;
     type FuelEscrowAccount = FuelEscrowAccount;
-    type FaucetAccount = FaucetAccount;
-    type FaucetDripAmount = FaucetDripAmount;
-    type FaucetCooldownBlocks = FaucetCooldownBlocks;
     type RefineGasPrice = RefineGasPrice;
     type AccumulateGasPrice = AccumulateGasPrice;
     type ReportSubmissionDeadline = ConstU32<600>;

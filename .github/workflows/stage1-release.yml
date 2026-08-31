@@ -1,0 +1,38 @@
+name: Stage-1 release
+on:
+  push:
+    tags: ['stage1-v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {submodules: recursive}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-05-02
+          components: rust-src, rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: ./scripts/check-stage1-boundary.sh
+      - run: ./scripts/check-release-secret-hygiene.sh
+      - run: cargo build --release --locked -p minijam-node -p minijam-worker -p minijam-formal-rpc
+      - name: Validate fresh Stage-1 chain specs
+        env:
+          MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY: '0x1111111111111111111111111111111111111111111111111111111111111111'
+          MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY: '0x2222222222222222222222222222222222222222222222222222222222222222'
+        run: ./scripts/export-stage1-chain-specs.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minijam-stage1-${{ github.sha }}
+          path: |
+            target/release/minijam-node
+            target/release/minijam-worker
+            target/release/minijam-formal-rpc
+            chain-specs/stage1.json
+            chain-specs/stage1-raw.json

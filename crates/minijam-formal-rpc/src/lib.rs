@@ -16,9 +16,12 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use jam_codec::Decode as JamDecode;
-use jp_core_primitives::types::ServiceInfo;
+use jp_core_primitives::{
+    simple::ByteSequence,
+    types::{Preimage, ServiceInfo},
+};
 use minijam_chain_client::{FinalizedContext, MiniJamChainClient};
-use minijam_protocol::{blake2_256, Hash};
+use minijam_protocol::{blake2_256, Hash, SystemReceiptV2};
 use parity_scale_codec::Decode;
 use serde::{Deserialize, Serialize};
 use sp_core::{sr25519, Pair};
@@ -151,6 +154,57 @@ impl FormalRpc {
         })
     }
 
+    async fn create_service(
+        &self,
+        request: CreateServiceParams,
+    ) -> Result<DeploymentResult, RpcError> {
+        let blob = STANDARD
+            .decode(request.blob_base64)
+            .map_err(|error| RpcError::InvalidParams(format!("invalid blobBase64: {error}")))?;
+        if blob.is_empty() {
+            return Err(RpcError::InvalidParams(
+                "service blob must not be empty".into(),
+            ));
+        }
+        let code_hash = blake2_256(&blob);
+        if request.code_hash.0 != code_hash {
+            return Err(RpcError::CodeHashMismatch);
+        }
+        let submitted = self
+            .chain
+            .submit_create_service(
+                code_hash,
+                u32::try_from(blob.len())
+                    .map_err(|_| RpcError::InvalidParams("service blob is too large".into()))?,
+                request.min_item_gas,
+                request.min_memo_gas,
+            )
+            .await
+            .map_err(chain_error)?;
+
+        let receipt = wait_for_system_receipt(&self.chain, submitted.correlation).await?;
+        let service_id = match receipt {
+            SystemReceiptV2::ServiceCreated { service_id } => service_id,
+            SystemReceiptV2::Rejected { code } => return Err(RpcError::DeploymentRejected(code)),
+        };
+        let canonical = jam_codec::Encode::encode(&Preimage {
+            requester: service_id,
+            blob: ByteSequence::from(blob),
+        });
+        self.chain
+            .submit_preimage(canonical)
+            .await
+            .map_err(chain_error)?;
+        let context = wait_for_service_code_hash(&self.chain, service_id, code_hash).await?;
+        Ok(DeploymentResult {
+            operation_id: hex(&submitted.correlation),
+            service_id,
+            code_hash: hex(&code_hash),
+            finalized: true,
+            context: ContextResult::from(context),
+        })
+    }
+
     fn save_bundle(&self, bytes: &[u8], expected_hash: Hash) -> Result<(), RpcError> {
         save_bundle_to_dir(&self.bundle_dir, bytes, expected_hash)
     }
@@ -184,6 +238,47 @@ fn validate_code_hash(service_info: &ServiceInfo, expected: Hash) -> Result<(), 
         return Err(RpcError::CodeHashMismatch);
     }
     Ok(())
+}
+
+async fn wait_for_system_receipt(
+    chain: &MiniJamChainClient,
+    request_id: Hash,
+) -> Result<SystemReceiptV2, RpcError> {
+    for _ in 0..120 {
+        if let Some(receipt) = chain
+            .system_receipt::<SystemReceiptV2>(request_id)
+            .await
+            .map_err(chain_error)?
+        {
+            return Ok(receipt);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    Err(RpcError::Chain(
+        "timed out waiting for finalized deployment receipt".into(),
+    ))
+}
+
+async fn wait_for_service_code_hash(
+    chain: &MiniJamChainClient,
+    service_id: u32,
+    expected: Hash,
+) -> Result<FinalizedContext, RpcError> {
+    for _ in 0..120 {
+        let context = chain.finalized_context().await.map_err(chain_error)?;
+        if chain
+            .service_code_hash_at(context.block_hash, service_id)
+            .await
+            .map_err(chain_error)?
+            == Some(expected)
+        {
+            return Ok(context);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    Err(RpcError::Chain(
+        "timed out waiting for finalized ServiceInfo/codeHash verification".into(),
+    ))
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -243,6 +338,25 @@ impl TryFrom<String> for HashParam {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GetWorkStatusParams {
     package_hash: HashParam,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateServiceParams {
+    code_hash: HashParam,
+    blob_base64: String,
+    min_item_gas: u64,
+    min_memo_gas: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeploymentResult {
+    operation_id: String,
+    service_id: u32,
+    code_hash: String,
+    finalized: bool,
+    context: ContextResult,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -321,6 +435,8 @@ pub enum RpcError {
     ServiceNotFound,
     #[error("service code hash does not match finalized ServiceInfo")]
     CodeHashMismatch,
+    #[error("deployment was rejected with code {0}")]
+    DeploymentRejected(u32),
     #[error("work not found")]
     WorkNotFound,
     #[error("storage error: {0}")]
@@ -344,6 +460,11 @@ impl RpcError {
             ),
             Self::ServiceNotFound => (-32011, "service not found".into(), None),
             Self::CodeHashMismatch => (-32012, "service code hash mismatch".into(), None),
+            Self::DeploymentRejected(code) => (
+                -32014,
+                format!("deployment rejected with code {code}"),
+                None,
+            ),
             Self::WorkNotFound => (-32013, "work not found".into(), None),
             Self::Storage(message) => (-32020, message, None),
             Self::Chain(message) => (-32021, message, None),
@@ -451,6 +572,15 @@ async fn json_rpc(
                         Err(error) => Err(RpcError::InvalidParams(error.to_string())),
                     }
                 }
+                "minijam_createServiceV1" => {
+                    match serde_json::from_value::<CreateServiceParams>(request.params) {
+                        Ok(params) => rpc
+                            .create_service(params)
+                            .await
+                            .map(|value| serde_json::to_value(value).expect("result serializes")),
+                        Err(error) => Err(RpcError::InvalidParams(error.to_string())),
+                    }
+                }
                 method => Err(RpcError::MethodNotFound(method.into())),
             },
         }
@@ -544,7 +674,10 @@ pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error + Send + Syn
         .unwrap_or_else(|_| "127.0.0.1:8090".into())
         .parse()?;
     let rpc_url = std::env::var("MINIJAM_RPC_URL").unwrap_or_else(|_| "ws://127.0.0.1:9944".into());
-    let signer_uri = std::env::var("MINIJAM_RELAYER_URI")?;
+    let signer_uri = match std::env::var("MINIJAM_RELAYER_URI_FILE") {
+        Ok(path) => std::fs::read_to_string(path)?.trim().to_owned(),
+        Err(_) => std::env::var("MINIJAM_RELAYER_URI")?,
+    };
     let signer =
         sr25519::Pair::from_string(&signer_uri, None).map_err(|error| error.to_string())?;
     let chain = Arc::new(
