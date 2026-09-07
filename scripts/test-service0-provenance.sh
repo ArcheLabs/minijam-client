@@ -33,6 +33,24 @@ printf 'COMPILER_IMAGE=%s\n' "${IMAGE}"
 
 docker build -f "${ROOT}/deploy/compiler/Dockerfile" -t "${IMAGE}" "${ROOT}"
 
+set +e
+loader_output="$(docker run --rm --network=none --read-only --user=65532:65532 \
+  --cpus=1 --memory=512m --pids-limit=64 --cap-drop=ALL \
+  --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  "${IMAGE}" /bin/sh -c '
+    set +e
+    output="$(/usr/local/bin/polkavm-to-jam 2>&1)"
+    status=$?
+    set -e
+    test "${status}" -eq 1
+    printf "%s\n" "${output}" | grep -F "usage: minijam-polkavm-to-jam <input.elf> <output.blob> [output.polkavm]"
+  ' 2>&1)"
+loader_status=$?
+set -e
+printf '%s\n' "${loader_output}"
+test "${loader_status}" -eq 0
+printf 'CONVERTER_RUNTIME_LOAD=PASS\n'
+
 docker run --rm --network=none --read-only --user=65532:65532 \
   --cpus=1 --memory=512m --pids-limit=64 --cap-drop=ALL \
   --security-opt=no-new-privileges \
