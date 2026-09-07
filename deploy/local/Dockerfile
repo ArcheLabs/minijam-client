@@ -74,7 +74,7 @@ ENTRYPOINT ["minijam-worker"]
 FROM rust-runtime AS compiler-binary
 COPY --from=rust-builder /out/minijam-compiler-api /usr/local/bin/
 
-FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS converter
+FROM rust:1.88-bullseye@sha256:4fe592966775f3396e3d099d674f0664e4383336371ca5600e40c2fe3b575383 AS converter
 WORKDIR /build
 ENV CARGO_TARGET_DIR=/cargo-target
 COPY service-toolchain/compiler/polkavm-to-jam ./polkavm-to-jam
@@ -93,7 +93,7 @@ RUN apt-get -o Acquire::Retries=5 update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --create-home --shell /usr/sbin/nologin minijam
 ENV MINIJAM_LLVM_BASE_IMAGE="silkeh/clang:20-bullseye@sha256:302c1c6d5cfd72ee154696a11e097bcc3a20e7060dac9add9a75dfbe8319947b" \
-    MINIJAM_CONVERTER_BASE_IMAGE="rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0"
+    MINIJAM_CONVERTER_BASE_IMAGE="rust:1.88-bullseye@sha256:4fe592966775f3396e3d099d674f0664e4383336371ca5600e40c2fe3b575383"
 COPY --from=compiler-binary /usr/local/bin/minijam-compiler-api /usr/local/bin/
 COPY --from=converter /out/minijam-polkavm-to-jam /usr/local/bin/polkavm-to-jam
 COPY scripts /repository/scripts

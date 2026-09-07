@@ -39,7 +39,7 @@ The optional service compiler is defined in `deploy/compiler/Dockerfile` and
 uses these immutable base identities:
 
 - LLVM image: `silkeh/clang:20-bullseye@sha256:302c1c6d5cfd72ee154696a11e097bcc3a20e7060dac9add9a75dfbe8319947b`
-- Converter image: `rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0`
+- Converter image: `rust:1.88-bullseye@sha256:4fe592966775f3396e3d099d674f0664e4383336371ca5600e40c2fe3b575383`
 
 The conformance workflow emits compiler and artifact diagnostics, including
 the LLVM executable versions, base image identities, compiler manifest hash,
