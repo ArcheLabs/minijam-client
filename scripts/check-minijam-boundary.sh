@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+command -v rg >/dev/null 2>&1 || {
+  echo "error: ripgrep (rg) is required" >&2
+  exit 127
+}
+
 root="$(git rev-parse --show-toplevel)"
 
 production_paths=(

@@ -99,7 +99,8 @@ jobs:
             clang-18 \
             llvm-18-dev \
             libclang-18-dev \
-            protobuf-compiler
+            protobuf-compiler \
+            ripgrep
 
           LLVM_CONFIG_PATH="$(command -v llvm-config-18)"
           LIBCLANG_PATH="$("${LLVM_CONFIG_PATH}" --libdir)"
