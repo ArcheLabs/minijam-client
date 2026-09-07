@@ -1,19 +1,14 @@
-FROM rust:1.88-bookworm AS converter
+FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS converter
 WORKDIR /build
 COPY service-toolchain/compiler/polkavm-to-jam ./polkavm-to-jam
 RUN cargo build --locked --release --manifest-path ./polkavm-to-jam/Cargo.toml
 
-FROM debian:bookworm-slim
-ARG LLVM_VERSION=20
+FROM silkeh/clang:20-bullseye@sha256:302c1c6d5cfd72ee154696a11e097bcc3a20e7060dac9add9a75dfbe8319947b
+ENV MINIJAM_LLVM_BASE_IMAGE="silkeh/clang:20-bullseye@sha256:302c1c6d5cfd72ee154696a11e097bcc3a20e7060dac9add9a75dfbe8319947b" \
+    MINIJAM_CONVERTER_BASE_IMAGE="rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0"
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release software-properties-common \
- && curl --http1.1 --retry 5 --retry-all-errors -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh \
- && chmod +x /tmp/llvm.sh \
- && /tmp/llvm.sh "${LLVM_VERSION}" \
- && apt-get purge -y curl gnupg lsb-release software-properties-common \
- && apt-get autoremove -y \
- && apt-get clean \
- && rm -rf /var/lib/apt/lists/* /tmp/llvm.sh
+ && apt-get install -y --no-install-recommends passwd \
+ && rm -rf /var/lib/apt/lists/*
 COPY --from=converter /build/polkavm-to-jam/target/release/minijam-polkavm-to-jam /usr/local/bin/polkavm-to-jam
 RUN useradd --uid 65532 --no-create-home --shell /usr/sbin/nologin compiler
 USER 65532:65532

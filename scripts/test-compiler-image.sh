@@ -22,6 +22,14 @@ printf 'COMPILER_TOOLCHAIN_SHA256=%s\n' "$(sha256sum "${ROOT}/service-toolchain/
 printf 'COMPILER_IMAGE=%s\n' "${IMAGE}"
 
 docker build -f "${ROOT}/deploy/compiler/Dockerfile" -t "${IMAGE}" "${ROOT}"
+docker run --rm --network=none --read-only --user=65532:65532 \
+  --cap-drop=ALL --security-opt=no-new-privileges \
+  --mount "type=bind,src=${ROOT},dst=/workspace,readonly" \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --env MINIJAM_REPOSITORY=/workspace \
+  --env MINIJAM_CONVERTER_BIN=/usr/local/bin/polkavm-to-jam \
+  "${IMAGE}" /workspace/scripts/print-service-toolchain-diagnostics.sh \
+  | tee "${REPRODUCED_DIR}/toolchain-diagnostics.txt"
 for language in c cpp; do
   source="${ROOT}/examples/services/counter/service.c"
   expected="${ROOT}/examples/services/counter/artifacts/counter-c.blob"
@@ -66,6 +74,11 @@ for language in c cpp; do
     "${generated_polkavm}" \
     "${polkavm_sha256}" \
     "${polkavm_size}" >> "${MANIFEST}"
+  if [[ "${language}" == c ]]; then
+    printf 'C_TOOLCHAIN_CONFORMANCE=PASS\n'
+  else
+    printf 'CPP_TOOLCHAIN_CONFORMANCE=PASS\n'
+  fi
 done
 
 printf 'ARTIFACT_MANIFEST=%s\n' "${MANIFEST}"

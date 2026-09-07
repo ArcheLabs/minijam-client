@@ -31,6 +31,7 @@ cat > "${OUT_MANIFEST}" <<JSON
   "source": "services/system-service/src/service.c",
   "toolchain": "service-toolchain/compiler/toolchain.lock",
   "stage": 0,
+  "consumed_by_stages": [0, 1],
   "note": "Ownerless SystemOpV2 Service 0; CreateService and ApplyAllocation are explicit commands."
 }
 JSON
