@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-command -v rg >/dev/null 2>&1 || {
-  echo "error: ripgrep (rg) is required" >&2
-  exit 127
-}
-
 root="$(git rev-parse --show-toplevel)"
 
 production_paths=(
@@ -18,17 +13,17 @@ production_paths=(
   "${root}/external/jambda/crates/minijam-executive/src"
 )
 
-if rg -n '\b(TinySpec|FullSpec)\b' "${production_paths[@]}"; then
+if grep -REn '\b(TinySpec|FullSpec)\b' "${production_paths[@]}"; then
   echo "MiniJAM production path must use jambda_minijam_spec::MiniJamSpec" >&2
   exit 1
 fi
 
-if rg -n '5_000_000_000|5B' "${production_paths[@]}"; then
+if grep -REn '5_000_000_000|5B' "${production_paths[@]}"; then
   echo "MiniJAM production path contains a forbidden 5B Refine ceiling" >&2
   exit 1
 fi
 
-rg -n 'MiniJamSpec' \
+grep -REn 'MiniJamSpec' \
   "${root}/crates/minijam-worker/src" \
   "${root}/crates/minijam-work-package-builder/src" \
   "${root}/external/jambda/crates/minijam-executive/src" >/dev/null
