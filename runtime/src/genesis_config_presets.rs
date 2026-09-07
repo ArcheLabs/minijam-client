@@ -436,6 +436,18 @@ mod tests {
     }
 
     #[test]
+    fn stage1_genesis_uses_committed_service0_protocol_state() {
+        let patch = stage1_config_genesis(AccountId::new([0x11; 32]), AccountId::new([0x22; 32]));
+        let mini_jam = section(&patch, "mini_jam", "miniJam");
+        let protocol_state = field(mini_jam, "protocol_state", "protocolState")
+            .as_array()
+            .expect("Stage-1 protocol state must be a JSON array");
+        let committed_state = serde_json::to_value(system_service_zero_protocol_state())
+            .expect("committed Service 0 state must serialize");
+        assert_eq!(protocol_state, committed_state.as_array().unwrap());
+    }
+
+    #[test]
     fn development_genesis_endows_reward_pool_and_fuel_escrow() {
         let patch = development_config_genesis();
         let balances = field(
@@ -474,6 +486,11 @@ mod tests {
         assert_eq!(
             manifest.get("byte_len"),
             Some(&Value::from(SYSTEM_SERVICE_BLOB.len() as u64))
+        );
+        assert_eq!(manifest.get("stage"), Some(&Value::from(0)));
+        assert_eq!(
+            manifest.get("consumed_by_stages"),
+            Some(&serde_json::json!([0, 1]))
         );
         assert!(!SYSTEM_SERVICE_BLOB.is_empty());
         jp_vm_predecode::to_af_and_c_blob(SYSTEM_SERVICE_BLOB)

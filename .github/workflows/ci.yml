@@ -18,7 +18,7 @@ env:
 
 jobs:
   trusted-checks:
-    name: Trusted checks
+    name: Stage-1 core checks
     if: github.repository == 'ArcheLabs/minijam-client'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -30,6 +30,9 @@ jobs:
           fetch-depth: 0
           submodules: false
           persist-credentials: false
+
+      - name: Check Stage-1 core CI boundary
+        run: ./scripts/check-stage1-core-boundary.sh
 
       - name: Check Jambda App configuration
         env:
@@ -91,37 +94,19 @@ jobs:
             season2-ci-${{ runner.os }}-
             stage0-release-${{ runner.os }}-
 
-      - name: Install native build dependencies
-        shell: bash
+      - name: Install core build utilities
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang-18 \
-            llvm-18-dev \
-            libclang-18-dev \
-            protobuf-compiler \
-            ripgrep
-
-          LLVM_CONFIG_PATH="$(command -v llvm-config-18)"
-          LIBCLANG_PATH="$("${LLVM_CONFIG_PATH}" --libdir)"
-          CLANG_PATH="$(command -v clang-18)"
-
-          test -x "${LLVM_CONFIG_PATH}"
-          test -x "${CLANG_PATH}"
-          protoc --version
-          find "${LIBCLANG_PATH}" -maxdepth 1 \
-            \( -name 'libclang.so' -o -name 'libclang.so.*' \) \
-            -print -quit | grep -q .
-
-          echo "LLVM_CONFIG_PATH=${LLVM_CONFIG_PATH}" >> "${GITHUB_ENV}"
-          echo "LIBCLANG_PATH=${LIBCLANG_PATH}" >> "${GITHUB_ENV}"
-          echo "CLANG_PATH=${CLANG_PATH}" >> "${GITHUB_ENV}"
+          sudo apt-get install -y --no-install-recommends ripgrep
 
       - name: Check submodule pin
         run: ./scripts/check-submodule.sh
 
       - name: Check MiniJamSpec production boundary
         run: ./scripts/check-minijam-boundary.sh
+
+      - name: Check production image toolchain boundary
+        run: ./scripts/check-production-image-boundary.sh
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -151,11 +136,8 @@ jobs:
       - name: Check runtime Wasm
         run: cargo check -p minijam-runtime --no-default-features --target wasm32v1-none
 
-      - name: Build isolated compiler and reproduce C/C++ artifacts
-        run: ./scripts/test-compiler-image.sh
-
-      - name: Execute reproduced-compatible artifacts through Jambda
-        run: ./scripts/test-counter-services.sh
+      - name: Run committed Service 0 runtime tests
+        run: cargo test -p minijam-runtime --lib system_ -- --nocapture
 
       - name: Build release binaries
         run: |

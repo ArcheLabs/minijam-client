@@ -1,4 +1,4 @@
-FROM rust:1.88-bookworm AS rust-builder
+FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-builder
 WORKDIR /src
 ENV RUSTUP_MAX_RETRIES=10 \
     CARGO_TARGET_DIR=/cargo-target
@@ -23,7 +23,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # Isolated builder used by the independent Playground API release workflow.
 # Keep the Stage 0 rust-builder above unchanged so the full release path preserves
 # its existing build semantics.
-FROM rust:1.88-bookworm AS playground-api-builder
+FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS playground-api-builder
 WORKDIR /src
 ENV RUSTUP_MAX_RETRIES=10 \
     CARGO_TARGET_DIR=/cargo-target
@@ -74,7 +74,7 @@ ENTRYPOINT ["minijam-worker"]
 FROM rust-runtime AS compiler-binary
 COPY --from=rust-builder /out/minijam-compiler-api /usr/local/bin/
 
-FROM rust:1.88-bookworm AS converter
+FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS converter
 WORKDIR /build
 ENV CARGO_TARGET_DIR=/cargo-target
 COPY service-toolchain/compiler/polkavm-to-jam ./polkavm-to-jam
@@ -87,18 +87,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     /cargo-target/release/minijam-polkavm-to-jam \
     /out/minijam-polkavm-to-jam
 
-FROM debian:bookworm-slim AS compiler
-ARG LLVM_VERSION=20
+FROM silkeh/clang:20-bullseye@sha256:302c1c6d5cfd72ee154696a11e097bcc3a20e7060dac9add9a75dfbe8319947b AS compiler
 RUN apt-get -o Acquire::Retries=5 update \
-    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates curl gnupg lsb-release software-properties-common \
-    && curl --http1.1 --retry 5 --retry-all-errors -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh \
-    && chmod +x /tmp/llvm.sh \
-    && /tmp/llvm.sh "${LLVM_VERSION}" \
-    && apt-get purge -y gnupg lsb-release software-properties-common \
-    && apt-get autoremove -y \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/llvm.sh \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends passwd \
+    && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --create-home --shell /usr/sbin/nologin minijam
+ENV MINIJAM_LLVM_BASE_IMAGE="silkeh/clang:20-bullseye@sha256:302c1c6d5cfd72ee154696a11e097bcc3a20e7060dac9add9a75dfbe8319947b" \
+    MINIJAM_CONVERTER_BASE_IMAGE="rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0"
 COPY --from=compiler-binary /usr/local/bin/minijam-compiler-api /usr/local/bin/
 COPY --from=converter /out/minijam-polkavm-to-jam /usr/local/bin/polkavm-to-jam
 COPY scripts /repository/scripts

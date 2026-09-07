@@ -15,8 +15,29 @@ ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 INCLUDE="${ROOT}/service-toolchain/sdk/include"
 SDK_SRC="${ROOT}/service-toolchain/sdk/src"
 CONVERTER_MANIFEST="${ROOT}/service-toolchain/compiler/polkavm-to-jam/Cargo.toml"
-LLVM_CLANG="${MINIJAM_CLANG:-/usr/lib/llvm-20/bin/clang}"
-LLVM_CLANGXX="${MINIJAM_CLANGXX:-/usr/lib/llvm-20/bin/clang++}"
+
+resolve_llvm_tool() {
+  local override="$1"
+  local versioned="$2"
+  local unversioned="$3"
+
+  if [[ -n "${override}" ]]; then
+    printf '%s\n' "${override}"
+    return
+  fi
+  if [[ -x "/usr/lib/llvm-20/bin/${unversioned}" ]]; then
+    printf '/usr/lib/llvm-20/bin/%s\n' "${unversioned}"
+    return
+  fi
+  if command -v "${versioned}" >/dev/null 2>&1; then
+    command -v "${versioned}"
+    return
+  fi
+  command -v "${unversioned}"
+}
+
+LLVM_CLANG="$(resolve_llvm_tool "${MINIJAM_CLANG:-}" clang-20 clang)"
+LLVM_CLANGXX="$(resolve_llvm_tool "${MINIJAM_CLANGXX:-}" clang++-20 clang++)"
 
 case "${LANGUAGE}" in
   c) COMPILER="${LLVM_CLANG}"; STANDARD="-std=c11" ;;
@@ -29,8 +50,14 @@ case "${OPTIMIZATION}" in
   *) printf 'compile-service: unsupported optimization: %s\n' "${OPTIMIZATION}" >&2; exit 2 ;;
 esac
 [[ -f "${SOURCE}" ]] || { printf 'compile-service: source not found\n' >&2; exit 2; }
-[[ -x "${COMPILER}" && -x "${LLVM_CLANG}" ]] || {
-  printf 'compile-service: pinned LLVM 20 compiler unavailable\n' >&2
+[[ -x "${COMPILER}" && -x "${LLVM_CLANG}" && -x "${LLVM_CLANGXX}" ]] || {
+  printf 'compile-service: pinned LLVM 20 compiler unavailable (clang=%s clang++=%s)\n' \
+    "${LLVM_CLANG}" "${LLVM_CLANGXX}" >&2
+  exit 1
+}
+LLVM_MAJOR="$("${LLVM_CLANG}" --version | sed -nE 's/.*version ([0-9]+).*/\1/p' | head -n 1)"
+[[ "${LLVM_MAJOR}" == 20 ]] || {
+  printf 'compile-service: expected LLVM major 20, found %s\n' "${LLVM_MAJOR:-unknown}" >&2
   exit 1
 }
 
