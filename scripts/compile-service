@@ -74,7 +74,7 @@ for unit in host minijam crypto; do
   "${LLVM_CLANG}" -std=c11 "${COMMON[@]}" -c "${SDK_SRC}/${unit}.c" -o "${TMP}/${unit}.o"
 done
 EXTRA=()
-[[ "${LANGUAGE}" == cpp ]] && EXTRA=(-fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit)
+[[ "${LANGUAGE}" == cpp ]] && EXTRA=(-nostdinc++ -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit)
 "${COMPILER}" "${STANDARD}" "${COMMON[@]}" "${EXTRA[@]}" -c "${SOURCE}" -o "${TMP}/service.o"
 "${LLVM_CLANG}" --target=riscv64-unknown-elf -march=rv64emac -mabi=lp64e \
   -nostdlib -Wl,--build-id=none -Wl,--gc-sections -Wl,--emit-relocs \
