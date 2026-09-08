@@ -23,6 +23,13 @@ same boundary across private hosts. Formal RPC owns only its Work-ingress
 relayer key and bundle store. The worker owns only its worker key. Validator,
 deployment-controller, and external-faucet keys are separate.
 
+Compose reads `MINIJAM_NODE_NETWORK_KEY`, `MINIJAM_WORKER_SEED`, and
+`MINIJAM_FORMAL_RPC_RELAYER_URI` from the operator environment and mounts them
+as `0400` `/run/secrets/*` files owned by UID/GID `10001`. The node uses
+`--base-path=/data` and the explicit node key file so its libp2p identity and
+chain database survive restarts. Do not replace these secret mounts with
+world-readable files or run the images as root.
+
 Generate fresh chain specifications with
 `scripts/export-stage1-chain-specs-image.sh` from the exact node image used by
 the deployment. Generated specs belong to the release artifact and are not

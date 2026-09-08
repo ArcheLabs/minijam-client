@@ -133,14 +133,6 @@ jobs:
           ./scripts/test-stage1-core.sh
           cargo check -p minijam-runtime --no-default-features --target wasm32v1-none
 
-      - name: Prepare ephemeral smoke credentials
-        run: |
-          worker_seed="0x$(openssl rand -hex 32)"
-          relayer_seed="0x$(openssl rand -hex 32)"
-          printf '%s\n' "${worker_seed}" > "${RUNNER_TEMP}/stage1-worker.seed"
-          printf '%s\n' "${relayer_seed}" > "${RUNNER_TEMP}/stage1-relayer.seed"
-          chmod 600 "${RUNNER_TEMP}/stage1-worker.seed" "${RUNNER_TEMP}/stage1-relayer.seed"
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -170,6 +162,26 @@ jobs:
               -t "${repository}:${SHA_TAG}" .
           done
 
+      - name: Prepare ephemeral smoke credentials
+        env:
+          NODE_IMAGE: ${{ env.MINIJAM_IMAGE_REGISTRY }}/minijam-node:${{ steps.release.outputs.sha_tag }}
+        run: |
+          node_key="$(docker run --rm --network=none "${NODE_IMAGE}" key generate-node-key | tr -d '\r\n')"
+          if [[ ! "${node_key}" =~ ^0x?[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::Candidate node image did not return a valid node network key"
+            exit 1
+          fi
+          worker_seed="0x$(openssl rand -hex 32)"
+          relayer_uri="0x$(openssl rand -hex 32)"
+          echo "::add-mask::${node_key}"
+          echo "::add-mask::${worker_seed}"
+          echo "::add-mask::${relayer_uri}"
+          {
+            echo "MINIJAM_NODE_NETWORK_KEY=${node_key}"
+            echo "MINIJAM_WORKER_SEED=${worker_seed}"
+            echo "MINIJAM_FORMAL_RPC_RELAYER_URI=${relayer_uri}"
+          } >> "${GITHUB_ENV}"
+
       - name: Generate Stage-1 chain specs from candidate node image
         env:
           MINIJAM_NODE_IMAGE: ${{ env.MINIJAM_IMAGE_REGISTRY }}/minijam-node:${{ steps.release.outputs.sha_tag }}
@@ -182,8 +194,6 @@ jobs:
           MINIJAM_WORKER_IMAGE: ${{ env.MINIJAM_IMAGE_REGISTRY }}/minijam-worker:${{ steps.release.outputs.sha_tag }}
           MINIJAM_FORMAL_RPC_IMAGE: ${{ env.MINIJAM_IMAGE_REGISTRY }}/minijam-formal-rpc:${{ steps.release.outputs.sha_tag }}
           MINIJAM_STAGE1_CHAIN_SPEC_FILE: ${{ github.workspace }}/chain-specs/stage1.json
-          MINIJAM_WORKER_KEY_FILE: ${{ runner.temp }}/stage1-worker.seed
-          MINIJAM_FORMAL_RPC_RELAYER_KEY_FILE: ${{ runner.temp }}/stage1-relayer.seed
           MINIJAM_RPC_URL: ws://node:9944
         run: |
           docker compose -f deploy/stage1/compose.compact.yml config >/dev/null
@@ -195,8 +205,6 @@ jobs:
           MINIJAM_WORKER_IMAGE: ${{ env.MINIJAM_IMAGE_REGISTRY }}/minijam-worker:${{ steps.release.outputs.sha_tag }}
           MINIJAM_FORMAL_RPC_IMAGE: ${{ env.MINIJAM_IMAGE_REGISTRY }}/minijam-formal-rpc:${{ steps.release.outputs.sha_tag }}
           MINIJAM_STAGE1_CHAIN_SPEC_FILE: ${{ github.workspace }}/chain-specs/stage1.json
-          MINIJAM_WORKER_KEY_FILE: ${{ runner.temp }}/stage1-worker.seed
-          MINIJAM_FORMAL_RPC_RELAYER_KEY_FILE: ${{ runner.temp }}/stage1-relayer.seed
           MINIJAM_STAGE1_SMOKE_PROJECT: minijam-stage1-release
         run: ./scripts/test-stage1-docker-smoke.sh
 
@@ -263,8 +271,6 @@ jobs:
           MINIJAM_WORKER_IMAGE: ${{ steps.digests.outputs.worker }}
           MINIJAM_FORMAL_RPC_IMAGE: ${{ steps.digests.outputs.formal_rpc }}
           MINIJAM_STAGE1_CHAIN_SPEC_FILE: ${{ github.workspace }}/chain-specs/stage1.json
-          MINIJAM_WORKER_KEY_FILE: ${{ runner.temp }}/stage1-worker.seed
-          MINIJAM_FORMAL_RPC_RELAYER_KEY_FILE: ${{ runner.temp }}/stage1-relayer.seed
           MINIJAM_STAGE1_SMOKE_PROJECT: minijam-stage1-published
         run: |
           ./scripts/test-stage1-docker-smoke.sh

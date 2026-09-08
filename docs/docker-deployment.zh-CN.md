@@ -38,15 +38,18 @@ chain-specs/stage1-raw.json
 
 ## Compact 部署
 
-设置镜像、chain spec 和 secret 文件路径，然后验证并启动：
+设置镜像、chain spec 和 secret 值，然后验证并启动。Compose 会把这些由环境
+提供的值以 `0400` 的 `/run/secrets/*` 文件交给对应的非 root 容器，而不会把
+它们注入应用环境变量：
 
 ```bash
 export MINIJAM_NODE_IMAGE=ghcr.io/archelabs/minijam-node@sha256:<digest>
 export MINIJAM_WORKER_IMAGE=ghcr.io/archelabs/minijam-worker@sha256:<digest>
 export MINIJAM_FORMAL_RPC_IMAGE=ghcr.io/archelabs/minijam-formal-rpc@sha256:<digest>
 export MINIJAM_STAGE1_CHAIN_SPEC_FILE=./chain-specs/stage1.json
-export MINIJAM_WORKER_KEY_FILE=/secure/path/worker.seed
-export MINIJAM_FORMAL_RPC_RELAYER_KEY_FILE=/secure/path/ingress-relayer.seed
+export MINIJAM_NODE_NETWORK_KEY=0x<64-hex-bytes>
+export MINIJAM_WORKER_SEED=0x<64-hex-bytes>
+export MINIJAM_FORMAL_RPC_RELAYER_URI=0x<64-hex-bytes>
 
 docker compose -f deploy/stage1/compose.compact.yml config
 docker compose -f deploy/stage1/compose.compact.yml up -d
@@ -68,8 +71,9 @@ docker compose -f deploy/stage1/compose.split.yml config
 docker compose -f deploy/stage1/compose.split.yml up -d
 ```
 
-Worker 和 Formal RPC 的签名密钥职责分离。不得将密钥复制到镜像、提交到仓库，
-或在公网复用开发 seed。
+node network key 也是部署 secret：它决定 validator 的 libp2p identity，重启后
+必须保持不变。Worker 和 Formal RPC 的签名密钥职责分离。不得将这些密钥复制到
+镜像、提交到仓库，或在公网复用开发 seed。
 
 ## 验证和停止
 
