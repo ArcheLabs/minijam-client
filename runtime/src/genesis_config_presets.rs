@@ -22,8 +22,8 @@ const SYSTEM_SERVICE_BLOB: &[u8] = include_bytes!("../../artifacts/system-servic
 pub const STAGE0_RUNTIME_PRESET: &str = "stage0";
 
 /// Known deterministic local-development identity derived from the seed `0x92` repeated 32 times.
-/// Never use as a public Stage 0 Relayer.
-pub const LOCAL_PLAYGROUND_RELAYER_ACCOUNT: [u8; 32] = [
+/// Never use as a public ingress Relayer.
+pub const LOCAL_INGRESS_RELAYER_ACCOUNT: [u8; 32] = [
     0x90, 0x15, 0x78, 0xa4, 0x17, 0x30, 0x0a, 0xa0, 0xae, 0x53, 0x3b, 0x5b, 0xd0, 0xe9, 0xaf, 0x48,
     0x9a, 0x4c, 0xc4, 0xa6, 0xf3, 0x89, 0x99, 0xb7, 0x62, 0x83, 0x86, 0x70, 0x87, 0x73, 0x82, 0x09,
 ];
@@ -73,7 +73,7 @@ fn testnet_genesis(
 ) -> Value {
     let reward_pool = AccountId::new([9; 32]);
     let fuel_escrow = AccountId::new([7; 32]);
-    let playground_relayer = ingress_relayer;
+    let ingress_account = ingress_relayer;
     if !endowed_accounts
         .iter()
         .any(|account| account == &reward_pool)
@@ -88,9 +88,9 @@ fn testnet_genesis(
     }
     if !endowed_accounts
         .iter()
-        .any(|account| account == &playground_relayer)
+        .any(|account| account == &ingress_account)
     {
-        endowed_accounts.push(playground_relayer.clone());
+        endowed_accounts.push(ingress_account.clone());
     }
     if !endowed_accounts
         .iter()
@@ -132,7 +132,7 @@ fn testnet_genesis(
         mini_jam: MiniJamConfig {
             protocol_state: system_service_zero_protocol_state(),
             service_fuel: Vec::new(),
-            ingress_relayer: Some(playground_relayer.clone()),
+            ingress_relayer: Some(ingress_account.clone()),
             allocation_relayer: Some(allocation_relayer),
             _phantom: Default::default(),
         },
@@ -229,8 +229,8 @@ pub fn development_config_genesis() -> Value {
         ],
         Sr25519Keyring::Alice.to_account_id(),
         development_workers(),
-        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
-        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
+        AccountId::new(LOCAL_INGRESS_RELAYER_ACCOUNT),
+        AccountId::new(LOCAL_INGRESS_RELAYER_ACCOUNT),
     )
 }
 
@@ -252,8 +252,8 @@ pub fn local_config_genesis() -> Value {
             .collect::<Vec<_>>(),
         Sr25519Keyring::Alice.to_account_id(),
         development_workers(),
-        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
-        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
+        AccountId::new(LOCAL_INGRESS_RELAYER_ACCOUNT),
+        AccountId::new(LOCAL_INGRESS_RELAYER_ACCOUNT),
     )
 }
 
@@ -276,17 +276,6 @@ pub fn stage1_config_genesis(ingress_relayer: AccountId, allocation_relayer: Acc
         stage0_endowed_accounts(),
         AccountId::new(STAGE0_SUDO_ACCOUNT),
         stage0_workers(),
-        ingress_relayer,
-        allocation_relayer,
-    )
-}
-
-pub fn season2_config_genesis(ingress_relayer: AccountId, allocation_relayer: AccountId) -> Value {
-    testnet_genesis(
-        stage0_authorities(),
-        stage0_endowed_accounts(),
-        AccountId::new(STAGE0_SUDO_ACCOUNT),
-        stage0_workers().into_iter().take(1).collect(),
         ingress_relayer,
         allocation_relayer,
     )
@@ -837,7 +826,7 @@ mod tests {
 
     #[test]
     fn development_and_local_genesis_use_only_the_known_local_relayer() {
-        let local = serde_json::to_value(AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT)).unwrap();
+        let local = serde_json::to_value(AccountId::new(LOCAL_INGRESS_RELAYER_ACCOUNT)).unwrap();
         for patch in [development_config_genesis(), local_config_genesis()] {
             assert_eq!(
                 field(

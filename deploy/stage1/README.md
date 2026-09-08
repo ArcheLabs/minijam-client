@@ -14,9 +14,8 @@ Use the immutable release tag for evaluation and prefer
 `repository@sha256:digest` references for production deployments. The compact
 and split Compose profiles consume these three image references directly.
 
-Stage-1 is the current MiniJAM network generation. Its core is the node,
-worker, and application-neutral Formal RPC. Playground is a frozen legacy
-Stage-0 product and is not part of this deployment or its dependency graph.
+Stage-1 is the only supported MiniJAM deployment generation. Its core is the
+node, worker, and application-neutral Formal RPC.
 
 The compact profile runs all three roles on one host while retaining separate
 containers, networks, data, and signing material. The split profile uses the
@@ -26,8 +25,8 @@ deployment-controller, and external-faucet keys are separate.
 
 Generate fresh chain specifications with
 `scripts/export-stage1-chain-specs-image.sh` from the exact node image used by
-the deployment. The older host-binary script remains useful for local
-development, but is not the release path.
+the deployment. Generated specs belong to the release artifact and are not
+committed to the repository.
 Public account IDs are deployment inputs; private keys never belong here.
 SS58 prefix remains 42. Faucet funding is an ordinary endowed account in
 genesis and the external faucet signs normal Balances transfers.

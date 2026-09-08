@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - main
-      - m9-stage0-local-e2e
-      - m10-minimal-release
-      - agent/season2-release-readiness
   pull_request:
   workflow_dispatch:
 
@@ -26,7 +23,7 @@ jobs:
 
     steps:
       - name: Checkout MiniJAM
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: false
@@ -63,14 +60,14 @@ jobs:
         id: jambda-token
         uses: actions/create-github-app-token@v3
         with:
-          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          app-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
           private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
           owner: ArcheLabs
           repositories: jambda
           permission-contents: read
 
       - name: Checkout pinned Jambda
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ArcheLabs/jambda
           ref: ${{ steps.jambda-pin.outputs.sha }}
@@ -83,17 +80,16 @@ jobs:
         run: rustup show
 
       - name: Restore Cargo and Rust build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             ~/.rustup/toolchains
             target
-          key: season2-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          key: minijam-ci-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
           restore-keys: |
-            season2-ci-${{ runner.os }}-
-            stage0-release-${{ runner.os }}-
+            minijam-ci-${{ runner.os }}-
 
       - name: Check submodule pin
         run: ./scripts/check-submodule.sh
@@ -110,11 +106,10 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Run Season 2 fast gate
+      - name: Run core fast gate
         run: |
           cargo test -p pallet-minijam
           cargo test -p pallet-minijam-workers
-          ./scripts/test-season2-hardening.sh
 
       - name: Test Stage-1 core
         run: ./scripts/test-stage1-core.sh
@@ -142,7 +137,7 @@ jobs:
 
     steps:
       - name: Checkout MiniJAM
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: false
@@ -176,14 +171,14 @@ jobs:
         id: jambda-token
         uses: actions/create-github-app-token@v3
         with:
-          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          app-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
           private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
           owner: ArcheLabs
           repositories: jambda
           permission-contents: read
 
       - name: Checkout pinned Jambda
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ArcheLabs/jambda
           ref: ${{ steps.jambda-pin.outputs.sha }}
@@ -198,7 +193,7 @@ jobs:
           ./scripts/check-release-secret-hygiene.sh
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build Stage-1 Docker test target
         run: docker build --target tests -f deploy/stage1/Dockerfile -t minijam-stage1-tests:${GITHUB_SHA} .
