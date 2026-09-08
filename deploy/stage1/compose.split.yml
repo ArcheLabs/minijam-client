@@ -4,7 +4,12 @@ services:
   node:
     image: ${MINIJAM_NODE_IMAGE:-ghcr.io/archelabs/minijam-node:stage1}
     command: [--chain=/chain-specs/stage1.json, --validator, --rpc-external, --rpc-methods=safe]
-    volumes: [node-data:/data, "${MINIJAM_STAGE1_CHAIN_SPEC_FILE:-./chain-specs/stage1.json}:/chain-specs/stage1.json:ro"]
+    volumes:
+      - node-data:/data
+      - type: bind
+        source: ${MINIJAM_STAGE1_CHAIN_SPEC_FILE:-./chain-specs/stage1.json}
+        target: /chain-specs/stage1.json
+        read_only: true
     networks: [chain]
   worker:
     image: ${MINIJAM_WORKER_IMAGE:-ghcr.io/archelabs/minijam-worker:stage1}
