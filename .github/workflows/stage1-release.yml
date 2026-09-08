@@ -167,7 +167,7 @@ jobs:
           NODE_IMAGE: ${{ env.MINIJAM_IMAGE_REGISTRY }}/minijam-node:${{ steps.release.outputs.sha_tag }}
         run: |
           node_key="$(docker run --rm --network=none "${NODE_IMAGE}" key generate-node-key | tr -d '\r\n')"
-          if [[ ! "${node_key}" =~ ^0x?[0-9a-fA-F]{64}$ ]]; then
+          if [[ ! "${node_key}" =~ ^(0x)?[0-9a-fA-F]{64}$ ]]; then
             echo "::error::Candidate node image did not return a valid node network key"
             exit 1
           fi
