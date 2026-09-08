@@ -8,7 +8,7 @@ services:
       - --base-path=/data
       - --node-key-file=/run/secrets/node_network_key
       - --validator
-      - --rpc-external
+      - --unsafe-rpc-external
       - --rpc-methods=safe
     secrets:
       - source: node_network_key
