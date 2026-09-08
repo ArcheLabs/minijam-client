@@ -40,16 +40,19 @@ node image.
 
 ## Compact deployment
 
-Set the image references, generated chain spec, and secret file paths, then
-validate and start the stack:
+Set the image references, generated chain spec, and secret values, then
+validate and start the stack. Compose exposes these environment-backed values
+to each non-root container as `0400` `/run/secrets/*` files; they are not
+injected into the application environment:
 
 ```bash
 export MINIJAM_NODE_IMAGE=ghcr.io/archelabs/minijam-node@sha256:<digest>
 export MINIJAM_WORKER_IMAGE=ghcr.io/archelabs/minijam-worker@sha256:<digest>
 export MINIJAM_FORMAL_RPC_IMAGE=ghcr.io/archelabs/minijam-formal-rpc@sha256:<digest>
 export MINIJAM_STAGE1_CHAIN_SPEC_FILE=./chain-specs/stage1.json
-export MINIJAM_WORKER_KEY_FILE=/secure/path/worker.seed
-export MINIJAM_FORMAL_RPC_RELAYER_KEY_FILE=/secure/path/ingress-relayer.seed
+export MINIJAM_NODE_NETWORK_KEY=0x<64-hex-bytes>
+export MINIJAM_WORKER_SEED=0x<64-hex-bytes>
+export MINIJAM_FORMAL_RPC_RELAYER_URI=0x<64-hex-bytes>
 
 docker compose -f deploy/stage1/compose.compact.yml config
 docker compose -f deploy/stage1/compose.compact.yml up -d
@@ -73,9 +76,10 @@ docker compose -f deploy/stage1/compose.split.yml config
 docker compose -f deploy/stage1/compose.split.yml up -d
 ```
 
-The Worker and Formal RPC signing keys are separate responsibilities. Never
-copy them into an image, commit them, or reuse a development seed on a public
-network.
+The node network key is also a deployment secret: it fixes the validator's
+libp2p identity across restarts. The Worker and Formal RPC signing keys are
+separate responsibilities. Never copy any of them into an image, commit them,
+or reuse a development seed on a public network.
 
 ## Verification and teardown
 

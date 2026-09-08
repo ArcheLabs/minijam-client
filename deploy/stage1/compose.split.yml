@@ -3,7 +3,18 @@ name: minijam-stage1-split
 services:
   node:
     image: ${MINIJAM_NODE_IMAGE:-ghcr.io/archelabs/minijam-node:stage1}
-    command: [--chain=/chain-specs/stage1.json, --validator, --rpc-external, --rpc-methods=safe]
+    command:
+      - --chain=/chain-specs/stage1.json
+      - --base-path=/data
+      - --node-key-file=/run/secrets/node_network_key
+      - --validator
+      - --rpc-external
+      - --rpc-methods=safe
+    secrets:
+      - source: node_network_key
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
     volumes:
       - node-data:/data
       - type: bind
@@ -15,7 +26,11 @@ services:
     image: ${MINIJAM_WORKER_IMAGE:-ghcr.io/archelabs/minijam-worker:stage1}
     command: [--rpc-url=http://node:9944, --worker-id=0, --ipfs-gateway=http://formal-rpc:8080/ipfs, --submit-candidates, --submit-support-votes]
     environment: {MINIJAM_WORKER_SEED_FILE: /run/secrets/worker_signing_key}
-    secrets: [worker_signing_key]
+    secrets:
+      - source: worker_signing_key
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
     volumes: [worker-data:/data]
     networks: [chain]
   formal-rpc:
@@ -25,14 +40,20 @@ services:
       MINIJAM_FORMAL_RPC_BIND: 0.0.0.0:8080
       MINIJAM_BUNDLE_DIR: /bundles
       MINIJAM_RELAYER_URI_FILE: /run/secrets/work_ingress_key
-    secrets: [work_ingress_key]
+    secrets:
+      - source: work_ingress_key
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
     volumes: [bundle-data:/bundles]
     ports: ["127.0.0.1:8080:8080"]
     networks: [chain]
 volumes: {node-data: {}, worker-data: {}, bundle-data: {}}
 networks: {chain: {external: true}}
 secrets:
+  node_network_key:
+    environment: MINIJAM_NODE_NETWORK_KEY
   worker_signing_key:
-    file: ${MINIJAM_WORKER_KEY_FILE:?set a worker signing-key file}
+    environment: MINIJAM_WORKER_SEED
   work_ingress_key:
-    file: ${MINIJAM_FORMAL_RPC_RELAYER_KEY_FILE:?set a Work-ingress signing-key file}
+    environment: MINIJAM_FORMAL_RPC_RELAYER_URI
