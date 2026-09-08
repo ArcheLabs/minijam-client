@@ -100,7 +100,7 @@ jobs:
         id: jambda-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
           private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
           owner: ArcheLabs
           repositories: jambda
