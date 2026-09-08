@@ -1,194 +1,83 @@
-# 仅供 Maintainer / Operator：Stage 0 Docker 部署
+# Stage-1 Docker 部署
 
-本文不是公开用户 Quickstart。普通用户必须使用可下载的本地镜像 bundle；MiniJAM 不会分发官方 Authority、Worker、Relayer、Sudo 或 Faucet 凭据。
+Stage-1 是当前支持的 MiniJAM 部署。发布单元是一组不可变镜像 digest，以及从
+精确 node 镜像生成的 chain specification。仓库不再提供独立的本地、Stage-0
+或 Web 部署栈。
 
-完整 MiniJAM Stack 当前无法仅使用公开源码独立构建，因为 Node、Runtime、Worker 和执行路径依赖固定的私有 Jambda revision。
+## 组件
 
-当前支持的分发和部署方式是已经发布的 Stage 0 Docker release。目标主机不需要安装 Rust、Cargo、LLVM、Node.js，也不需要访问 Jambda 源码。
+compact 和 split 配置包含相同的三个角色：
 
-:::warning 需要 Operator 凭据
+- `node`：validator 和安全 JSON-RPC 端点；
+- `worker`：使用独立签名密钥和状态 volume 的 Worker daemon；
+- `formal-rpc`：应用无关的 Work 与 bundle gateway，持有 Work-ingress relayer
+  密钥和 bundle volume。
 
-Stage 0 release stack 不是无需凭据的本地开发链。Authority keystore、三个 Worker seed 和 Playground Relayer URI 必须与 release chain spec 中的公开身份匹配。任意替换密钥会导致 Node、Worker 或 Playground 保持不健康。
+可选 Service compiler 位于 `deploy/compiler`，不属于 Stage-1 runtime 网络。
 
-启动 Stack 前，请从 MiniJAM maintainer 获取匹配的 release bundle 和运行凭据。
+## 准备发布产物
 
-:::
-
-## Stack 包含什么
-
-release Compose Stack 会启动一个 MiniJAM Node、一个 Compiler API、一个 Playground API 和 bundle gateway、三个使用不同身份的 Worker，以及一个 Playground Web 前端。Playground API 预期可被浏览器公开调用；Node RPC、Compiler API、Worker 健康检查端点和 metrics 仍保持私有。
-
-MiniJAM Playground API 是公开的开发者 API，并且有意支持跨域浏览器客户端。它使用 permissive CORS；CORS 不是授权边界。状态变更仍由 signed action、sr25519 钱包签名、重放保护和 Service-defined management policy（如适用）授权。
-
-## 要求
-
-安装 Docker Engine、Docker Compose plugin、Git 和 `sha256sum`：
+从 Stage-1 发布产物获取三个镜像 digest，再从精确 node 镜像生成匹配的 chain
+spec：
 
 ```bash
-docker --version
-docker compose version
-git --version
-sha256sum --version
+MINIJAM_NODE_IMAGE=ghcr.io/archelabs/minijam-node@sha256:<digest> \
+MINIJAM_STAGE1_CHAIN_SPEC_DIR=./chain-specs \
+./scripts/export-stage1-chain-specs-image.sh
 ```
 
-Docker 是当前完整 Stack 唯一支持的路径。不要使用公开源码仓库构建完整 Node、Runtime、Worker 或执行 Stack。
-
-## 1. 检出匹配的 release
-
-使用与 release bundle 对应的精确 release tag。此处使用占位符，因为本文档不发布具体 release tag：
-
-```bash
-git clone --branch <RELEASE_TAG> --depth 1 \
-  https://github.com/ArcheLabs/minijam-client.git
-cd minijam-client
-```
-
-不要使用一个 release 的 artifact 部署另一个 release 的 `main`。
-
-## 2. 获取完整 release bundle
-
-从同一个成功的 Stage 0 release 获取：
+生成文件为：
 
 ```text
-release-manifest.json
-stage0-raw.json
-SHA256SUMS
+chain-specs/stage1.json
+chain-specs/stage1-raw.json
 ```
 
-manifest 是 MiniJAM commit、固定的 Jambda commit、genesis hash、公开身份和五个镜像 digest 的事实来源。不要混用不同 release 的 manifest、chain spec、镜像 digest 或数据库。
+生成文件必须与 release manifest 中的 hash 一致，不得与其他 node 镜像混用，且
+不得提交回仓库。
+
+## Compact 部署
+
+设置镜像、chain spec 和 secret 文件路径，然后验证并启动：
 
 ```bash
-cp /path/to/release-bundle/stage0-raw.json chain-specs/stage0-raw.json
-cd /path/to/release-bundle
-sha256sum -c SHA256SUMS
-cd /path/to/minijam-client
+export MINIJAM_NODE_IMAGE=ghcr.io/archelabs/minijam-node@sha256:<digest>
+export MINIJAM_WORKER_IMAGE=ghcr.io/archelabs/minijam-worker@sha256:<digest>
+export MINIJAM_FORMAL_RPC_IMAGE=ghcr.io/archelabs/minijam-formal-rpc@sha256:<digest>
+export MINIJAM_STAGE1_CHAIN_SPEC_FILE=./chain-specs/stage1.json
+export MINIJAM_WORKER_KEY_FILE=/secure/path/worker.seed
+export MINIJAM_FORMAL_RPC_RELAYER_KEY_FILE=/secure/path/ingress-relayer.seed
+
+docker compose -f deploy/stage1/compose.compact.yml config
+docker compose -f deploy/stage1/compose.compact.yml up -d
+docker compose -f deploy/stage1/compose.compact.yml ps
 ```
 
-raw chain spec、genesis hash、五个镜像 digest 和凭据必须全部来自同一个 release bundle。
+默认只在 loopback 发布 operator 选择的 Node RPC 和 Formal RPC 端口。不要将
+Worker health 或 metrics 端点暴露到公网。
 
-## 3. 配置未跟踪的环境文件
+## Split 部署
+
+在参与部署的主机上创建共享的外部 `chain` 网络。使用相同的镜像 digest、生成
+的 chain spec 和 secret 约定运行 `deploy/stage1/compose.split.yml`，并将
+`MINIJAM_RPC_URL` 设置为 Formal RPC 主机可访问的私有 Node RPC 地址。
 
 ```bash
-cp deploy/stage0/.env.example deploy/stage0/.env
+docker network create chain
+docker compose -f deploy/stage1/compose.split.yml config
+docker compose -f deploy/stage1/compose.split.yml up -d
 ```
 
-替换 `deploy/stage0/.env` 中的所有占位符。五个镜像值必须使用从 `release-manifest.json` 复制的不可变 digest 引用：
+Worker 和 Formal RPC 的签名密钥职责分离。不得将密钥复制到镜像、提交到仓库，
+或在公网复用开发 seed。
 
-```dotenv
-MINIJAM_NODE_IMAGE=ghcr.io/archelabs/minijam-node@sha256:<digest>
-MINIJAM_WORKER_IMAGE=ghcr.io/archelabs/minijam-worker@sha256:<digest>
-MINIJAM_COMPILER_IMAGE=ghcr.io/archelabs/minijam-compiler-api@sha256:<digest>
-MINIJAM_PLAYGROUND_API_IMAGE=ghcr.io/archelabs/minijam-playground-api@sha256:<digest>
-MINIJAM_PLAYGROUND_WEB_IMAGE=ghcr.io/archelabs/minijam-playground-web@sha256:<digest>
-```
+## 验证和停止
 
-设置匹配的链配置和 release-specific Relayer URI：
-
-```dotenv
-MINIJAM_CHAIN_SPEC_PATH=./chain-specs/stage0-raw.json
-MINIJAM_GENESIS_HASH=<genesis-hash-from-release-manifest>
-MINIJAM_RELAYER_URI=<release-specific-relayer-uri>
-MINIJAM_WEB_BIND=127.0.0.1
-MINIJAM_WEB_PORT=4173
-```
-
-保持 `.env` 未跟踪。不要将 digest 引用替换为可变 tag。
-
-## 4. 配置匹配的运行凭据
-
-使用同一 release 提供的凭据创建：
-
-```text
-deploy/stage0/secrets/node-keystore.tar.gz
-deploy/stage0/secrets/worker-1.seed
-deploy/stage0/secrets/worker-2.seed
-deploy/stage0/secrets/worker-3.seed
-```
-
-Node archive 必须包含与 chain spec Authority 身份匹配的 Aura 和 GRANDPA keystore 文件。每个 Worker seed 必须匹配其注册的 Worker session key。Playground Relayer URI 也必须匹配该 release 部署。没有匹配凭据的用户，应在公共 Playground 可用时使用托管 Playground，而不是自行生成任意 seed。
-
-在 `.env` 中设置 secret 路径：
-
-```dotenv
-NODE_KEY_OR_SEED_PATH=./deploy/stage0/secrets/node-keystore.tar.gz
-WORKER_1_SEED_PATH=./deploy/stage0/secrets/worker-1.seed
-WORKER_2_SEED_PATH=./deploy/stage0/secrets/worker-2.seed
-WORKER_3_SEED_PATH=./deploy/stage0/secrets/worker-3.seed
-```
-
-应用严格权限：
+发布 gate 会验证 Compose、候选镜像 smoke、Node 重启恢复、Formal RPC readiness、
+Worker readiness 和产物 secret hygiene。运维部署可使用：
 
 ```bash
-sudo chown 10001:10001 deploy/stage0/secrets/node-keystore.tar.gz \
-  deploy/stage0/secrets/worker-1.seed deploy/stage0/secrets/worker-2.seed \
-  deploy/stage0/secrets/worker-3.seed
-sudo chmod 0400 deploy/stage0/secrets/node-keystore.tar.gz \
-  deploy/stage0/secrets/worker-1.seed deploy/stage0/secrets/worker-2.seed \
-  deploy/stage0/secrets/worker-3.seed
-```
-
-不要将凭据提交或粘贴到 Compose、源码、日志、截图或支持工单中。
-
-## 5. 校验并拉取 release
-
-拉取镜像前先解析所有环境变量：
-
-```bash
-docker compose --env-file deploy/stage0/.env \
-  -f compose.stage0.yml config >/dev/null
-```
-
-如果存在缺失变量、空 Relayer URI、占位符或 tag 镜像 digest、无效镜像引用或缺失 secret 文件，不要继续。
-
-拉取五个不可变镜像：
-
-```bash
-docker compose --env-file deploy/stage0/.env \
-  -f compose.stage0.yml pull
-```
-
-## 6. 启动并检查健康状态
-
-```bash
-docker compose --env-file deploy/stage0/.env \
-  -f compose.stage0.yml up -d
-docker compose --env-file deploy/stage0/.env \
-  -f compose.stage0.yml ps
-```
-
-等待 `node`、`compiler-api`、`playground-api`、`worker-1`、`worker-2`、`worker-3` 和 `playground-web` 全部健康。需要时查看日志：
-
-```bash
-docker compose --env-file deploy/stage0/.env \
-  -f compose.stage0.yml logs --tail=200 node playground-api \
-  worker-1 worker-2 worker-3
-```
-
-## 7. 打开 Playground
-
-Docker 部署健康后，默认本地地址为 [http://127.0.0.1:4173](http://127.0.0.1:4173)。公共托管 Playground 上线后，应单独列出其地址；本文档不编造公共地址。
-
-浏览器可以访问 Playground Web，也可以直接访问公开的 Playground API。不要暴露 Node RPC、Compiler API、Worker health endpoint 或 metrics 端口。公共主机应使用 Operator 管理的 HTTPS reverse proxy 发布 Web 和 Playground API。
-
-## 8. 停止、重启或重置
-
-停止但不删除状态：
-
-```bash
-docker compose --env-file deploy/stage0/.env \
-  -f compose.stage0.yml down
-```
-
-使用同一 release 再次启动：
-
-```bash
-docker compose --env-file deploy/stage0/.env \
-  -f compose.stage0.yml up -d
-```
-
-重置 Stage 0 并删除 Node、Playground、bundle 和 Worker 状态：
-
-```bash
-docker compose --env-file deploy/stage0/.env \
-  -f compose.stage0.yml down --volumes --remove-orphans
+docker compose -f deploy/stage1/compose.compact.yml ps
+docker compose -f deploy/stage1/compose.compact.yml logs --tail=200 node worker formal-rpc
+docker compose -f deploy/stage1/compose.compact.yml down
 ```

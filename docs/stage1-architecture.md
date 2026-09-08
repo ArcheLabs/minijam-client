@@ -1,12 +1,12 @@
 # MiniJAM Stage-1 architecture
 
-Stage-0 is the previous network generation and Playground is its frozen,
-best-effort developer product. Season 2 is a historical Experience Network.
-Stage-1 is the current generation.
+Stage-1 is the supported network generation. Earlier network profiles remain
+protocol compatibility history only and are not shipped as deployment
+products.
 
 Stage-1 exposes application-neutral node, Formal Work, state, and Service
 lifecycle interfaces. JamScript, JAM Computer, and future MiniCells production
-integrations depend on those interfaces, never on Playground. Formal RPC
+integrations depend on those interfaces. Formal RPC
 constructs canonical Work and provides neutral Service creation from an
 already-built blob; it does not accept source code or application actions.
 

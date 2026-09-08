@@ -1,15 +1,10 @@
 .local/
 target/
 node_modules/
-apps/playground-web/dist/
-
+chain-specs/*.json
 .env
 .env.*
 !.env.example
-
-deploy/stage0/.env
-deploy/stage0/secrets/*
-!deploy/stage0/secrets/README.md
 
 playwright-report/
 test-results/

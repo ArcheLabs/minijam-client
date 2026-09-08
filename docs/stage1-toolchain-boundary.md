@@ -25,9 +25,8 @@ committed outputs are:
 - `artifacts/system-service.manifest.json`
 
 The manifest's `stage: 0` field records the artifact's Service 0 origin. The
-`consumed_by_stages: [0, 1]` field records that both Stage 0 and Stage 1
-genesis presets embed and execute the same committed artifact. Stage 1 does
-not rebuild it at runtime.
+Stage-1 genesis embeds and executes the committed artifact; Stage-1 does not
+rebuild it at runtime.
 
 The runtime embeds the blob with `include_bytes!` and tests it through the real
 Jambda executor. Those tests cover manifest/blob identity, `CreateService`, and
@@ -44,7 +43,7 @@ uses these immutable base identities:
 The conformance workflow emits compiler and artifact diagnostics, including
 the LLVM executable versions, base image identities, compiler manifest hash,
 converter hash, SDK hash, artifact hashes, and Jambda commit. The production
-node, worker, playground, and runtime targets are checked to ensure that the
+node, worker, Formal RPC, and runtime targets are checked to ensure that the
 compiler toolchain is not copied into them; the compiler service target is the
 intentional exception.
 

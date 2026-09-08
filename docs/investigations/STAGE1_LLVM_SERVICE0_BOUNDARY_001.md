@@ -33,10 +33,10 @@ record and is not closed by this document.
    not be interpreted as saying that Stage 1 does not consume the artifact.
 4. `deploy/compiler/Dockerfile` downloaded `https://apt.llvm.org/llvm.sh`
    during every build without pinning the image or script contents.
-5. `deploy/local/Dockerfile` used the same mutable LLVM installer in its
-   compiler target. Its node, worker, playground, and runtime targets copied
-   binaries from builder stages and did not intentionally include the compiler
-   toolchain; this boundary is now made explicit and checked.
+5. The retired local Dockerfile used the same mutable LLVM installer in its
+   compiler target. Its node, worker, and runtime targets copied binaries from
+   builder stages and did not intentionally include the compiler toolchain;
+   this boundary is now made explicit and checked.
 
 ## Repair plan
 

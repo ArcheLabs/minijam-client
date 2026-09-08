@@ -12,7 +12,6 @@ members = [
   "crates/minijam-chain-client",
   "crates/minijam-formal-rpc",
   "crates/minijam-compiler-api",
-  "crates/minijam-playground-api",
   "crates/minijam-pvm-executor",
   "crates/minijam-bridge-engine",
   "crates/minijam-bulletin-api",

@@ -4,14 +4,10 @@ on:
   push:
     branches:
       - main
-      - m9-stage0-local-e2e
-      - m10-minimal-release
-      - agent/season2-release-readiness
     paths:
       - '.github/workflows/service-toolchain.yml'
       - 'artifacts/system-service.*'
       - 'deploy/compiler/**'
-      - 'deploy/local/Dockerfile'
       - 'examples/services/counter/**'
       - 'scripts/build-system-service.sh'
       - 'scripts/compile-service'
@@ -26,7 +22,6 @@ on:
       - '.github/workflows/service-toolchain.yml'
       - 'artifacts/system-service.*'
       - 'deploy/compiler/**'
-      - 'deploy/local/Dockerfile'
       - 'examples/services/counter/**'
       - 'scripts/build-system-service.sh'
       - 'scripts/compile-service'
@@ -49,7 +44,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout MiniJAM
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: false
@@ -59,7 +54,7 @@ jobs:
         run: ./scripts/test-service0-provenance.sh
 
       - name: Upload Service 0 provenance evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: service0-provenance-${{ github.sha }}
           path: target/minijam-service0-provenance/
@@ -71,7 +66,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout MiniJAM
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: false
@@ -105,14 +100,14 @@ jobs:
         id: jambda-token
         uses: actions/create-github-app-token@v3
         with:
-          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          app-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
           private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
           owner: ArcheLabs
           repositories: jambda
           permission-contents: read
 
       - name: Checkout pinned Jambda
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ArcheLabs/jambda
           ref: ${{ steps.jambda-pin.outputs.sha }}
@@ -128,7 +123,7 @@ jobs:
         run: ./scripts/test-counter-services.sh
 
       - name: Upload toolchain diagnostics
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: c-cpp-toolchain-${{ github.sha }}
           path: |

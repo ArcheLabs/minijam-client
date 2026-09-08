@@ -10,7 +10,7 @@ if (( ${#STAGE1_CORE_PACKAGES[@]} == 0 )); then
   exit 1
 fi
 
-for forbidden in minijam-compiler-api minijam-playground-api; do
+for forbidden in minijam-compiler-api; do
   if printf '%s\n' "${STAGE1_CORE_PACKAGES[@]}" | grep -Fxq "${forbidden}"; then
     echo "Stage-1 core package manifest contains external product package: ${forbidden}" >&2
     exit 1

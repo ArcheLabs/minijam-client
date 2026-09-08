@@ -1,7 +1,8 @@
 # MiniJAM application RPC boundary
 
-Applications are protocol clients, not Playground plugins. Computer, JNS and
-DOOM are ordinary Services and must not be implemented in the MiniJAM client.
+Applications are protocol clients, not client-specific server plugins.
+Computer, JNS and DOOM are ordinary Services and must not be implemented in
+the MiniJAM client.
 
 ## Stable boundary
 
@@ -19,10 +20,8 @@ node RPC method.
 
 ## Work ingress
 
-Stage 0 still uses the Playground API as an ingress relayer because canonical
-JAM Work package construction, bundle publication and operation tracking are
-not yet available as a browser library. This is an adapter, not the application
-protocol. A client may replace it when it can:
+Formal RPC is the application-neutral ingress and bundle gateway. It is an
+adapter, not the application protocol. A client may replace it when it can:
 
 1. build the canonical Work package and auditable bundle;
 2. publish the bundle at the committed `ContentRef`;
@@ -32,10 +31,9 @@ protocol. A client may replace it when it can:
 
 ## Authenticated application principal
 
-The Stage 0 ingress relayer verifies the user's signed action over the complete
-Work parameters, including the Service payload. A Service may therefore bind
-the account included in that payload while the relayer is the only authorized
-ingress.
+The Work-ingress relayer verifies the request before submitting the runtime
+operation. A Service may bind the account included in its payload while the
+relayer is the only authorized ingress.
 
 This trust does **not** automatically survive direct node ingress: the signed
 extrinsic currently identifies the ingress account, and `WorkPackage` does not

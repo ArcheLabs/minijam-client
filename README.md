@@ -1,262 +1,85 @@
 # MiniJAM Client
 
-MiniJAM Stage-1 is the current network generation and exposes
-application-neutral node, Work, state, and Service-lifecycle interfaces.
-Playground is a legacy Stage-0 developer product and is not part of the
-Stage-1 infrastructure dependency graph. Season 2 is a historical Experience
-Network profile, not the canonical Stage-1 deployment.
+MiniJAM Client is the Stage-1 node, worker, runtime, protocol, and optional
+Service toolchain implementation. Stage-1 is the supported deployment line;
+historical developer products and generated network artifacts are not part of
+the repository surface.
 
-Faucet funding is provided by an external funded account using ordinary
-Balances transfers. Faucet behavior is not part of the MiniJAM runtime
-protocol. The SS58 prefix remains 42.
-
-English | [Simplified Chinese](README.zh-CN.md)
-
-> MiniJAM Season 2 is an Experience Network and is still in early development.
->
-
-MiniJAM is an independent Polkadot SDK chain running the MiniJamSpec v1
-network profile and a deliberately small JAM protocol surface. MiniJamSpec is
-independent of JAM TinySpec and FullSpec.
+English | [简体中文](README.zh-CN.md)
 
 See [MiniJamSpec](docs/minijam-spec.md), the
 [execution boundary](docs/execution-boundary.md), and the
 [compatibility matrix](docs/compatibility-matrix.md).
 
-## Legacy Stage-0 Playground API
-
-The frozen Stage-0 MiniJAM Playground API is a public developer API and intentionally supports
-cross-origin browser clients. Its `/api/v1/*` routes use permissive CORS and
-allow arbitrary web applications, including jam-os, Playground, localhost
-applications, community MiniJAM apps, and third-party developer frontends.
-
-CORS is not an authorization boundary. Read access is public, while mutation
-authorization remains enforced by signed actions, sr25519 wallet signatures,
-and replay protection. Service creation is ownerless; service upgrades, when
-supported, are authorized by the Service-defined JamScript management policy.
-Ordinary Work is permissionless at the Experience layer and is submitted by
-the runtime Ingress Relayer. The API does not use cookie sessions or
-credentialed CORS.
-
-## Season 2 Experience Network
-
-Season 2 keeps JAM gas limits and Jambda Service balance semantics, but removes
-the separate MiniJAM Service Fuel charging layer from Work execution. A single
-active Worker is supported for the first deployment. Hub-backed value enters
-through one-way `AllocationV1 { allocation_id, target_service, amount }`
-ingress and a replay-protected queue. MiniJAM has no mJK release or reverse
-bridge path; redemption is entirely decided by the Hub contract.
-
-Compact and split deployment profiles are in `deploy/season2`. Both use the
-same Runtime, safe RPC methods, isolated compiler networking, and separate
-relayer/validator/worker key responsibilities.
-
-## Differences from JAM
-
-MiniJAM narrows the JAM execution model from the Gray Paper into the smallest protocol surface that can be validated on an independent chain.
-
-- Consensus and chain: MiniJAM uses an independent Polkadot SDK chain to host protocol state instead of JAM shared consensus.
-- Worker and client boundaries: the Worker side is designed with a multi-client target, so different Worker clients can independently implement submission, validation, and voting logic. The Runtime side is currently a single Runtime and does not support multiple interchangeable Runtime clients, which would cause chain inconsistency.
-- Work and Guarantees: MiniJAM compresses the guarantee pipeline into Work, `ReportEnvelopeV1`, candidate report bonds, and Worker voting.
-- Assurance and availability: MiniJAM does not implement JAM assurance semantics. It currently abstracts the data availability boundary through `BulletinEvidence`, the Bulletin-compatible simulator, and Worker voting.
-- Disputes and verdicts: MiniJAM does not implement global disputes, judgments, or other work-report correctness and consistency logic. These are delegated to Support/Oppose voting within each Work round, absence slashing, candidate report rejection slashing, and equivocation proofs.
-- State and state transition: MiniJAM keeps JAM's original state and state transition logic, but some state always remains at default values. This makes multi-client off-chain Worker implementations easier because they do not need to implement a separate logic set.
-- Accumulate: MiniJAM keeps the accumulation logic and runs it as Runtime logic, so it cannot run in parallel at execution time.
-- Bridge: Season 2 accepts Hub-to-MiniJAM allocation receipts only. MiniJAM
-  cannot release Hub mJK; redemption remains a Hub operation.
-
-## Current Progress
-
-The current repository already includes:
-
-- Versioned MiniJAM protocol types, report envelopes, Worker votes, and state change formats;
-- Deterministic Worker selection, task assignment, multi-round candidate reports, and voting logic;
-- The MiniJAM JamCore execution interface, plus execution result normalization and atomic state validation;
-- Bulletin storage abstractions and a local simulator with injectable faults;
-- One-way Allocation ingress with replay-protected receipts and Service 0 V2
-  queue handoff;
-- A MiniJAM Executive implemented on top of jambda.
-- WorkPackage ingress, ContentRef bounds, unchanged preimage/system-op queues,
-  JAM gas accounting, and pallet view queries;
-- A `minijam-worker` daemon skeleton plus reusable Worker content fetcher and bundle verification helpers.
-
-## Workflow
-
-A Work item roughly moves from submission to execution as follows:
-
-1. A user submits Work, and the Runtime locks the Work deposit.
-2. The Worker module deterministically assigns validators from the active Worker set using the current Epoch and a delayed random seed.
-3. Before the deadline, the report submitter submits a versioned `ReportEnvelopeV1` and locks the candidate report bond.
-4. Assigned Workers vote for or against the candidate report. Once a threshold is reached, the result is locked.
-5. An accepted candidate report enters the bounded execution queue. If it is rejected or times out, it advances to the next round until the maximum round count is reached.
-6. At the end of the block, the Runtime executes due reports, validates and normalizes state changes, then writes protocol state atomically.
-7. Execution receipts, service outputs, and bridge effects are recorded for downstream components.
-
-The Runtime also provides Root administration operations for pausing execution and quarantining the pending execution queue, so protocol state can be protected if execution fails.
-
-## Repository Layout
+## Repository layout
 
 | Path | Responsibility |
 | --- | --- |
-| `crates/minijam-protocol` | Public protocol constants, content references, reports, votes, state changes, and bridge effect types |
-| `crates/minijam-jamcore-api` | Versioned JamCore input/output, error types, state reads, and executor interface |
-| `crates/minijam-jamcore-mock` | Configurable mock executor for tests |
-| `crates/minijam-worker-engine` | Runtime-independent Worker ordering, assignment, voting, and slashing algorithms |
-| `crates/minijam-worker` | Stage-0 Worker daemon entry point and operational configuration |
-| `crates/minijam-bridge-engine` | Inbound/outbound bridge ledger and administrator state record encoding |
-| `crates/minijam-bulletin-api` | Bulletin storage, authorization, renewal, and status query interfaces |
-| `crates/minijam-bulletin-simulator` | Bulletin-compatible local file simulator and fault injection |
-| `crates/minijam-state-adapter` | Execution output validation, state change normalization, and atomic application |
-| `pallets/minijam-workers` | Worker registration, updates, unbonding, task assignment, voting, and misbehavior proofs |
-| `pallets/minijam` | Work lifecycle, candidate reports, multi-round voting, execution queue, and protocol state |
-| `pallets/minijam-bridge` | Legacy Stage-0 bridge pallet; not composed into the Season 2 runtime |
-| `runtime` | FRAME Runtime configuration and jambda Executive integration |
-| `node` | MiniJAM node CLI, RPC, chain specs, and Aura/GRANDPA service |
+| `crates/minijam-protocol` | Protocol constants, content references, reports, votes, and state changes |
+| `crates/minijam-jamcore-api` | Versioned JamCore interface and execution types |
+| `crates/minijam-worker-engine` | Runtime-independent Worker algorithms |
+| `crates/minijam-worker` | Worker daemon and bundle fetching |
+| `crates/minijam-formal-rpc` | Application-neutral Work and bundle gateway |
+| `runtime` | FRAME Runtime and jambda Executive integration |
+| `node` | Node CLI, RPC, chain profiles, Aura, and GRANDPA |
+| `deploy/stage1` | Canonical Stage-1 Dockerfile and Compose profiles |
+| `deploy/compiler` | Optional Service compiler image |
+| `service-toolchain` | Service 0 compiler and conformance sources |
+| `scripts` | CI, Stage-1, release, and Service toolchain checks |
 
-## Current Protocol Parameters
+## Stage-1 deployment
 
-The following values come from the current development configuration in `minijam-protocol` and may change before the protocol stabilizes:
+The production unit is the exact image digest and the matching generated chain
+specification. The canonical images are:
 
-| Parameter | Current value |
-| --- | --- |
-| Candidate Worker set | 8 |
-| Max Work items per round | 4 |
-| Workers assigned per Work | 1 |
-| Support/Oppose threshold | 1 / 1 |
-| Epoch length | 100 blocks |
-| Assignment seed delay | 10 blocks |
-| Report submission deadline | 20 blocks |
-| Voting window | 10 blocks |
-| Max candidate rounds | 3 |
-| Max tasks per Worker per round | 2 |
-| Minimum Worker stake | 1,000 UNIT |
-| Work deposit | 10 UNIT |
-| Candidate report bond | 10 UNIT |
-| Max state delta | 4 MiB |
+```text
+ghcr.io/archelabs/minijam-node
+ghcr.io/archelabs/minijam-worker
+ghcr.io/archelabs/minijam-formal-rpc
+```
 
-## Pinned Baselines
+Use `deploy/stage1/compose.compact.yml` for one-host deployment and
+`deploy/stage1/compose.split.yml` when the private chain network spans hosts.
+Generate `stage1.json` and `stage1-raw.json` from the exact node image with
+`scripts/export-stage1-chain-specs-image.sh`; generated specs must not be
+committed.
 
-- Polkadot SDK: `polkadot-stable2603`, currently pinned to commit `2e4dd0bc22366a5af820492528869a493b5a5208`;
-- Rust: `nightly-2026-05-02`;
-- JAM Gray Paper semantics: `0.7.2`;
-- Bulletin Chain compatibility baseline: `b6c2827d232669b525c0906cc20def0e5eb4676b`.
+Formal RPC owns the Work-ingress relayer and bundle store. The Worker owns its
+signing key. Node RPC, Worker health, metrics, and compiler endpoints remain
+private deployment concerns.
 
-## Preparing the Development Environment
+## Development
 
-The repository's `rust-toolchain.toml` pins the Rust toolchain and installs `rustfmt`, `clippy`, `rust-src`, `wasm32-unknown-unknown`, and `wasm32v1-none`.
-
-The public protocol, Worker, bridge, Bulletin, and state-adapter crates are available in this repository. Full Runtime and node builds currently depend on the private jambda submodule. Authorized developers should initialize it before building the Runtime:
+The pinned Rust toolchain installs `rustfmt`, `clippy`, `rust-src`,
+`wasm32-unknown-unknown`, and `wasm32v1-none`. Full Runtime and node builds
+require the pinned private `external/jambda` submodule.
 
 ```bash
 git submodule update --init external/jambda
-```
-
-The checked-out submodule revision must contain `crates/minijam-executive`; production Runtime and node builds are only available to developers with access to that private jambda revision.
-
-After entering `minijam-client`, run the public crate and pallet test suite:
-
-```bash
-cargo test --workspace --exclude minijam-runtime --exclude minijam-node
-```
-
-Check that the core crates that must run in Wasm remain `no_std` compatible:
-
-```bash
-cargo check \
-  -p minijam-protocol \
-  -p minijam-jamcore-api \
-  -p minijam-worker-engine \
-  --no-default-features \
-  --target wasm32-unknown-unknown
-```
-
-Check the Runtime Wasm dependency closure:
-
-```bash
-cargo check \
-  -p minijam-runtime \
-  --no-default-features \
-  --target wasm32v1-none
-```
-
-## Build and Run a Local Node
-
-The node source, MiniJamSpec chain profiles, RPC wiring, Aura authoring, and
-GRANDPA service are present. Full Runtime and node builds require the pinned
-Jambda revision from the compatibility matrix.
-
-The following commands are the intended local-node workflow once the Runtime build path is fixed:
-
-```bash
-cargo build --release -p minijam-node
-cargo run --release -p minijam-node -- --dev --tmp
-cargo run --release -p minijam-node -- export-chain-spec --chain dev
-```
-
-The development chain uses Alice as the Aura/GRANDPA authority and Sudo account. The local testnet configuration contains Alice and Bob as two authority nodes. These presets are only for local development.
-
-## Stage-0 Worker
-
-The Worker daemon entry point is available as `minijam-worker`. The current binary validates operational configuration and starts the polling loop; chain RPC task discovery and WorkReport submission are the next integration steps.
-
-Run a one-shot readiness check:
-
-```bash
-cargo run -p minijam-worker -- --once
-```
-
-Run with explicit local endpoints:
-
-```bash
-cargo run -p minijam-worker -- \
-  --rpc-url ws://127.0.0.1:9944 \
-  --ipfs-gateway http://127.0.0.1:8080 \
-  --poll-interval-ms 1000 \
-  --max-bundle-bytes 16777216
-```
-
-The reusable Worker engine already verifies `ContentRef` size/hash commitments, validates bundle package-hash commitments through a decoder hook, and provides memory, HTTP-URL, and IPFS-gateway fetcher adapters.
-
-## Development Checks
-
-Before submitting changes, it is recommended to run:
-
-```bash
 cargo fmt --all -- --check
 cargo test --workspace --exclude minijam-runtime --exclude minijam-node
 ```
 
-## Stage 0 Playground
-
-Stage 0 is a resettable local and public test environment composed of one
-MiniJAM Node, Compiler API, Playground API, three independent Workers, and a
-Playground Web. The release stack uses immutable GHCR image digests and does
-not compile source on the server.
-
-For local development and human testing without Docker, use the native
-launcher:
+Core Wasm checks:
 
 ```bash
-./scripts/stage0-native.sh deps
-./scripts/stage0-native.sh build
-./scripts/stage0-native.sh up
+cargo check -p minijam-protocol -p minijam-jamcore-api \
+  -p minijam-worker-engine --no-default-features \
+  --target wasm32-unknown-unknown
+cargo check -p minijam-runtime --no-default-features --target wasm32v1-none
 ```
 
-See [deploy/native/README.md](deploy/native/README.md) for lifecycle commands.
-For a published digest-pinned deployment, follow
-[deploy/stage0/README.md](deploy/stage0/README.md). Stage 0 is intentionally
-resettable, non-high-availability, Sudo-enabled test infrastructure with no
-real economic value; Node RPC and internal service ports are not public.
+Heavy builds and Docker smoke tests belong in GitHub Actions. The repository
+does not require a host-built web product or local release stack.
 
-Changes that touch the Runtime execution boundary should also run the Wasm `no_std` checks above.
+## Protocol
 
-## Compatibility and Stability
-
-- The public protocol is currently `PROTOCOL_VERSION_V1`, and the JamCore interface is currently `INTERFACE_VERSION = 1`.
-- Reports, batches, state values, and execution queues have explicit bounds to keep Runtime execution bounded.
-- `minijam-bulletin-simulator` only reproduces the Bulletin semantics needed for local development.
-- Economic parameters, slashing ratios, and administrative privileges are still development configuration and should not be treated as final mainnet parameters.
+MiniJAM uses an independent Polkadot SDK chain with a deliberately bounded
+JAM-compatible execution surface. Work reports, Worker votes, state changes,
+Service 0 execution, bridge effects, and bundle retrieval are application-
+neutral protocol concerns. See the documents under `docs/` for the execution,
+toolchain, and deployment boundaries.
 
 ## License
 
-This project is licensed under the Apache License 2.0.
+Apache License 2.0.
