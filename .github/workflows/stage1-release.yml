@@ -1,38 +1,328 @@
 name: Stage-1 release
+
 on:
   push:
-    tags: ['stage1-v*']
+    tags:
+      - 'stage1-v*'
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the tested images to GHCR and verify public digest pulls
+        required: true
+        type: boolean
+        default: false
+      source_ref:
+        description: Source branch or tag for a non-publishing dry validation
+        required: true
+        type: string
+        default: main
+      release_tag:
+        description: Release tag when publishing manually, for example stage1-v0.1.0
+        required: false
+        type: string
+        default: ''
+
 permissions:
   contents: read
   packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TEST_THREADS: 1
+  MINIJAM_IMAGE_REGISTRY: ghcr.io/archelabs
+  MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY: 0x1111111111111111111111111111111111111111111111111111111111111111
+  MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY: 0x2222222222222222222222222222222222222222222222222222222222222222
+
 jobs:
-  verify:
-    runs-on: ubuntu-latest
+  release:
+    name: Docker release gate
+    if: github.repository == 'ArcheLabs/minijam-client'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+
     steps:
-      - uses: actions/checkout@v4
-        with: {submodules: recursive}
-      - uses: dtolnay/rust-toolchain@master
+      - name: Checkout exact Stage-1 source
+        uses: actions/checkout@v4
         with:
-          toolchain: nightly-2026-05-02
-          components: rust-src, rustfmt, clippy
-      - run: cargo fmt --all -- --check
-      - run: cargo test --workspace --locked
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: ./scripts/check-stage1-boundary.sh
-      - run: ./scripts/check-release-secret-hygiene.sh
-      - run: cargo build --release --locked -p minijam-node -p minijam-worker -p minijam-formal-rpc
-      - name: Validate fresh Stage-1 chain specs
+          ref: ${{ github.event_name == 'push' && github.ref || inputs.source_ref }}
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+
+      - name: Check Jambda App configuration
         env:
-          MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY: '0x1111111111111111111111111111111111111111111111111111111111111111'
-          MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY: '0x2222222222222222222222222222222222222222222222222222222222222222'
-        run: ./scripts/export-stage1-chain-specs.sh
-      - uses: actions/upload-artifact@v4
+          JAMBDA_APP_CLIENT_ID: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          JAMBDA_APP_PRIVATE_KEY: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+        run: |
+          test -n "${JAMBDA_APP_CLIENT_ID}" || {
+            echo "::error::JAMBDA_APP_CLIENT_ID is not configured"
+            exit 1
+          }
+          test -n "${JAMBDA_APP_PRIVATE_KEY}" || {
+            echo "::error::JAMBDA_APP_PRIVATE_KEY is not configured"
+            exit 1
+          }
+
+      - name: Read pinned Jambda commit
+        id: jambda-pin
+        run: |
+          jambda_sha="$(git ls-tree HEAD external/jambda | awk '{print $3}')"
+          if [[ ! "${jambda_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Unable to determine pinned Jambda commit"
+            exit 1
+          fi
+          echo "sha=${jambda_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create Jambda token
+        id: jambda-token
+        uses: actions/create-github-app-token@v3
         with:
-          name: minijam-stage1-${{ github.sha }}
+          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+          owner: ArcheLabs
+          repositories: jambda
+          permission-contents: read
+
+      - name: Checkout pinned Jambda
+        uses: actions/checkout@v4
+        with:
+          repository: ArcheLabs/jambda
+          ref: ${{ steps.jambda-pin.outputs.sha }}
+          token: ${{ steps.jambda-token.outputs.token }}
+          path: external/jambda
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve source and image identities
+        id: release
+        env:
+          REQUESTED_RELEASE_TAG: ${{ inputs.release_tag }}
+          REQUESTED_PUBLISH: ${{ inputs.publish }}
+        run: |
+          git_sha="$(git rev-parse HEAD)"
+          short_sha="${git_sha:0:7}"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+            publish=true
+            test "$(git describe --exact-match --tags HEAD)" = "${release_tag}"
+          else
+            release_tag="${REQUESTED_RELEASE_TAG:-stage1-dry-${short_sha}}"
+            publish="${REQUESTED_PUBLISH:-false}"
+          fi
+          if [[ "${publish}" == "true" && ! "${release_tag}" =~ ^stage1-v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+            echo "::error::Invalid Stage-1 release tag: ${release_tag}"
+            exit 1
+          fi
+          sha_tag="stage1-${short_sha}"
+          {
+            echo "git_sha=${git_sha}"
+            echo "short_sha=${short_sha}"
+            echo "sha_tag=${sha_tag}"
+            echo "release_tag=${release_tag}"
+            echo "publish=${publish}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Check Stage-1 source gates
+        run: |
+          ./scripts/check-stage1-core-boundary.sh
+          ./scripts/check-stage1-core-dependencies.sh
+          ./scripts/check-stage1-boundary.sh
+          ./scripts/check-production-image-boundary.sh
+          ./scripts/check-release-secret-hygiene.sh
+          cargo fmt --all -- --check
+          ./scripts/test-stage1-core.sh
+          cargo check -p minijam-runtime --no-default-features --target wasm32v1-none
+
+      - name: Prepare ephemeral smoke credentials
+        run: |
+          worker_seed="0x$(openssl rand -hex 32)"
+          relayer_seed="0x$(openssl rand -hex 32)"
+          printf '%s\n' "${worker_seed}" > "${RUNNER_TEMP}/stage1-worker.seed"
+          printf '%s\n' "${relayer_seed}" > "${RUNNER_TEMP}/stage1-relayer.seed"
+          chmod 600 "${RUNNER_TEMP}/stage1-worker.seed" "${RUNNER_TEMP}/stage1-relayer.seed"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Stage-1 Docker test target
+        env:
+          GIT_SHA: ${{ steps.release.outputs.git_sha }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          docker build --target tests \
+            --build-arg GIT_SHA="${GIT_SHA}" \
+            --build-arg RELEASE_TAG="${RELEASE_TAG}" \
+            -f deploy/stage1/Dockerfile \
+            -t "${MINIJAM_IMAGE_REGISTRY}/minijam-stage1-tests:${GIT_SHA}" .
+
+      - name: Build candidate Stage-1 images once
+        env:
+          GIT_SHA: ${{ steps.release.outputs.git_sha }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          SHA_TAG: ${{ steps.release.outputs.sha_tag }}
+        run: |
+          for role in node worker formal-rpc; do
+            repository="${MINIJAM_IMAGE_REGISTRY}/minijam-${role}"
+            docker build --target "${role}" \
+              --build-arg GIT_SHA="${GIT_SHA}" \
+              --build-arg RELEASE_TAG="${RELEASE_TAG}" \
+              -f deploy/stage1/Dockerfile \
+              -t "${repository}:${SHA_TAG}" .
+          done
+
+      - name: Generate Stage-1 chain specs from candidate node image
+        env:
+          MINIJAM_NODE_IMAGE: ${{ env.MINIJAM_IMAGE_REGISTRY }}/minijam-node:${{ steps.release.outputs.sha_tag }}
+          MINIJAM_STAGE1_CHAIN_SPEC_DIR: ${{ github.workspace }}/chain-specs
+        run: ./scripts/export-stage1-chain-specs-image.sh
+
+      - name: Check canonical Stage-1 Compose profiles
+        env:
+          MINIJAM_NODE_IMAGE: ${{ env.MINIJAM_IMAGE_REGISTRY }}/minijam-node:${{ steps.release.outputs.sha_tag }}
+          MINIJAM_WORKER_IMAGE: ${{ env.MINIJAM_IMAGE_REGISTRY }}/minijam-worker:${{ steps.release.outputs.sha_tag }}
+          MINIJAM_FORMAL_RPC_IMAGE: ${{ env.MINIJAM_IMAGE_REGISTRY }}/minijam-formal-rpc:${{ steps.release.outputs.sha_tag }}
+          MINIJAM_STAGE1_CHAIN_SPEC_FILE: ${{ github.workspace }}/chain-specs/stage1.json
+          MINIJAM_WORKER_KEY_FILE: ${{ runner.temp }}/stage1-worker.seed
+          MINIJAM_FORMAL_RPC_RELAYER_KEY_FILE: ${{ runner.temp }}/stage1-relayer.seed
+          MINIJAM_RPC_URL: ws://node:9944
+        run: |
+          docker compose -f deploy/stage1/compose.compact.yml config >/dev/null
+          docker compose -f deploy/stage1/compose.split.yml config >/dev/null
+
+      - name: Smoke candidate Stage-1 images
+        env:
+          MINIJAM_NODE_IMAGE: ${{ env.MINIJAM_IMAGE_REGISTRY }}/minijam-node:${{ steps.release.outputs.sha_tag }}
+          MINIJAM_WORKER_IMAGE: ${{ env.MINIJAM_IMAGE_REGISTRY }}/minijam-worker:${{ steps.release.outputs.sha_tag }}
+          MINIJAM_FORMAL_RPC_IMAGE: ${{ env.MINIJAM_IMAGE_REGISTRY }}/minijam-formal-rpc:${{ steps.release.outputs.sha_tag }}
+          MINIJAM_STAGE1_CHAIN_SPEC_FILE: ${{ github.workspace }}/chain-specs/stage1.json
+          MINIJAM_WORKER_KEY_FILE: ${{ runner.temp }}/stage1-worker.seed
+          MINIJAM_FORMAL_RPC_RELAYER_KEY_FILE: ${{ runner.temp }}/stage1-relayer.seed
+          MINIJAM_STAGE1_SMOKE_PROJECT: minijam-stage1-release
+        run: ./scripts/test-stage1-docker-smoke.sh
+
+      - name: Log in to GHCR
+        if: steps.release.outputs.publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push exact candidate images
+        if: steps.release.outputs.publish == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          SHA_TAG: ${{ steps.release.outputs.sha_tag }}
+        run: |
+          for role in node worker formal-rpc; do
+            repository="${MINIJAM_IMAGE_REGISTRY}/minijam-${role}"
+            docker tag "${repository}:${SHA_TAG}" "${repository}:${RELEASE_TAG}"
+            docker push "${repository}:${SHA_TAG}"
+            docker push "${repository}:${RELEASE_TAG}"
+          done
+
+      - name: Record published image digests
+        id: digests
+        if: steps.release.outputs.publish == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          mkdir -p stage1-release
+          : > stage1-image-digests.txt
+          for role in node worker formal-rpc; do
+            repository="${MINIJAM_IMAGE_REGISTRY}/minijam-${role}"
+            reference="${repository}:${RELEASE_TAG}"
+            docker pull "${reference}" >/dev/null
+            docker image inspect --format '{{index .RepoDigests 0}}' "${reference}" \
+              >> stage1-image-digests.txt
+          done
+          test "$(wc -l < stage1-image-digests.txt)" -eq 3
+          test "$(sort -u stage1-image-digests.txt | wc -l)" -eq 3
+          node_digest="$(grep '/minijam-node@sha256:' stage1-image-digests.txt)"
+          worker_digest="$(grep '/minijam-worker@sha256:' stage1-image-digests.txt)"
+          formal_rpc_digest="$(grep '/minijam-formal-rpc@sha256:' stage1-image-digests.txt)"
+          {
+            echo "node=${node_digest}"
+            echo "worker=${worker_digest}"
+            echo "formal_rpc=${formal_rpc_digest}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Verify anonymous published digest pulls
+        if: steps.release.outputs.publish == 'true'
+        run: |
+          docker logout ghcr.io
+          while IFS= read -r reference; do
+            docker image rm --force "${reference}" >/dev/null 2>&1 || true
+            docker pull "${reference}"
+          done < stage1-image-digests.txt
+
+      - name: Smoke exact published Stage-1 digests
+        if: steps.release.outputs.publish == 'true'
+        env:
+          MINIJAM_NODE_IMAGE: ${{ steps.digests.outputs.node }}
+          MINIJAM_WORKER_IMAGE: ${{ steps.digests.outputs.worker }}
+          MINIJAM_FORMAL_RPC_IMAGE: ${{ steps.digests.outputs.formal_rpc }}
+          MINIJAM_STAGE1_CHAIN_SPEC_FILE: ${{ github.workspace }}/chain-specs/stage1.json
+          MINIJAM_WORKER_KEY_FILE: ${{ runner.temp }}/stage1-worker.seed
+          MINIJAM_FORMAL_RPC_RELAYER_KEY_FILE: ${{ runner.temp }}/stage1-relayer.seed
+          MINIJAM_STAGE1_SMOKE_PROJECT: minijam-stage1-published
+        run: |
+          ./scripts/test-stage1-docker-smoke.sh
+          printf 'STAGE1_PUBLISHED_DIGEST_SMOKE=PASS\n'
+
+      - name: Create release metadata
+        if: steps.release.outputs.publish == 'true'
+        env:
+          GIT_SHA: ${{ steps.release.outputs.git_sha }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          NODE_DIGEST: ${{ steps.digests.outputs.node }}
+          WORKER_DIGEST: ${{ steps.digests.outputs.worker }}
+          FORMAL_RPC_DIGEST: ${{ steps.digests.outputs.formal_rpc }}
+        run: |
+          dockerfile_sha256="$(sha256sum deploy/stage1/Dockerfile | awk '{print $1}')"
+          stage1_sha256="$(sha256sum chain-specs/stage1.json | awk '{print $1}')"
+          stage1_raw_sha256="$(sha256sum chain-specs/stage1-raw.json | awk '{print $1}')"
+          jq -n \
+            --arg release_tag "${RELEASE_TAG}" \
+            --arg git_commit "${GIT_SHA}" \
+            --arg dockerfile_sha256 "${dockerfile_sha256}" \
+            --arg node "${NODE_DIGEST}" \
+            --arg worker "${WORKER_DIGEST}" \
+            --arg formal_rpc "${FORMAL_RPC_DIGEST}" \
+            --arg stage1_json_sha256 "${stage1_sha256}" \
+            --arg stage1_raw_json_sha256 "${stage1_raw_sha256}" \
+            '{release_tag: $release_tag, git_commit: $git_commit,
+              dockerfile_sha256: $dockerfile_sha256, ss58_prefix: 42,
+              images: {node: $node, worker: $worker, formal_rpc: $formal_rpc},
+              chain_specs: {stage1_json_sha256: $stage1_json_sha256,
+                            stage1_raw_json_sha256: $stage1_raw_json_sha256}}' \
+            > stage1-release/release-manifest.json
+          cp chain-specs/stage1.json stage1-release/
+          cp chain-specs/stage1-raw.json stage1-release/
+          cp stage1-image-digests.txt stage1-release/
+          ./scripts/check-release-secret-hygiene.sh stage1-release
+
+      - name: Create dry-validation metadata
+        if: steps.release.outputs.publish != 'true'
+        env:
+          SHA_TAG: ${{ steps.release.outputs.sha_tag }}
+        run: |
+          mkdir -p stage1-release
+          cp chain-specs/stage1.json stage1-release/
+          cp chain-specs/stage1-raw.json stage1-release/
+          {
+            printf 'ghcr.io/archelabs/minijam-node:%s\n' "${SHA_TAG}"
+            printf 'ghcr.io/archelabs/minijam-worker:%s\n' "${SHA_TAG}"
+            printf 'ghcr.io/archelabs/minijam-formal-rpc:%s\n' "${SHA_TAG}"
+          } > stage1-release/stage1-image-candidates.txt
+
+      - name: Upload Stage-1 release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: minijam-stage1-${{ steps.release.outputs.release_tag }}
           path: |
-            target/release/minijam-node
-            target/release/minijam-worker
-            target/release/minijam-formal-rpc
+            stage1-release/
             chain-specs/stage1.json
             chain-specs/stage1-raw.json
+          if-no-files-found: error
+          retention-days: 30
