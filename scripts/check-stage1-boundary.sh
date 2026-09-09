@@ -18,6 +18,19 @@ for profile in compact split; do
   fi
   grep -Eq '^[[:space:]]+- --unsafe-rpc-external$' "$compose"
   grep -Eq '^[[:space:]]+- --rpc-methods=safe$' "$compose"
+  grep -Eq '^[[:space:]]+- --rpc-cors=all$' "$compose"
   printf '%s_VALIDATOR_RPC_BIND=PASS\n' "${profile^^}"
 done
+grep -Eq '^[[:space:]]+ports: \["127\.0\.0\.1:9944:9944"\]$' \
+  "$root/deploy/stage1/compose.compact.yml"
+grep -Eq '^[[:space:]]+networks: \[chain, node-edge\]$' \
+  "$root/deploy/stage1/compose.compact.yml"
+grep -Eq '^  chain: \{internal: true\}$' \
+  "$root/deploy/stage1/compose.compact.yml"
+if grep -Eq '0\.0\.0\.0:9944' "$root/deploy/stage1/compose.split.yml"; then
+  echo 'Split Stage-1 profile must not publish node RPC on a public host interface' >&2
+  exit 1
+fi
+printf 'COMPACT_RPC_HOST_BOUNDARY=PASS\n'
+printf 'COMPACT_NODE_EDGE=PASS\n'
 printf 'RPC_METHODS_SAFE=PASS\n'

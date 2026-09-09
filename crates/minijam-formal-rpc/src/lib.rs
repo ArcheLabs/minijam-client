@@ -1,9 +1,11 @@
 //! JamScript-agnostic MiniJAM Work ingress.
 
 use std::{
+    future::Future,
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -32,6 +34,90 @@ use tower_http::limit::RequestBodyLimitLayer;
 const MAX_WORK_BYTES: usize = 1_048_576;
 const MAX_RPC_BODY_BYTES: usize = 8 * 1_048_576;
 const MAX_RPC_CONCURRENCY: usize = 32;
+const FORMAL_RPC_CONNECT_DEADLINE: Duration = Duration::from_secs(60);
+const FORMAL_RPC_CONNECT_INITIAL_DELAY: Duration = Duration::from_millis(250);
+const FORMAL_RPC_CONNECT_MAX_DELAY: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Copy, Debug)]
+struct ConnectRetryPolicy {
+    deadline: Duration,
+    initial_delay: Duration,
+    max_delay: Duration,
+}
+
+impl Default for ConnectRetryPolicy {
+    fn default() -> Self {
+        Self {
+            deadline: FORMAL_RPC_CONNECT_DEADLINE,
+            initial_delay: FORMAL_RPC_CONNECT_INITIAL_DELAY,
+            max_delay: FORMAL_RPC_CONNECT_MAX_DELAY,
+        }
+    }
+}
+
+async fn retry_connection<T, F, Fut>(
+    policy: ConnectRetryPolicy,
+    mut connect: F,
+) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, String>>,
+{
+    let started = Instant::now();
+    let mut delay = policy.initial_delay;
+    let mut last_error = None;
+
+    loop {
+        let remaining = policy.deadline.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(last_error.unwrap_or_else(|| {
+                "Formal RPC startup connection deadline elapsed before the first attempt".into()
+            }));
+        }
+
+        match tokio::time::timeout(remaining, connect()).await {
+            Ok(Ok(value)) => return Ok(value),
+            Ok(Err(error)) => last_error = Some(error),
+            Err(_) => {
+                return Err(last_error
+                    .unwrap_or_else(|| "Formal RPC startup connection attempt timed out".into()));
+            }
+        }
+
+        let remaining = policy.deadline.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(last_error.expect("a failed attempt must provide an error"));
+        }
+        tokio::time::sleep(delay.min(remaining)).await;
+        delay = delay.saturating_mul(2).min(policy.max_delay);
+    }
+}
+
+async fn connect_chain_with_retry(
+    rpc_url: &str,
+    signer_uri: &str,
+    request_timeout: Duration,
+) -> Result<MiniJamChainClient, String> {
+    let rpc_url = rpc_url.to_owned();
+    let signer_uri = signer_uri.to_owned();
+    retry_connection(ConnectRetryPolicy::default(), || {
+        let rpc_url = rpc_url.clone();
+        let signer_uri = signer_uri.clone();
+        async move {
+            let signer =
+                sr25519::Pair::from_string(&signer_uri, None).map_err(|error| error.to_string())?;
+            MiniJamChainClient::connect(rpc_url, signer, request_timeout)
+                .await
+                .map_err(|error| error.to_string())
+        }
+    })
+    .await
+    .map_err(startup_connection_error)
+}
+
+fn startup_connection_error(error: impl std::fmt::Display) -> String {
+    format!("failed to connect to MiniJAM node before startup deadline: {error}")
+}
 
 #[derive(Clone)]
 pub struct FormalRpc {
@@ -678,13 +764,14 @@ pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error + Send + Syn
         Ok(path) => std::fs::read_to_string(path)?.trim().to_owned(),
         Err(_) => std::env::var("MINIJAM_RELAYER_URI")?,
     };
-    let signer =
-        sr25519::Pair::from_string(&signer_uri, None).map_err(|error| error.to_string())?;
-    let chain = Arc::new(
-        MiniJamChainClient::connect(rpc_url, signer, std::time::Duration::from_secs(15)).await?,
-    );
+    // Validate the signer before entering the bounded transport retry. A
+    // malformed URI is configuration failure, not a node-startup race.
+    sr25519::Pair::from_string(&signer_uri, None).map_err(|error| error.to_string())?;
     let bundle_dir =
         PathBuf::from(std::env::var("MINIJAM_BUNDLE_DIR").unwrap_or_else(|_| "bundles".into()));
+    std::fs::create_dir_all(&bundle_dir)?;
+    let chain =
+        Arc::new(connect_chain_with_retry(&rpc_url, &signer_uri, Duration::from_secs(15)).await?);
     let listener = tokio::net::TcpListener::bind(bind).await?;
     axum::serve(listener, FormalRpc::new(chain, bundle_dir)?.router()).await?;
     Ok(())
@@ -693,6 +780,84 @@ pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error + Send + Syn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_retry_policy() -> ConnectRetryPolicy {
+        ConnectRetryPolicy {
+            deadline: Duration::from_millis(100),
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_retry_succeeds_on_first_attempt() {
+        let mut attempts = 0;
+        let result = retry_connection(test_retry_policy(), || {
+            attempts += 1;
+            async { Ok::<_, String>(42_u8) }
+        })
+        .await;
+
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn connection_retry_recovers_from_transient_failures() {
+        let mut attempts = 0;
+        let result = retry_connection(test_retry_policy(), || {
+            attempts += 1;
+            let attempt = attempts;
+            async move {
+                if attempt == 3 {
+                    Ok(42_u8)
+                } else {
+                    Err("node RPC is not ready".to_owned())
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts, 3);
+    }
+
+    #[tokio::test]
+    async fn connection_retry_respects_startup_deadline() {
+        let policy = ConnectRetryPolicy {
+            deadline: Duration::from_millis(40),
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let mut attempts = 0;
+        let result = retry_connection(policy, || {
+            attempts += 1;
+            async { Err::<u8, _>("connection refused".to_owned()) }
+        })
+        .await;
+
+        assert_eq!(result.unwrap_err(), "connection refused");
+        assert!(attempts > 1);
+    }
+
+    #[tokio::test]
+    async fn connection_retry_preserves_terminal_startup_diagnostic() {
+        let policy = ConnectRetryPolicy {
+            deadline: Duration::from_millis(20),
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+        };
+        let error = retry_connection(policy, || async {
+            Err::<u8, _>("connection refused".to_owned())
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            startup_connection_error(error),
+            "failed to connect to MiniJAM node before startup deadline: connection refused"
+        );
+    }
 
     #[test]
     fn submit_work_params_reject_application_gas_fields() {

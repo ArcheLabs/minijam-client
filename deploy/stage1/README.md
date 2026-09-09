@@ -23,6 +23,22 @@ same boundary across private hosts. Formal RPC owns only its Work-ingress
 relayer key and bundle store. The worker owns only its worker key. Validator,
 deployment-controller, and external-faucet keys are separate.
 
+In the compact profile, node RPC is published on the host loopback only at
+`127.0.0.1:9944`. The node also joins a non-internal edge bridge for that
+host-local boundary; the service-to-service `chain` network remains internal.
+The split profile does not publish node RPC to the host: `9944` belongs on
+private infrastructure protected by a firewall, VPN, or private overlay, and
+must not be exposed directly to the public Internet.
+
+Stage-1 service-to-service RPC uses Docker/private DNS names such as
+`node:9944`, so both node profiles require `--rpc-cors=all`. This permits the
+private hostname boundary while `--rpc-methods=safe` remains mandatory; CORS
+configuration does not enable unsafe RPC methods.
+
+Formal RPC performs bounded startup retries while waiting for the node RPC to
+become available. A node container may therefore be started before its RPC
+listener is ready without requiring an external sleep-based startup sequence.
+
 Compose reads `MINIJAM_NODE_NETWORK_KEY`, `MINIJAM_WORKER_SEED`, and
 `MINIJAM_FORMAL_RPC_RELAYER_URI` from the operator environment and mounts them
 as `0400` `/run/secrets/*` files owned by UID/GID `10001`. The node uses

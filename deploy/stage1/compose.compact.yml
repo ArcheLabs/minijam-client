@@ -10,6 +10,7 @@ services:
       - --force-authoring
       - --unsafe-rpc-external
       - --rpc-methods=safe
+      - --rpc-cors=all
     ports: ["127.0.0.1:9944:9944"]
     secrets:
       - source: node_network_key
@@ -22,7 +23,7 @@ services:
         source: ${MINIJAM_STAGE1_CHAIN_SPEC_FILE:-./chain-specs/stage1.json}
         target: /chain-specs/stage1.json
         read_only: true
-    networks: [chain]
+    networks: [chain, node-edge]
   worker:
     image: ${MINIJAM_WORKER_IMAGE:-ghcr.io/archelabs/minijam-worker:stage1}
     command: [--rpc-url=http://node:9944, --worker-id=0, --ipfs-gateway=http://formal-rpc:8080/ipfs, --health-bind=0.0.0.0:8082, --submit-candidates, --submit-support-votes]
@@ -52,7 +53,10 @@ services:
     ports: ["127.0.0.1:8080:8080"]
     networks: [chain, work]
 volumes: {node-data: {}, worker-data: {}, bundle-data: {}}
-networks: {chain: {internal: true}, work: {}}
+networks:
+  chain: {internal: true}
+  work: {}
+  node-edge: {}
 secrets:
   node_network_key:
     environment: MINIJAM_NODE_NETWORK_KEY
