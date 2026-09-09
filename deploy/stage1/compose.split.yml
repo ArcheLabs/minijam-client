@@ -10,6 +10,7 @@ services:
       - --validator
       - --unsafe-rpc-external
       - --rpc-methods=safe
+      - --rpc-cors=all
     secrets:
       - source: node_network_key
         uid: "10001"

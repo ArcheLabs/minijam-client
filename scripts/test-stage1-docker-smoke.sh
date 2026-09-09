@@ -27,6 +27,13 @@ cleanup() {
 }
 failure_diagnostics() {
   "${compose[@]}" ps --all >&2 || true
+  "${compose[@]}" port node 9944 >&2 || true
+  local node_container
+  node_container="$("${compose[@]}" ps -q node 2>/dev/null || true)"
+  if [[ -n "${node_container}" ]]; then
+    docker inspect "${node_container}" \
+      --format '{{json .NetworkSettings.Ports}}' >&2 || true
+  fi
   "${compose[@]}" logs --no-color >&2 || true
 }
 trap cleanup EXIT
@@ -39,6 +46,16 @@ export MINIJAM_STAGE1_CHAIN_SPEC_FILE="${CHAIN_SPEC}"
 export MINIJAM_NODE_NETWORK_KEY="${NODE_NETWORK_KEY}"
 export MINIJAM_WORKER_SEED="${WORKER_SEED}"
 export MINIJAM_FORMAL_RPC_RELAYER_URI="${RELAYER_URI}"
+
+assert_node_host_port_published() {
+  local mapping
+  mapping="$("${compose[@]}" port node 9944 2>/dev/null || true)"
+  if ! grep -Eq '(^|[[:space:]])127\.0\.0\.1:9944([[:space:]]|$)' <<<"${mapping}"; then
+    echo 'Stage-1 node host RPC port was not published on 127.0.0.1:9944' >&2
+    return 1
+  fi
+  printf 'NODE_HOST_PORT_PUBLISHED=PASS\n'
+}
 
 wait_for_node() {
   local deadline=$((SECONDS + ${MINIJAM_STAGE1_READY_TIMEOUT_SECONDS:-180}))
@@ -94,12 +111,47 @@ assert_running() {
   test "$(docker inspect --format '{{.State.Running}}' "${container}")" = true
 }
 
+worker_success_count() {
+  "${compose[@]}" logs --no-color worker 2>/dev/null \
+    | grep -Fc 'minijam worker poll completed' || true
+}
+
+wait_for_worker_node_rpc() {
+  local previous_successes="${1:-0}"
+  local deadline=$((SECONDS + ${MINIJAM_STAGE1_READY_TIMEOUT_SECONDS:-180}))
+  while :; do
+    if ! assert_running worker; then
+      echo 'Stage-1 worker exited before proving node RPC access' >&2
+      return 1
+    fi
+    local logs
+    logs="$("${compose[@]}" logs --no-color worker 2>/dev/null || true)"
+    if grep -Eiq '403 Forbidden|HTTP/1\.1 403|HTTP request failed:.*403' <<<"${logs}"; then
+      echo 'Stage-1 worker observed a persistent node RPC HTTP 403 rejection' >&2
+      return 1
+    fi
+    local successes
+    successes="$(worker_success_count)"
+    if (( successes > previous_successes )); then
+      printf 'WORKER_NODE_RPC=PASS\n'
+      return 0
+    fi
+    (( SECONDS < deadline )) || {
+      echo 'Stage-1 worker did not complete a successful node RPC poll' >&2
+      return 1
+    }
+    sleep 2
+  done
+}
+
 "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
 "${compose[@]}" up --detach --no-build --pull never
+assert_node_host_port_published
 wait_for_node
 printf 'node started PASS\n'
 wait_for_node_network_identity
 printf 'node network identity available PASS\n'
+printf 'NODE_NETWORK_IDENTITY=PASS\n'
 wait_for_secret_readable node /run/secrets/node_network_key 'node secret'
 wait_for_secret_readable worker /run/secrets/worker_signing_key 'worker secret'
 wait_for_secret_readable formal-rpc /run/secrets/work_ingress_key 'formal-rpc secret'
@@ -108,20 +160,39 @@ assert_running node
 assert_running worker
 assert_running formal-rpc
 printf 'worker running PASS\n'
+printf 'WORKER_RUNNING=PASS\n'
 printf 'formal-rpc readiness PASS\n'
-"${compose[@]}" logs worker | grep -Fq 'rpc=http://node:9944'
+printf 'FORMAL_RPC_READY=PASS\n'
+worker_successes_before_cold_start="$(worker_success_count)"
+wait_for_worker_node_rpc "${worker_successes_before_cold_start}"
 printf 'node JSON-RPC PASS\n'
+printf 'NODE_JSON_RPC=PASS\n'
 
+"${compose[@]}" stop node
+"${compose[@]}" up --detach --no-deps --force-recreate formal-rpc
+sleep "${MINIJAM_STAGE1_COLD_START_GRACE_SECONDS:-2}"
+assert_running formal-rpc
+"${compose[@]}" start node
+wait_for_node
+wait_for_formal_rpc
+wait_for_worker_node_rpc "${worker_successes_before_cold_start}"
+assert_running node
+assert_running worker
+assert_running formal-rpc
+printf 'FORMAL_RPC_COLD_START_RECOVERY=PASS\n'
+
+worker_successes_before_restart="$(worker_success_count)"
 "${compose[@]}" restart node
 wait_for_node
 restarted_peer_id="$(node_peer_id)"
 test "${restarted_peer_id}" = "${NODE_PEER_ID}"
 wait_for_formal_rpc
+wait_for_worker_node_rpc "${worker_successes_before_restart}"
 assert_running node
 assert_running worker
 assert_running formal-rpc
-"${compose[@]}" logs worker | grep -Fq 'rpc=http://node:9944'
+printf 'NODE_RESTART_IDENTITY=PASS\n'
 printf 'node restart PASS\n'
-printf 'post-restart recovery PASS\n'
+printf 'POST_RESTART_RECOVERY=PASS\n'
 
 printf 'STAGE1_DOCKER_SMOKE=PASS\n'

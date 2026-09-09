@@ -127,6 +127,7 @@ jobs:
           ./scripts/check-stage1-core-boundary.sh
           ./scripts/check-stage1-core-dependencies.sh
           ./scripts/check-stage1-boundary.sh
+          ./scripts/test-stage1-hardening.sh
           ./scripts/check-production-image-boundary.sh
           ./scripts/check-release-secret-hygiene.sh
           cargo fmt --all -- --check
