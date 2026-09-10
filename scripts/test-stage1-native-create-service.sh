@@ -117,11 +117,21 @@ rpc_call() {
 
 wait_for_node() {
   local deadline=$((SECONDS + READY_TIMEOUT))
-  until health="$(rpc_call system_health 2>/dev/null)" \
-    && jq -e '.result != null and .error == null' <<<"${health}" >/dev/null \
-    && finalized_head="$(rpc_call chain_getFinalizedHead 2>/dev/null)" \
-    && jq -e '.result | strings | length == 66' <<<"${finalized_head}" >/dev/null; do
-    (( SECONDS < deadline )) || { echo 'native node RPC/finality did not become ready' >&2; return 1; }
+  while :; do
+    if ! kill -0 "${node_pid}" 2>/dev/null; then
+      echo 'native node exited before RPC/finality became ready' >&2
+      return 1
+    fi
+    if health="$(rpc_call system_health 2>/dev/null)" \
+      && jq -e '.result != null and .error == null' <<<"${health}" >/dev/null \
+      && finalized_head="$(rpc_call chain_getFinalizedHead 2>/dev/null)" \
+      && jq -e '.result | strings | length == 66' <<<"${finalized_head}" >/dev/null; then
+      return 0
+    fi
+    (( SECONDS < deadline )) || {
+      echo 'native node RPC/finality did not become ready' >&2
+      return 1
+    }
     sleep 2
   done
 }
@@ -144,6 +154,10 @@ wait_for_finality_progress() {
   : > "${TMP}/finalized-head-samples.log"
   local deadline=$((SECONDS + READY_TIMEOUT))
   while :; do
+    if ! kill -0 "${node_pid}" 2>/dev/null; then
+      echo 'native node exited while waiting for finalized-head progress' >&2
+      return 1
+    fi
     local current_head current_number
     current_head="$(rpc_call chain_getFinalizedHead 2>/dev/null || true)"
     current_head="$(jq -er '.result | strings' <<<"${current_head}" 2>/dev/null || true)"
@@ -166,9 +180,19 @@ wait_for_finality_progress() {
 
 wait_for_formal_rpc() {
   local deadline=$((SECONDS + READY_TIMEOUT))
-  until curl -fsS --max-time 5 "http://127.0.0.1:${FORMAL_RPC_PORT}/health/ready" \
-    | jq -e '.status == "ready"' >/dev/null; do
-    (( SECONDS < deadline )) || { echo 'native Formal RPC did not become ready' >&2; return 1; }
+  while :; do
+    if ! kill -0 "${formal_rpc_pid}" 2>/dev/null; then
+      echo 'native Formal RPC exited before readiness' >&2
+      return 1
+    fi
+    if curl -fsS --max-time 5 "http://127.0.0.1:${FORMAL_RPC_PORT}/health/ready" \
+      | jq -e '.status == "ready"' >/dev/null; then
+      return 0
+    fi
+    (( SECONDS < deadline )) || {
+      echo 'native Formal RPC did not become ready' >&2
+      return 1
+    }
     sleep 2
   done
 }
@@ -182,7 +206,6 @@ wait_for_formal_rpc() {
   --rpc-methods=safe \
   --rpc-cors=all \
   --rpc-port "${NODE_RPC_PORT}" \
-  --ws-port "${NODE_RPC_PORT}" \
   --name minijam-native-e2e \
   >"${NODE_LOG}" 2>&1 &
 node_pid="$!"
