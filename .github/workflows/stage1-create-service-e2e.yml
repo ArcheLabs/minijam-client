@@ -165,14 +165,41 @@ jobs:
         env:
           NODE_BIN: ${{ github.workspace }}/.stage1-native-bin/minijam-node
         run: |
+          extract_sr25519_account_id() {
+            sed -nE \
+              's/^[[:space:]]*Public key \(hex\):[[:space:]]*(0x[0-9a-fA-F]{64})[[:space:]]*$/\1/p' \
+              | head -n1
+          }
+
+          parser_fixture="0x$(printf 'ab%.0s' {1..32})"
+          for parser_sample in \
+            "Public key (hex): ${parser_fixture}" \
+            "Public key (hex):        ${parser_fixture}" \
+            "  Public key (hex):  ${parser_fixture}  "; do
+            parsed_fixture="$(extract_sr25519_account_id <<<"${parser_sample}")"
+            if [[ "${parsed_fixture}" != "${parser_fixture}" ]]; then
+              echo "::error::Stage-1 relayer public-key parser regression"
+              exit 1
+            fi
+          done
+          printf 'RELAYER_PUBLIC_KEY_PARSER=PASS\n'
+
           relayer_uri="0x$(openssl rand -hex 32)"
-          relayer_info="$("${NODE_BIN}" key inspect-uri "${relayer_uri}" 2>&1)"
-          ingress_public_key="$(awk -F': ' '/Public key \(hex\):/ {print $2; exit}' <<<"${relayer_info}")"
+          echo "::add-mask::${relayer_uri}"
+          if ! relayer_info="$("${NODE_BIN}" key inspect "${relayer_uri}" 2>&1)"; then
+            echo "::error::Native node binary failed to inspect the ephemeral sr25519 URI"
+            exit 1
+          fi
+          ingress_public_key="$(extract_sr25519_account_id <<<"${relayer_info}")"
           if [[ ! "${ingress_public_key}" =~ ^0x[0-9a-fA-F]{64}$ ]]; then
             echo "::error::Unable to derive the ephemeral sr25519 AccountId32"
             exit 1
           fi
-          node_key="$("${NODE_BIN}" key generate-node-key 2>/dev/null | tr -d '\r\n')"
+          if ! node_key="$("${NODE_BIN}" key generate-node-key 2>/dev/null)"; then
+            echo "::error::Native node binary failed to generate a network key"
+            exit 1
+          fi
+          node_key="$(printf '%s' "${node_key}" | tr -d '\r\n')"
           if [[ ! "${node_key}" =~ ^(0x)?[0-9a-fA-F]{64}$ ]]; then
             echo "::error::Native node binary did not return a valid network key"
             exit 1
@@ -187,7 +214,6 @@ jobs:
           print("0x" + hashlib.blake2b(pathlib.Path(sys.argv[1]).read_bytes(), digest_size=32).hexdigest())
           PY
           )"
-          echo "::add-mask::${relayer_uri}"
           echo "::add-mask::${node_key}"
           echo "::add-mask::${worker_seed}"
           {
