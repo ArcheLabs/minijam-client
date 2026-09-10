@@ -21,3 +21,6 @@ sp-core = { workspace = true, default-features = true }
 sp-runtime.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+jsonrpsee = { workspace = true, features = ["server"] }

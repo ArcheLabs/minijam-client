@@ -316,7 +316,7 @@ where
         move |_, _, _| -> RpcResult<String> {
             let encoded = client
                 .runtime_api()
-                .get_pending_system_ops(best_hash(&client))
+                .get_pending_system_ops(finalized_hash(&client))
                 .map_err(runtime_api_error)?;
             Ok(hex_encode(&encoded))
         }
@@ -327,7 +327,7 @@ where
         move |_, _, _| -> RpcResult<String> {
             let encoded = client
                 .runtime_api()
-                .get_quarantined_system_ops(best_hash(&client))
+                .get_quarantined_system_ops(finalized_hash(&client))
                 .map_err(runtime_api_error)?;
             Ok(hex_encode(&encoded))
         }
@@ -339,7 +339,7 @@ where
             let request_id: sp_core::H256 = params.one()?;
             let encoded = client
                 .runtime_api()
-                .get_system_op(best_hash(&client), request_id.to_fixed_bytes())
+                .get_system_op(finalized_hash(&client), request_id.to_fixed_bytes())
                 .map_err(runtime_api_error)?;
             Ok(encoded.map(|bytes| hex_encode(&bytes)))
         }
@@ -351,7 +351,7 @@ where
             let request_id: sp_core::H256 = params.one()?;
             let encoded = client
                 .runtime_api()
-                .get_system_receipt(best_hash(&client), request_id.to_fixed_bytes())
+                .get_system_receipt(finalized_hash(&client), request_id.to_fixed_bytes())
                 .map_err(runtime_api_error)?;
             Ok(encoded.map(|bytes| hex_encode(&bytes)))
         }

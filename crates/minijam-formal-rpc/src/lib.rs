@@ -283,10 +283,11 @@ impl FormalRpc {
             requester: service_id,
             blob: ByteSequence::from(blob),
         });
+        deployment_phase("CREATE_SERVICE_PREIMAGE_SUBMITTED");
         self.chain
-            .submit_preimage(canonical)
+            .submit_preimage_finalized(canonical)
             .await
-            .map_err(chain_error)?;
+            .map_err(deployment_chain_error)?;
         deployment_phase("CREATE_SERVICE_PREIMAGE_FINALIZED");
         let context = wait_for_service_code_hash(&self.chain, service_id, code_hash).await?;
         deployment_phase("CREATE_SERVICE_CODE_HASH_CONFIRMED");
