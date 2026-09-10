@@ -13,10 +13,12 @@ NODE_RPC_PORT="${MINIJAM_NATIVE_NODE_RPC_PORT:-9944}"
 FORMAL_RPC_PORT="${MINIJAM_NATIVE_FORMAL_RPC_PORT:-8090}"
 READY_TIMEOUT="${MINIJAM_NATIVE_READY_TIMEOUT_SECONDS:-180}"
 E2E_TIMEOUT="${MINIJAM_NATIVE_CREATE_SERVICE_TIMEOUT_SECONDS:-180}"
+ARTIFACT_DIR="${MINIJAM_NATIVE_ARTIFACT_DIR:-}"
 
 command -v curl >/dev/null 2>&1 || { echo 'curl is required for native Stage-1 E2E' >&2; exit 127; }
 command -v jq >/dev/null 2>&1 || { echo 'jq is required for native Stage-1 E2E' >&2; exit 127; }
 command -v base64 >/dev/null 2>&1 || { echo 'base64 is required for native Stage-1 E2E' >&2; exit 127; }
+command -v python3 >/dev/null 2>&1 || { echo 'python3 is required for native Stage-1 E2E' >&2; exit 127; }
 test -x "${NODE_BIN}" || { echo "node binary is not executable: ${NODE_BIN}" >&2; exit 1; }
 test -x "${FORMAL_RPC_BIN}" || { echo "Formal RPC binary is not executable: ${FORMAL_RPC_BIN}" >&2; exit 1; }
 test -s "${SERVICE_BLOB}" || { echo "service blob is missing or empty: ${SERVICE_BLOB}" >&2; exit 1; }
@@ -33,6 +35,19 @@ test -s "${SERVICE_BLOB}" || { echo "service blob is missing or empty: ${SERVICE
   exit 1
 }
 
+computed_service_code_hash="$(python3 - "${SERVICE_BLOB}" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+print("0x" + hashlib.blake2b(pathlib.Path(sys.argv[1]).read_bytes(), digest_size=32).hexdigest())
+PY
+)"
+test "${computed_service_code_hash,,}" = "${SERVICE_CODE_HASH,,}" || {
+  echo 'MINIJAM_NATIVE_SERVICE_CODE_HASH does not match the service blob' >&2
+  exit 1
+}
+
 TMP="$(mktemp -d)"
 NODE_BASE_PATH="${TMP}/node-data"
 CHAIN_SPEC="${MINIJAM_NATIVE_CHAIN_SPEC_FILE:-${TMP}/stage1.json}"
@@ -43,6 +58,17 @@ mkdir -p "${NODE_BASE_PATH}" "${TMP}/bundles"
 node_pid=''
 formal_rpc_pid=''
 cleanup() {
+  local status=$?
+  if (( status != 0 )) && [[ -n "${ARTIFACT_DIR}" ]]; then
+    mkdir -p "${ARTIFACT_DIR}"
+    cp -f "${NODE_LOG}" "${ARTIFACT_DIR}/node.log" 2>/dev/null || true
+    cp -f "${FORMAL_RPC_LOG}" "${ARTIFACT_DIR}/formal-rpc.log" 2>/dev/null || true
+    cp -f "${CHAIN_SPEC}" "${ARTIFACT_DIR}/stage1.json" 2>/dev/null || true
+    cp -f "${TMP}/create-service-response.json" \
+      "${ARTIFACT_DIR}/create-service-response.json" 2>/dev/null || true
+    cp -f "${TMP}/finalized-head-samples.log" \
+      "${ARTIFACT_DIR}/finalized-head-samples.log" 2>/dev/null || true
+  fi
   if [[ -n "${formal_rpc_pid}" ]]; then
     kill "${formal_rpc_pid}" 2>/dev/null || true
     wait "${formal_rpc_pid}" 2>/dev/null || true
@@ -56,6 +82,7 @@ cleanup() {
   else
     rm -rf -- "${TMP}"
   fi
+  return "${status}"
 }
 failure_diagnostics() {
   if [[ -f "${NODE_LOG}" ]]; then
@@ -101,13 +128,20 @@ wait_for_node() {
 
 finalized_number() {
   local hash="$1"
-  rpc_call chain_getHeader "[\"${hash}\"]" | jq -er '.result.number | tonumber'
+  local number_hex
+  number_hex="$(rpc_call chain_getHeader "[\"${hash}\"]" | jq -er '.result.number')"
+  case "${number_hex}" in
+    0x*) printf '%d\n' "$((16#${number_hex#0x}))" ;;
+    0X*) printf '%d\n' "$((16#${number_hex#0X}))" ;;
+    *) printf '%d\n' "${number_hex}" ;;
+  esac
 }
 
 wait_for_finality_progress() {
   local initial_head="$1"
   local initial_number
   initial_number="$(finalized_number "${initial_head}")"
+  : > "${TMP}/finalized-head-samples.log"
   local deadline=$((SECONDS + READY_TIMEOUT))
   while :; do
     local current_head current_number
@@ -115,6 +149,8 @@ wait_for_finality_progress() {
     current_head="$(jq -er '.result | strings' <<<"${current_head}" 2>/dev/null || true)"
     if [[ -n "${current_head}" ]]; then
       current_number="$(finalized_number "${current_head}" 2>/dev/null || true)"
+      printf '%s %s\n' "${current_head}" "${current_number:-unknown}" \
+        >> "${TMP}/finalized-head-samples.log"
       if [[ "${current_number}" =~ ^[0-9]+$ ]] && (( current_number > initial_number )); then
         printf 'NATIVE_FINALITY=PASS (block %s -> %s)\n' "${initial_number}" "${current_number}"
         return 0
@@ -177,12 +213,10 @@ request="$(jq -cn \
   }}')"
 
 response_file="${TMP}/create-service-response.json"
-deadline=$((SECONDS + E2E_TIMEOUT))
 curl -fsS --max-time "${E2E_TIMEOUT}" \
   -H 'content-type: application/json' \
   --data "${request}" \
   "http://127.0.0.1:${FORMAL_RPC_PORT}/" > "${response_file}"
-(( SECONDS <= deadline )) || { echo 'native CreateService request exceeded its deadline' >&2; exit 1; }
 
 jq -e --arg expected "${SERVICE_CODE_HASH}" '
   .error == null

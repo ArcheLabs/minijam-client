@@ -2,6 +2,9 @@
 target
 **/target
 **/node_modules
+.stage1-native-bin
+.stage1-native-artifacts
+.stage1-docker-artifacts
 chain-specs/*.json
 **/*.sqlite
 **/*.sqlite-shm

@@ -20,6 +20,7 @@ and release helpers are removed instead of being kept as compatibility shims.
 - `test-stage1-core.sh`
 - `test-stage1-docker-smoke.sh`
 - `test-stage1-native-create-service.sh`
+- `test-stage1-docker-create-service.sh`
 - `export-stage1-chain-specs-image.sh`
 
 ## Service toolchain
@@ -42,6 +43,9 @@ and release helpers are removed instead of being kept as compatibility shims.
   progress, and exercises `minijam_createServiceV1` through its finalized
   receipt, preimage, dispatch, and finalized `ServiceInfo` checks. It never
   builds images or invokes Docker.
+- `test-stage1-docker-create-service.sh` runs the same CreateService request
+  against exact Compose image references and preserves Compose logs and the
+  JSON response when an artifact directory is provided.
 
 When adding a script, add its workflow or documentation caller in the same
 change and keep the repository root resolution independent of the current
