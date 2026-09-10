@@ -20,6 +20,7 @@ and release helpers are removed instead of being kept as compatibility shims.
 - `test-stage1-core.sh`
 - `test-stage1-docker-smoke.sh`
 - `test-stage1-native-create-service.sh`
+- `run-stage1-native-create-service-local.sh`
 - `test-stage1-docker-create-service.sh`
 - `export-stage1-chain-specs-image.sh`
 
@@ -43,6 +44,10 @@ and release helpers are removed instead of being kept as compatibility shims.
   progress, and exercises `minijam_createServiceV1` through its finalized
   receipt, preimage, dispatch, and finalized `ServiceInfo` checks. It never
   builds images or invokes Docker.
+- `run-stage1-native-create-service-local.sh` performs the targeted incremental
+  debug build, creates ephemeral test credentials, and runs the native gate.
+  Set `MINIJAM_SKIP_BUILD=1` to reuse existing debug binaries after script-only
+  changes.
 - `test-stage1-docker-create-service.sh` runs the same CreateService request
   against exact Compose image references and preserves Compose logs and the
   JSON response when an artifact directory is provided.

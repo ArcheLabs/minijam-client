@@ -186,7 +186,9 @@ impl MiniJamChainClient {
         let Some(bytes) = self.service_info_at(block, service_id).await? else {
             return Ok(None);
         };
-        let info = ServiceInfo::decode(&mut bytes.as_slice())
+        let value = minijam_protocol::StateValue::decode(&mut bytes.as_slice())
+            .map_err(|error| ChainClientError::Decode(error.to_string()))?;
+        let info = ServiceInfo::decode(&mut value.as_slice())
             .map_err(|error| ChainClientError::Decode(error.to_string()))?;
         Ok(Some(info.code_hash.0))
     }
@@ -609,11 +611,13 @@ impl MiniJamChainClient {
         &self,
         request_id: Hash,
     ) -> Result<Option<T>, ChainClientError> {
-        self.decode_query(
-            "minijam_getSystemReceipt",
-            serde_json::json!([rpc::hex(&request_id)]),
-        )
-        .await
+        let value = self
+            .decode_query::<minijam_protocol::StateValue>(
+                "minijam_getSystemReceipt",
+                serde_json::json!([rpc::hex(&request_id)]),
+            )
+            .await?;
+        value.map(decode_state_value).transpose()
     }
 
     pub async fn system_op<T: Decode>(
@@ -732,6 +736,12 @@ fn included_block_from_statuses(statuses: &[serde_json::Value]) -> Option<Hash> 
     })
 }
 
+fn decode_state_value<T: Decode>(
+    value: minijam_protocol::StateValue,
+) -> Result<T, ChainClientError> {
+    T::decode(&mut value.as_slice()).map_err(|error| ChainClientError::Decode(error.to_string()))
+}
+
 fn system_op_sender(account: &AccountId32) -> Hash {
     minijam_protocol::blake2_256(&account.encode())
 }
@@ -771,9 +781,23 @@ mod tests {
     use std::time::Duration;
 
     use jsonrpsee::{server::Server, types::ErrorObjectOwned, RpcModule};
+    use parity_scale_codec::Encode;
     use sp_core::{sr25519, Pair};
 
-    use super::{system_op_sender, AccountId32, ChainClientError, MiniJamChainClient, NonceCursor};
+    use super::{
+        decode_state_value, system_op_sender, AccountId32, ChainClientError, MiniJamChainClient,
+        NonceCursor,
+    };
+
+    #[test]
+    fn system_receipt_decodes_from_protocol_state_value() {
+        let receipt = minijam_protocol::SystemReceiptV2::ServiceCreated { service_id: 42 };
+        let value = minijam_protocol::StateValue::try_from(receipt.encode()).unwrap();
+        assert_eq!(
+            decode_state_value::<minijam_protocol::SystemReceiptV2>(value).unwrap(),
+            receipt
+        );
+    }
 
     #[test]
     fn nonce_cursor_allocates_once_and_resynchronizes_after_failure() {

@@ -55,7 +55,7 @@ test "${computed_service_code_hash,,}" = "${SERVICE_CODE_HASH,,}" || {
 
 TMP="$(mktemp -d)"
 NODE_BASE_PATH="${TMP}/node-data"
-CHAIN_SPEC="${MINIJAM_NATIVE_CHAIN_SPEC_FILE:-${TMP}/stage1.json}"
+CHAIN_SPEC="${MINIJAM_NATIVE_CHAIN_SPEC_FILE:-${TMP}/stage1-e2e.json}"
 NODE_LOG="${TMP}/node.log"
 FORMAL_RPC_LOG="${TMP}/formal-rpc.log"
 mkdir -p "${NODE_BASE_PATH}" "${TMP}/bundles"
@@ -68,11 +68,13 @@ cleanup() {
     mkdir -p "${ARTIFACT_DIR}"
     cp -f "${NODE_LOG}" "${ARTIFACT_DIR}/node.log" 2>/dev/null || true
     cp -f "${FORMAL_RPC_LOG}" "${ARTIFACT_DIR}/formal-rpc.log" 2>/dev/null || true
-    cp -f "${CHAIN_SPEC}" "${ARTIFACT_DIR}/stage1.json" 2>/dev/null || true
+    cp -f "${CHAIN_SPEC}" "${ARTIFACT_DIR}/stage1-e2e.json" 2>/dev/null || true
     cp -f "${TMP}/create-service-response.json" \
       "${ARTIFACT_DIR}/create-service-response.json" 2>/dev/null || true
     cp -f "${TMP}/finalized-head-samples.log" \
       "${ARTIFACT_DIR}/finalized-head-samples.log" 2>/dev/null || true
+    cp -f "${TMP}/best-head-samples.log" \
+      "${ARTIFACT_DIR}/best-head-samples.log" 2>/dev/null || true
   fi
   if [[ -n "${formal_rpc_pid}" ]]; then
     kill "${formal_rpc_pid}" 2>/dev/null || true
@@ -107,7 +109,7 @@ if [[ -n "${MINIJAM_NATIVE_CHAIN_SPEC_FILE:-}" ]]; then
 else
   MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY="${RELAYER_PUBLIC_KEY}" \
     MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY="${ALLOCATION_PUBLIC_KEY}" \
-    "${NODE_BIN}" build-spec --chain stage1 > "${CHAIN_SPEC}"
+    "${NODE_BIN}" build-spec --chain stage1-e2e > "${CHAIN_SPEC}"
 fi
 
 chain_id="$(jq -er '.id | strings' "${CHAIN_SPEC}")"
@@ -115,6 +117,12 @@ chain_id="$(jq -er '.id | strings' "${CHAIN_SPEC}")"
   echo "unsafe or invalid chain id in generated Stage-1 spec: ${chain_id}" >&2
   exit 1
 }
+if [[ "${chain_id}" != "minijam_stage1_e2e" ]]; then
+  echo "native E2E requires the isolated minijam_stage1_e2e chain spec" >&2
+  exit 1
+fi
+printf 'NATIVE_E2E_CHAIN_SPEC=PASS\n'
+printf 'NATIVE_CHAIN_ID=%s\n' "${chain_id}"
 network_dir="${NODE_BASE_PATH}/chains/${chain_id}/network"
 mkdir -p "${network_dir}"
 printf '%s' "${NODE_NETWORK_KEY#0x}" > "${network_dir}/secret_ed25519"
@@ -152,10 +160,14 @@ wait_for_node() {
   done
 }
 
-finalized_number() {
-  local hash="$1"
+block_number() {
+  local hash="${1:-}"
   local number_hex
-  number_hex="$(rpc_call chain_getHeader "[\"${hash}\"]" | jq -er '.result.number')"
+  if [[ -n "${hash}" ]]; then
+    number_hex="$(rpc_call chain_getHeader "[\"${hash}\"]" | jq -er '.result.number')"
+  else
+    number_hex="$(rpc_call chain_getHeader | jq -er '.result.number')"
+  fi
   case "${number_hex}" in
     0x*) printf '%d\n' "$((16#${number_hex#0x}))" ;;
     0X*) printf '%d\n' "$((16#${number_hex#0X}))" ;;
@@ -163,10 +175,38 @@ finalized_number() {
   esac
 }
 
+wait_for_best_progress() {
+  local initial_number="$1"
+  : > "${TMP}/best-head-samples.log"
+  local deadline=$((SECONDS + READY_TIMEOUT))
+  while :; do
+    if ! kill -0 "${node_pid}" 2>/dev/null; then
+      echo 'native node exited while waiting for best-head progress' >&2
+      printf 'NATIVE_AURA_AUTHORING=FAIL\n' >&2
+      return 1
+    fi
+    local current_number
+    current_number="$(block_number 2>/dev/null || true)"
+    printf '%s\n' "${current_number:-unknown}" >> "${TMP}/best-head-samples.log"
+    if [[ "${current_number}" =~ ^[0-9]+$ ]] && (( current_number > initial_number )); then
+      printf 'NATIVE_AURA_AUTHORING=PASS\n'
+      printf 'NATIVE_BEST_BLOCK_ADVANCES=PASS (block %s -> %s)\n' \
+        "${initial_number}" "${current_number}"
+      return 0
+    fi
+    (( SECONDS < deadline )) || {
+      echo "native best head did not advance beyond block ${initial_number}" >&2
+      printf 'NATIVE_AURA_AUTHORING=FAIL\n' >&2
+      return 1
+    }
+    sleep 2
+  done
+}
+
 wait_for_finality_progress() {
   local initial_head="$1"
   local initial_number
-  initial_number="$(finalized_number "${initial_head}")"
+  initial_number="$(block_number "${initial_head}")"
   : > "${TMP}/finalized-head-samples.log"
   local deadline=$((SECONDS + READY_TIMEOUT))
   while :; do
@@ -178,7 +218,7 @@ wait_for_finality_progress() {
     current_head="$(rpc_call chain_getFinalizedHead 2>/dev/null || true)"
     current_head="$(jq -er '.result | strings' <<<"${current_head}" 2>/dev/null || true)"
     if [[ -n "${current_head}" ]]; then
-      current_number="$(finalized_number "${current_head}" 2>/dev/null || true)"
+      current_number="$(block_number "${current_head}" 2>/dev/null || true)"
       printf '%s %s\n' "${current_head}" "${current_number:-unknown}" \
         >> "${TMP}/finalized-head-samples.log"
       if [[ "${current_number}" =~ ^[0-9]+$ ]] && (( current_number > initial_number )); then
@@ -188,6 +228,8 @@ wait_for_finality_progress() {
     fi
     (( SECONDS < deadline )) || {
       echo "native finalized head did not advance beyond block ${initial_number}" >&2
+      printf 'NATIVE_AURA_AUTHORING=PASS\n' >&2
+      printf 'NATIVE_GRANDPA_FINALITY=FAIL\n' >&2
       return 1
     }
     sleep 2
@@ -216,7 +258,7 @@ wait_for_formal_rpc() {
 "${NODE_BIN}" \
   --chain "${CHAIN_SPEC}" \
   --base-path "${NODE_BASE_PATH}" \
-  --validator \
+  --alice \
   --force-authoring \
   --unsafe-rpc-external \
   --rpc-methods=safe \
@@ -226,10 +268,17 @@ wait_for_formal_rpc() {
   >"${NODE_LOG}" 2>&1 &
 node_pid="$!"
 
+node_ready_started=$SECONDS
 wait_for_node
 initial_finalized_head="$(jq -er '.result' <<<"${finalized_head}")"
+initial_best_number="$(block_number)"
 printf 'NATIVE_NODE_RPC=PASS\n'
+printf 'NATIVE_NODE_READY_SECONDS=%s\n' "$((SECONDS - node_ready_started))"
+wait_for_best_progress "${initial_best_number}"
+printf 'NATIVE_AUTHORITY_READY=PASS\n'
+finality_started=$SECONDS
 wait_for_finality_progress "${initial_finalized_head}"
+printf 'NATIVE_FINALITY_SECONDS=%s\n' "$((SECONDS - finality_started))"
 
 MINIJAM_RPC_URL="ws://127.0.0.1:${NODE_RPC_PORT}" \
   MINIJAM_FORMAL_RPC_BIND="127.0.0.1:${FORMAL_RPC_PORT}" \
@@ -252,10 +301,12 @@ request="$(jq -cn \
   }}')"
 
 response_file="${TMP}/create-service-response.json"
+create_service_started=$SECONDS
 curl -fsS --max-time "${E2E_TIMEOUT}" \
   -H 'content-type: application/json' \
   --data "${request}" \
   "http://127.0.0.1:${FORMAL_RPC_PORT}/" > "${response_file}"
+printf 'NATIVE_CREATE_SERVICE_SECONDS=%s\n' "$((SECONDS - create_service_started))"
 
 jq -e --arg expected "${SERVICE_CODE_HASH}" '
   .error == null
