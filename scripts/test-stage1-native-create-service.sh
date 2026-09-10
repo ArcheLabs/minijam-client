@@ -7,6 +7,7 @@ FORMAL_RPC_BIN="${MINIJAM_NATIVE_FORMAL_RPC_BIN:?set the built Formal RPC binary
 RELAYER_URI="${MINIJAM_NATIVE_RELAYER_URI:?set the ingress relayer signing URI}"
 RELAYER_PUBLIC_KEY="${MINIJAM_NATIVE_INGRESS_RELAYER_PUBLIC_KEY:?set the ingress relayer AccountId32 public key}"
 ALLOCATION_PUBLIC_KEY="${MINIJAM_NATIVE_ALLOCATION_RELAYER_PUBLIC_KEY:-${RELAYER_PUBLIC_KEY}}"
+NODE_NETWORK_KEY="${MINIJAM_NODE_NETWORK_KEY:?set the native node network key}"
 SERVICE_BLOB="${MINIJAM_NATIVE_SERVICE_BLOB:-${ROOT}/examples/services/counter/artifacts/counter-c.blob}"
 SERVICE_CODE_HASH="${MINIJAM_NATIVE_SERVICE_CODE_HASH:?set the BLAKE2-256 hash of the service blob}"
 NODE_RPC_PORT="${MINIJAM_NATIVE_NODE_RPC_PORT:-9944}"
@@ -32,6 +33,10 @@ test -s "${SERVICE_BLOB}" || { echo "service blob is missing or empty: ${SERVICE
 }
 [[ "${ALLOCATION_PUBLIC_KEY}" =~ ^0x[0-9a-fA-F]{64}$ ]] || {
   echo 'MINIJAM_NATIVE_ALLOCATION_RELAYER_PUBLIC_KEY must be a 0x-prefixed 32-byte hex value' >&2
+  exit 1
+}
+[[ "${NODE_NETWORK_KEY}" =~ ^(0x)?[0-9a-fA-F]{64}$ ]] || {
+  echo 'MINIJAM_NODE_NETWORK_KEY must be a 32-byte hex value' >&2
   exit 1
 }
 
@@ -104,6 +109,17 @@ else
     MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY="${ALLOCATION_PUBLIC_KEY}" \
     "${NODE_BIN}" build-spec --chain stage1 > "${CHAIN_SPEC}"
 fi
+
+chain_id="$(jq -er '.id | strings' "${CHAIN_SPEC}")"
+[[ "${chain_id}" =~ ^[A-Za-z0-9_-]+$ ]] || {
+  echo "unsafe or invalid chain id in generated Stage-1 spec: ${chain_id}" >&2
+  exit 1
+}
+network_dir="${NODE_BASE_PATH}/chains/${chain_id}/network"
+mkdir -p "${network_dir}"
+printf '%s' "${NODE_NETWORK_KEY#0x}" > "${network_dir}/secret_ed25519"
+chmod 600 "${network_dir}/secret_ed25519"
+printf 'NATIVE_NETWORK_KEY_MATERIALIZED=PASS\n'
 
 rpc_call() {
   local method="$1"
