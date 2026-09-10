@@ -23,7 +23,7 @@ use jp_core_primitives::{
     types::{Preimage, ServiceInfo},
 };
 use minijam_chain_client::{FinalizedContext, MiniJamChainClient};
-use minijam_protocol::{blake2_256, Hash, SystemReceiptV2};
+use minijam_protocol::{blake2_256, Hash, SystemOpV2, SystemReceiptV2};
 use parity_scale_codec::Decode;
 use serde::{Deserialize, Serialize};
 use sp_core::{sr25519, Pair};
@@ -256,6 +256,8 @@ impl FormalRpc {
         if request.code_hash.0 != code_hash {
             return Err(RpcError::CodeHashMismatch);
         }
+        deployment_phase("CREATE_SERVICE_REQUEST_RECEIVED");
+        deployment_phase("CREATE_SERVICE_SYSTEM_OP_PREPARED");
         let submitted = self
             .chain
             .submit_create_service(
@@ -266,9 +268,13 @@ impl FormalRpc {
                 request.min_memo_gas,
             )
             .await
-            .map_err(chain_error)?;
+            .map_err(deployment_chain_error)?;
 
+        deployment_phase("CREATE_SERVICE_EXTRINSIC_SUBMITTED");
+        deployment_phase("CREATE_SERVICE_FINALIZED");
+        deployment_phase("CREATE_SERVICE_WAITING_RECEIPT");
         let receipt = wait_for_system_receipt(&self.chain, submitted.correlation).await?;
+        deployment_phase("CREATE_SERVICE_RECEIPT_RECEIVED");
         let service_id = match receipt {
             SystemReceiptV2::ServiceCreated { service_id } => service_id,
             SystemReceiptV2::Rejected { code } => return Err(RpcError::DeploymentRejected(code)),
@@ -281,7 +287,10 @@ impl FormalRpc {
             .submit_preimage(canonical)
             .await
             .map_err(chain_error)?;
+        deployment_phase("CREATE_SERVICE_PREIMAGE_FINALIZED");
         let context = wait_for_service_code_hash(&self.chain, service_id, code_hash).await?;
+        deployment_phase("CREATE_SERVICE_CODE_HASH_CONFIRMED");
+        deployment_phase("CREATE_SERVICE_COMPLETE");
         Ok(DeploymentResult {
             operation_id: hex(&submitted.correlation),
             service_id,
@@ -330,6 +339,7 @@ async fn wait_for_system_receipt(
     chain: &MiniJamChainClient,
     request_id: Hash,
 ) -> Result<SystemReceiptV2, RpcError> {
+    let mut last_state = DeploymentOperationState::Missing;
     for _ in 0..120 {
         if let Some(receipt) = chain
             .system_receipt::<SystemReceiptV2>(request_id)
@@ -338,11 +348,60 @@ async fn wait_for_system_receipt(
         {
             return Ok(receipt);
         }
+        last_state = deployment_operation_state(chain, request_id).await?;
+        if let DeploymentOperationState::Quarantined(reason) = &last_state {
+            return Err(RpcError::DeploymentQuarantined(reason.clone()));
+        }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
-    Err(RpcError::Chain(
-        "timed out waiting for finalized deployment receipt".into(),
+    Err(RpcError::DeploymentReceiptTimeout(
+        last_state.as_str().into(),
     ))
+}
+
+#[derive(Clone, Debug)]
+enum DeploymentOperationState {
+    Pending,
+    Quarantined(String),
+    Missing,
+}
+
+impl DeploymentOperationState {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Pending => "pending",
+            Self::Quarantined(_) => "quarantined",
+            Self::Missing => "missing",
+        }
+    }
+}
+
+async fn deployment_operation_state(
+    chain: &MiniJamChainClient,
+    request_id: Hash,
+) -> Result<DeploymentOperationState, RpcError> {
+    if chain
+        .system_op::<SystemOpV2>(request_id)
+        .await
+        .map_err(chain_error)?
+        .is_some()
+    {
+        return Ok(DeploymentOperationState::Pending);
+    }
+
+    let quarantined: Vec<pallet_minijam::QuarantinedSystemOp<minijam_runtime::Runtime>> =
+        chain.quarantined_system_ops().await.map_err(chain_error)?;
+    Ok(quarantined
+        .into_iter()
+        .find(|operation| operation.op.request_id == request_id)
+        .map(|operation| {
+            DeploymentOperationState::Quarantined(format!("{:?}", operation.error_code))
+        })
+        .unwrap_or(DeploymentOperationState::Missing))
+}
+
+fn deployment_phase(phase: &str) {
+    eprintln!("minijam_createServiceV1 phase={phase}");
 }
 
 async fn wait_for_service_code_hash(
@@ -523,6 +582,12 @@ pub enum RpcError {
     CodeHashMismatch,
     #[error("deployment was rejected with code {0}")]
     DeploymentRejected(u32),
+    #[error("deployment extrinsic was finalized but its dispatch failed: {0}")]
+    DeploymentDispatchFailed(String),
+    #[error("deployment system operation was quarantined: {0}")]
+    DeploymentQuarantined(String),
+    #[error("timed out waiting for deployment receipt; last operation state: {0}")]
+    DeploymentReceiptTimeout(String),
     #[error("work not found")]
     WorkNotFound,
     #[error("storage error: {0}")]
@@ -549,6 +614,21 @@ impl RpcError {
             Self::DeploymentRejected(code) => (
                 -32014,
                 format!("deployment rejected with code {code}"),
+                None,
+            ),
+            Self::DeploymentDispatchFailed(reason) => (
+                -32017,
+                format!("deployment dispatch failed: {reason}"),
+                None,
+            ),
+            Self::DeploymentQuarantined(reason) => (
+                -32015,
+                format!("deployment system operation quarantined: {reason}"),
+                None,
+            ),
+            Self::DeploymentReceiptTimeout(state) => (
+                -32016,
+                format!("timed out waiting for deployment receipt; last operation state: {state}"),
                 None,
             ),
             Self::WorkNotFound => (-32013, "work not found".into(), None),
@@ -731,6 +811,15 @@ fn decode_service_info(mut bytes: &[u8]) -> Result<ServiceInfo, RpcError> {
 
 fn chain_error(error: minijam_chain_client::ChainClientError) -> RpcError {
     RpcError::Chain(error.to_string())
+}
+
+fn deployment_chain_error(error: minijam_chain_client::ChainClientError) -> RpcError {
+    match error {
+        minijam_chain_client::ChainClientError::Dispatch(reason) => {
+            RpcError::DeploymentDispatchFailed(reason)
+        }
+        error => chain_error(error),
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -947,5 +1036,31 @@ mod tests {
         let stored = std::fs::read(directory.path().join(hex_without_prefix(&hash))).unwrap();
         assert_eq!(stored, bytes);
         assert!(save_bundle_to_dir(directory.path(), b"tampered", hash).is_err());
+    }
+
+    #[test]
+    fn deployment_receipt_failures_have_distinct_rpc_codes() {
+        assert_eq!(
+            RpcError::DeploymentQuarantined("Trap".into())
+                .json_parts()
+                .0,
+            -32015
+        );
+        assert_eq!(
+            RpcError::DeploymentReceiptTimeout("pending".into())
+                .json_parts()
+                .0,
+            -32016
+        );
+        assert_eq!(
+            deployment_chain_error(minijam_chain_client::ChainClientError::Dispatch(
+                "BadOrigin".into()
+            ))
+            .json_parts()
+            .0,
+            -32017
+        );
+        assert_eq!(DeploymentOperationState::Pending.as_str(), "pending");
+        assert_eq!(DeploymentOperationState::Missing.as_str(), "missing");
     }
 }

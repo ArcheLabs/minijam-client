@@ -262,13 +262,20 @@ impl MiniJamChainClient {
         // submit.
         let _submission = self.submit_lock.lock().await;
         let prepared = self.prepare_system_command_inner(command).await?;
-        match rpc::submit_and_watch_extrinsic(
-            &*self.rpc.lock().await,
-            &prepared.encoded_extrinsic,
-            self.request_timeout,
-        )
-        .await
-        {
+        // The watcher can complete with an RPC error. Keep its mutex guard in
+        // this scope: both completion and recovery issue further RPC calls.
+        // Letting the temporary guard live through the `match` would make
+        // either path wait on itself.
+        let watched = {
+            let rpc = self.rpc.lock().await;
+            rpc::submit_and_watch_extrinsic(
+                &*rpc,
+                &prepared.encoded_extrinsic,
+                self.request_timeout,
+            )
+            .await
+        };
+        match watched {
             Ok((extrinsic_hash, statuses)) => {
                 self.complete_prepared_submission(prepared, extrinsic_hash, statuses)
                     .await
@@ -339,13 +346,18 @@ impl MiniJamChainClient {
     ) -> Result<Submission, ChainClientError> {
         let _system_op = self.system_op_lock.lock().await;
         let _submission = self.submit_lock.lock().await;
-        match rpc::submit_and_watch_extrinsic(
-            &*self.rpc.lock().await,
-            &prepared.encoded_extrinsic,
-            self.request_timeout,
-        )
-        .await
-        {
+        // Drop the RPC guard before completing the watched submission or
+        // reconnecting after a transport failure.
+        let watched = {
+            let rpc = self.rpc.lock().await;
+            rpc::submit_and_watch_extrinsic(
+                &*rpc,
+                &prepared.encoded_extrinsic,
+                self.request_timeout,
+            )
+            .await
+        };
+        match watched {
             Ok((extrinsic_hash, statuses)) => {
                 self.complete_prepared_submission(prepared, extrinsic_hash, statuses)
                     .await
@@ -405,13 +417,16 @@ impl MiniJamChainClient {
                 return Err(error);
             }
         };
-        let dispatch_error = match &dispatch_outcome {
-            DispatchOutcome::Success => None,
-            DispatchOutcome::Failed(error) => Some(error.clone()),
-        };
         match dispatch_outcome {
             DispatchOutcome::Success => self.commit_system_op_nonce(&prepared).await,
-            DispatchOutcome::Failed(_) => self.invalidate_system_op_nonce().await,
+            DispatchOutcome::Failed(error) => {
+                // The account nonce was committed above because the
+                // extrinsic finalized. The system-op nonce must be refreshed,
+                // and callers must not mistake a failed dispatch for a
+                // successful submission.
+                self.invalidate_system_op_nonce().await;
+                return Err(ChainClientError::Dispatch(error));
+            }
         }
         Ok(Submission {
             extrinsic_hash,
@@ -422,7 +437,7 @@ impl MiniJamChainClient {
                 included_block,
                 included_extrinsic_index: Some(included_extrinsic_index),
                 dispatch_outcome: Some(dispatch_outcome),
-                dispatch_error,
+                dispatch_error: None,
             }),
         })
     }
@@ -502,7 +517,13 @@ impl MiniJamChainClient {
         let nonce = self.allocate_nonce().await?;
         let genesis = rpc::genesis_hash(&*self.rpc.lock().await).await?;
         let encoded = extrinsic::sign_call(&self.signer, nonce, genesis, call);
-        match rpc::submit_extrinsic(&*self.rpc.lock().await, &encoded).await {
+        // `reconnect` below needs the same mutex, so do not retain the guard
+        // in the match scrutinee.
+        let submitted = {
+            let rpc = self.rpc.lock().await;
+            rpc::submit_extrinsic(&*rpc, &encoded).await
+        };
+        match submitted {
             Ok(extrinsic_hash) => Ok(Submission {
                 extrinsic_hash,
                 submitted_nonce: nonce,
@@ -538,6 +559,27 @@ impl MiniJamChainClient {
             serde_json::json!([rpc::hex(&request_id)]),
         )
         .await
+    }
+
+    pub async fn system_op<T: Decode>(
+        &self,
+        request_id: Hash,
+    ) -> Result<Option<T>, ChainClientError> {
+        self.decode_query(
+            "minijam_getSystemOp",
+            serde_json::json!([rpc::hex(&request_id)]),
+        )
+        .await
+    }
+
+    pub async fn pending_system_ops<T: Decode>(&self) -> Result<T, ChainClientError> {
+        self.required_query("minijam_getPendingSystemOps", serde_json::json!([]))
+            .await
+    }
+
+    pub async fn quarantined_system_ops<T: Decode>(&self) -> Result<T, ChainClientError> {
+        self.required_query("minijam_getQuarantinedSystemOps", serde_json::json!([]))
+            .await
     }
 
     pub async fn work_status<T: Decode>(
@@ -604,6 +646,16 @@ impl MiniJamChainClient {
                     .map_err(|error| ChainClientError::Decode(error.to_string()))
             })
             .transpose()
+    }
+
+    async fn required_query<T: Decode>(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<T, ChainClientError> {
+        self.decode_query(method, params)
+            .await?
+            .ok_or_else(|| ChainClientError::Decode(format!("{method} returned no value")))
     }
 }
 
