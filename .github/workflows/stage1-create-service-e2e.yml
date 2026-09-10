@@ -1,0 +1,311 @@
+name: Stage-1 CreateService E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag, or commit to test
+        required: true
+        type: string
+        default: codex/create-service-native-e2e
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TEST_THREADS: 1
+  BUILDKIT_CACHE_SCOPE: minijam-stage1
+
+jobs:
+  create-service-e2e:
+    name: Native then Docker CreateService E2E
+    if: github.repository == 'ArcheLabs/minijam-client'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout requested MiniJAM source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+
+      - name: Resolve source identity
+        id: source
+        run: |
+          git_sha="$(git rev-parse HEAD)"
+          short_sha="${git_sha:0:7}"
+          printf 'SOURCE_SHA=%s\n' "${git_sha}"
+          {
+            echo "git_sha=${git_sha}"
+            echo "short_sha=${short_sha}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Check Jambda App configuration
+        env:
+          JAMBDA_APP_CLIENT_ID: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          JAMBDA_APP_PRIVATE_KEY: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+        run: |
+          test -n "${JAMBDA_APP_CLIENT_ID}" || {
+            echo "::error::JAMBDA_APP_CLIENT_ID is not configured"
+            exit 1
+          }
+          test -n "${JAMBDA_APP_PRIVATE_KEY}" || {
+            echo "::error::JAMBDA_APP_PRIVATE_KEY is not configured"
+            exit 1
+          }
+
+      - name: Read pinned Jambda commit
+        id: jambda-pin
+        run: |
+          jambda_sha="$(git ls-tree HEAD external/jambda | awk '{print $3}')"
+          if [[ ! "${jambda_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Unable to determine pinned Jambda commit"
+            exit 1
+          fi
+          echo "sha=${jambda_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create Jambda token
+        id: jambda-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+          owner: ArcheLabs
+          repositories: jambda
+          permission-contents: read
+
+      - name: Checkout pinned Jambda
+        uses: actions/checkout@v7
+        with:
+          repository: ArcheLabs/jambda
+          ref: ${{ steps.jambda-pin.outputs.sha }}
+          token: ${{ steps.jambda-token.outputs.token }}
+          path: external/jambda
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify pinned Jambda checkout
+        env:
+          EXPECTED_JAMBDA_SHA: ${{ steps.jambda-pin.outputs.sha }}
+        run: |
+          test "$(git -C external/jambda rev-parse HEAD)" = "${EXPECTED_JAMBDA_SHA}"
+          printf 'PINNED_JAMBDA_CHECKOUT=PASS\n'
+
+      - name: Run lightweight source gates
+        id: source-gates
+        run: |
+          started=$SECONDS
+          ./scripts/check-stage1-core-boundary.sh
+          ./scripts/check-stage1-core-dependencies.sh
+          ./scripts/check-stage1-boundary.sh
+          ./scripts/check-production-image-boundary.sh
+          ./scripts/check-release-secret-hygiene.sh
+          cargo fmt --all -- --check
+          CARGO_BUILD_JOBS=2 cargo test -p minijam-chain-client --locked
+          CARGO_BUILD_JOBS=2 cargo test -p minijam-formal-rpc --locked
+          CARGO_BUILD_JOBS=2 cargo clippy \
+            -p minijam-chain-client \
+            -p minijam-formal-rpc \
+            --all-targets --locked -- -D warnings
+          printf 'CREATE_SERVICE_SOURCE_GATES=PASS\n'
+          echo "SOURCE_GATES_SECONDS=$((SECONDS - started))" >> "${GITHUB_ENV}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build canonical Stage-1 builder image
+        id: builder
+        env:
+          GIT_SHA: ${{ steps.source.outputs.git_sha }}
+          SHORT_SHA: ${{ steps.source.outputs.short_sha }}
+        run: |
+          started=$SECONDS
+          docker buildx build \
+            --target builder \
+            --build-arg GIT_SHA="${GIT_SHA}" \
+            --build-arg RELEASE_TAG="stage1-e2e-${SHORT_SHA}" \
+            --cache-from "type=gha,scope=${BUILDKIT_CACHE_SCOPE}" \
+            --cache-to "type=gha,mode=max,scope=${BUILDKIT_CACHE_SCOPE}" \
+            --load \
+            -f deploy/stage1/Dockerfile \
+            -t "minijam-stage1-builder:${GIT_SHA}" \
+            .
+          docker image inspect "minijam-stage1-builder:${GIT_SHA}" >/dev/null
+          printf 'STAGE1_BUILDKIT_GHA_CACHE=PASS\n'
+          printf 'STAGE1_BUILDER_IMAGE=PASS\n'
+          echo "BUILDER_BUILD_SECONDS=$((SECONDS - started))" >> "${GITHUB_ENV}"
+
+      - name: Extract and smoke exact builder binaries
+        id: extract
+        env:
+          GIT_SHA: ${{ steps.source.outputs.git_sha }}
+        run: |
+          mkdir -p .stage1-native-bin .stage1-native-artifacts
+          container_id="$(docker create "minijam-stage1-builder:${GIT_SHA}")"
+          cleanup_container() {
+            docker rm -f "${container_id}" >/dev/null 2>&1 || true
+          }
+          trap cleanup_container EXIT
+          docker cp "${container_id}:/out/minijam-node" .stage1-native-bin/minijam-node
+          docker cp "${container_id}:/out/minijam-worker" .stage1-native-bin/minijam-worker
+          docker cp "${container_id}:/out/minijam-formal-rpc" .stage1-native-bin/minijam-formal-rpc
+          chmod +x .stage1-native-bin/*
+          ldd .stage1-native-bin/minijam-node
+          ldd .stage1-native-bin/minijam-formal-rpc
+          .stage1-native-bin/minijam-node --version
+          test -x .stage1-native-bin/minijam-formal-rpc
+          printf 'STAGE1_EXTRACTED_BINARIES=PASS\n'
+
+      - name: Prepare ephemeral native and Docker credentials
+        id: credentials
+        env:
+          NODE_BIN: ${{ github.workspace }}/.stage1-native-bin/minijam-node
+        run: |
+          relayer_uri="0x$(openssl rand -hex 32)"
+          relayer_info="$("${NODE_BIN}" key inspect-uri "${relayer_uri}" 2>&1)"
+          ingress_public_key="$(awk -F': ' '/Public key \(hex\):/ {print $2; exit}' <<<"${relayer_info}")"
+          if [[ ! "${ingress_public_key}" =~ ^0x[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::Unable to derive the ephemeral sr25519 AccountId32"
+            exit 1
+          fi
+          node_key="$("${NODE_BIN}" key generate-node-key 2>/dev/null | tr -d '\r\n')"
+          if [[ ! "${node_key}" =~ ^(0x)?[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::Native node binary did not return a valid network key"
+            exit 1
+          fi
+          worker_seed="0x$(openssl rand -hex 32)"
+          service_blob="${GITHUB_WORKSPACE}/examples/services/counter/artifacts/counter-c.blob"
+          service_code_hash="$(python3 - "${service_blob}" <<'PY'
+          import hashlib
+          import pathlib
+          import sys
+
+          print("0x" + hashlib.blake2b(pathlib.Path(sys.argv[1]).read_bytes(), digest_size=32).hexdigest())
+          PY
+          )"
+          echo "::add-mask::${relayer_uri}"
+          echo "::add-mask::${node_key}"
+          echo "::add-mask::${worker_seed}"
+          {
+            echo "MINIJAM_NATIVE_RELAYER_URI=${relayer_uri}"
+            echo "MINIJAM_NATIVE_INGRESS_RELAYER_PUBLIC_KEY=${ingress_public_key}"
+            echo "MINIJAM_NATIVE_ALLOCATION_RELAYER_PUBLIC_KEY=${ingress_public_key}"
+            echo "MINIJAM_NATIVE_SERVICE_BLOB=${service_blob}"
+            echo "MINIJAM_NATIVE_SERVICE_CODE_HASH=${service_code_hash}"
+            echo "MINIJAM_NODE_NETWORK_KEY=${node_key}"
+            echo "MINIJAM_WORKER_SEED=${worker_seed}"
+            echo "MINIJAM_FORMAL_RPC_RELAYER_URI=${relayer_uri}"
+          } >> "${GITHUB_ENV}"
+          echo "ingress_public_key=${ingress_public_key}" >> "${GITHUB_OUTPUT}"
+          printf 'INGRESS_RELAYER_MATCH=PASS\n'
+          printf 'NATIVE_SERVICE_FIXTURE=PASS\n'
+
+      - name: Run native CreateService E2E
+        id: native
+        run: |
+          started=$SECONDS
+          MINIJAM_NATIVE_NODE_BIN="${GITHUB_WORKSPACE}/.stage1-native-bin/minijam-node" \
+            MINIJAM_NATIVE_FORMAL_RPC_BIN="${GITHUB_WORKSPACE}/.stage1-native-bin/minijam-formal-rpc" \
+            MINIJAM_NATIVE_ARTIFACT_DIR="${GITHUB_WORKSPACE}/.stage1-native-artifacts" \
+            ./scripts/test-stage1-native-create-service.sh
+          echo "NATIVE_E2E_SECONDS=$((SECONDS - started))" >> "${GITHUB_ENV}"
+
+      - name: Build candidate Stage-1 runtime images
+        id: images
+        env:
+          GIT_SHA: ${{ steps.source.outputs.git_sha }}
+          SHORT_SHA: ${{ steps.source.outputs.short_sha }}
+        run: |
+          started=$SECONDS
+          for role in node worker formal-rpc; do
+            docker buildx build \
+              --target "${role}" \
+              --build-arg GIT_SHA="${GIT_SHA}" \
+              --build-arg RELEASE_TAG="stage1-e2e-${SHORT_SHA}" \
+              --cache-from "type=gha,scope=${BUILDKIT_CACHE_SCOPE}" \
+              --cache-to "type=gha,mode=max,scope=${BUILDKIT_CACHE_SCOPE}" \
+              --load \
+              -f deploy/stage1/Dockerfile \
+              -t "minijam-${role}:${SHORT_SHA}" \
+              .
+          done
+          printf 'STAGE1_CANDIDATE_IMAGES=PASS\n'
+          echo "RUNTIME_IMAGES_SECONDS=$((SECONDS - started))" >> "${GITHUB_ENV}"
+
+      - name: Verify image revisions and binary identity
+        env:
+          GIT_SHA: ${{ steps.source.outputs.git_sha }}
+          SHORT_SHA: ${{ steps.source.outputs.short_sha }}
+        run: |
+          for role in node worker formal-rpc; do
+            image="minijam-${role}:${SHORT_SHA}"
+            revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${image}")"
+            test "${revision}" = "${GIT_SHA}"
+            container_id="$(docker create "${image}")"
+            docker cp "${container_id}:/usr/local/bin/minijam-${role}" ".stage1-native-artifacts/minijam-${role}.image"
+            docker rm "${container_id}" >/dev/null
+            cmp ".stage1-native-bin/minijam-${role}" ".stage1-native-artifacts/minijam-${role}.image"
+          done
+          printf 'STAGE1_IMAGE_REVISION_MATCH=PASS\n'
+          printf 'STAGE1_BINARY_IDENTITY_MATCH=PASS\n'
+
+      - name: Generate exact candidate chain spec
+        env:
+          MINIJAM_NODE_IMAGE: minijam-node:${{ steps.source.outputs.short_sha }}
+          MINIJAM_STAGE1_CHAIN_SPEC_DIR: ${{ github.workspace }}/chain-specs
+          MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY: ${{ steps.credentials.outputs.ingress_public_key }}
+          MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY: ${{ steps.credentials.outputs.ingress_public_key }}
+        run: ./scripts/export-stage1-chain-specs-image.sh
+
+      - name: Smoke candidate Docker stack
+        id: docker-smoke
+        env:
+          MINIJAM_NODE_IMAGE: minijam-node:${{ steps.source.outputs.short_sha }}
+          MINIJAM_WORKER_IMAGE: minijam-worker:${{ steps.source.outputs.short_sha }}
+          MINIJAM_FORMAL_RPC_IMAGE: minijam-formal-rpc:${{ steps.source.outputs.short_sha }}
+          MINIJAM_STAGE1_CHAIN_SPEC_FILE: ${{ github.workspace }}/chain-specs/stage1.json
+          MINIJAM_STAGE1_SMOKE_PROJECT: minijam-stage1-create-service-smoke
+        run: |
+          started=$SECONDS
+          ./scripts/test-stage1-docker-smoke.sh
+          echo "DOCKER_SMOKE_SECONDS=$((SECONDS - started))" >> "${GITHUB_ENV}"
+
+      - name: Run Docker CreateService E2E
+        id: docker-e2e
+        env:
+          MINIJAM_NODE_IMAGE: minijam-node:${{ steps.source.outputs.short_sha }}
+          MINIJAM_WORKER_IMAGE: minijam-worker:${{ steps.source.outputs.short_sha }}
+          MINIJAM_FORMAL_RPC_IMAGE: minijam-formal-rpc:${{ steps.source.outputs.short_sha }}
+          MINIJAM_STAGE1_CHAIN_SPEC_FILE: ${{ github.workspace }}/chain-specs/stage1.json
+          MINIJAM_STAGE1_CREATE_SERVICE_PROJECT: minijam-stage1-create-service-e2e
+          MINIJAM_DOCKER_ARTIFACT_DIR: ${{ github.workspace }}/.stage1-docker-artifacts
+        run: |
+          started=$SECONDS
+          ./scripts/test-stage1-docker-create-service.sh
+          echo "DOCKER_CREATE_SERVICE_SECONDS=$((SECONDS - started))" >> "${GITHUB_ENV}"
+
+      - name: Record build timing
+        if: always()
+        run: |
+          printf 'BUILD_TIMING source_gates=%ss builder=%ss native_e2e=%ss images=%ss docker_smoke=%ss docker_create_service=%ss\n' \
+            "${SOURCE_GATES_SECONDS:-unknown}" \
+            "${BUILDER_BUILD_SECONDS:-unknown}" \
+            "${NATIVE_E2E_SECONDS:-unknown}" \
+            "${RUNTIME_IMAGES_SECONDS:-unknown}" \
+            "${DOCKER_SMOKE_SECONDS:-unknown}" \
+            "${DOCKER_CREATE_SERVICE_SECONDS:-unknown}"
+
+      - name: Upload native and Docker diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: minijam-native-create-service-${{ steps.source.outputs.git_sha }}
+          if-no-files-found: warn
+          path: |
+            .stage1-native-artifacts/
+            .stage1-docker-artifacts/
+            chain-specs/stage1.json
