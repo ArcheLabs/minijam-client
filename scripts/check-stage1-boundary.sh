@@ -9,6 +9,8 @@ fi
 for required in 'node:' 'worker:' 'formal-rpc:'; do
   grep -Eq "^[[:space:]]*$required" "$root/deploy/stage1/compose.compact.yml"
 done
+grep -Eq '^[[:space:]]+- --alice$' "$root/deploy/stage1/compose.create-service-e2e.yml"
+grep -Eq '^[[:space:]]+- --force-authoring$' "$root/deploy/stage1/compose.create-service-e2e.yml"
 
 for profile in compact split; do
   compose="$root/deploy/stage1/compose.${profile}.yml"

@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 COMPOSE_FILE="${MINIJAM_STAGE1_COMPOSE_FILE:-${ROOT}/deploy/stage1/compose.compact.yml}"
+COMPOSE_OVERRIDE_FILE="${MINIJAM_STAGE1_COMPOSE_OVERRIDE_FILE:-${ROOT}/deploy/stage1/compose.create-service-e2e.yml}"
 PROJECT="${MINIJAM_STAGE1_CREATE_SERVICE_PROJECT:-minijam-stage1-create-service}"
 CHAIN_SPEC="${MINIJAM_STAGE1_CHAIN_SPEC_FILE:?set the Stage-1 chain-spec file}"
 NODE_IMAGE="${MINIJAM_NODE_IMAGE:?set the exact Stage-1 node image reference}"
@@ -21,13 +22,14 @@ command -v jq >/dev/null 2>&1 || { echo 'jq is required for Docker CreateService
 command -v base64 >/dev/null 2>&1 || { echo 'base64 is required for Docker CreateService E2E' >&2; exit 127; }
 command -v docker >/dev/null 2>&1 || { echo 'docker is required for Docker CreateService E2E' >&2; exit 127; }
 test -f "${CHAIN_SPEC}" || { echo "missing chain spec: ${CHAIN_SPEC}" >&2; exit 1; }
+test -f "${COMPOSE_OVERRIDE_FILE}" || { echo "missing Docker E2E compose override: ${COMPOSE_OVERRIDE_FILE}" >&2; exit 1; }
 test -s "${SERVICE_BLOB}" || { echo "service blob is missing or empty: ${SERVICE_BLOB}" >&2; exit 1; }
 [[ "${SERVICE_CODE_HASH}" =~ ^0x[0-9a-fA-F]{64}$ ]] || {
   echo 'MINIJAM_NATIVE_SERVICE_CODE_HASH must be a 0x-prefixed 32-byte hex value' >&2
   exit 1
 }
 
-compose=(docker compose --project-name "${PROJECT}" -f "${COMPOSE_FILE}")
+compose=(docker compose --project-name "${PROJECT}" -f "${COMPOSE_FILE}" -f "${COMPOSE_OVERRIDE_FILE}")
 response_file="${ARTIFACT_DIR:+${ARTIFACT_DIR}/}create-service-response.json"
 compose_log_file="${ARTIFACT_DIR:+${ARTIFACT_DIR}/}compose.log"
 
@@ -84,10 +86,54 @@ wait_for_formal_rpc() {
   done
 }
 
+block_number() {
+  local hash="${1:-}" params='[]' number_hex
+  [[ -z "${hash}" ]] || params="[\"${hash}\"]"
+  number_hex="$(node_rpc chain_getHeader "${params}" | jq -er '.result.number')"
+  case "${number_hex}" in
+    0x*) printf '%d\n' "$((16#${number_hex#0x}))" ;;
+    0X*) printf '%d\n' "$((16#${number_hex#0X}))" ;;
+    *) printf '%d\n' "${number_hex}" ;;
+  esac
+}
+
+wait_for_best_progress() {
+  local initial="$1" deadline=$((SECONDS + ${MINIJAM_DOCKER_READY_TIMEOUT_SECONDS:-180})) current
+  while :; do
+    current="$(block_number 2>/dev/null || true)"
+    if [[ "${current}" =~ ^[0-9]+$ ]] && (( current > initial )); then
+      printf 'DOCKER_BEST_BLOCK_ADVANCES=PASS\n'; return 0
+    fi
+    (( SECONDS < deadline )) || { echo "Docker best head did not advance beyond block ${initial}" >&2; return 1; }
+    sleep 2
+  done
+}
+
+wait_for_finality_progress() {
+  local initial_head="$1" initial deadline=$((SECONDS + ${MINIJAM_DOCKER_READY_TIMEOUT_SECONDS:-180})) current_head current
+  initial="$(block_number "${initial_head}")"
+  while :; do
+    current_head="$(node_rpc chain_getFinalizedHead 2>/dev/null | jq -er '.result | strings' 2>/dev/null || true)"
+    if [[ -n "${current_head}" ]]; then
+      current="$(block_number "${current_head}" 2>/dev/null || true)"
+      if [[ "${current}" =~ ^[0-9]+$ ]] && (( current > initial )); then
+        printf 'DOCKER_FINALITY=PASS\n'; return 0
+      fi
+    fi
+    (( SECONDS < deadline )) || { echo "Docker finalized head did not advance beyond block ${initial}" >&2; return 1; }
+    sleep 2
+  done
+}
+
 "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
-"${compose[@]}" up --detach --no-build --pull never
+"${compose[@]}" up --detach --no-build --pull never node
 wait_for_node
 printf 'DOCKER_NODE_RPC=PASS\n'
+initial_best="$(block_number)"
+initial_finalized="$(node_rpc chain_getFinalizedHead | jq -er '.result')"
+wait_for_best_progress "${initial_best}"
+wait_for_finality_progress "${initial_finalized}"
+"${compose[@]}" up --detach --no-build --pull never worker formal-rpc
 wait_for_formal_rpc
 printf 'DOCKER_FORMAL_RPC_READY=PASS\n'
 
