@@ -7,7 +7,7 @@ on:
         description: Branch, tag, or commit to test
         required: true
         type: string
-          default: codex/fix-stage1-credential-parser
+        default: codex/fix-stage1-credential-parser
 
 permissions:
   contents: read
