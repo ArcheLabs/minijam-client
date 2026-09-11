@@ -231,17 +231,13 @@ pub async fn submit_and_watch_extrinsic(
         )
         .await
         .map_err(map_rpc)?;
-    let started = std::time::Instant::now();
     let mut statuses = Vec::new();
     let extrinsic_hash = minijam_protocol::blake2_256(encoded);
     loop {
-        let remaining = timeout.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            return Err(ChainClientError::Rpc(
-                "timed out waiting for transaction status".into(),
-            ));
-        }
-        let status = tokio::time::timeout(remaining, subscription.next())
+        // Treat `timeout` as an inactivity deadline, not a cap on the entire
+        // finalized lifecycle. A healthy chain can emit Ready/InBlock/Pruned
+        // progress for longer than one request timeout before GRANDPA finality.
+        let status = tokio::time::timeout(timeout, subscription.next())
             .await
             .map_err(|_| ChainClientError::Rpc("timed out waiting for transaction status".into()))?
             .ok_or_else(|| ChainClientError::Rpc("transaction status subscription ended".into()))?;

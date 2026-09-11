@@ -7,7 +7,7 @@ on:
         description: Branch, tag, or commit to test
         required: true
         type: string
-        default: codex/create-service-native-e2e
+        default: codex/fix-stage1-credential-parser
 
 permissions:
   contents: read
@@ -287,13 +287,27 @@ jobs:
           MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY: ${{ steps.credentials.outputs.ingress_public_key }}
         run: ./scripts/export-stage1-chain-specs-image.sh
 
+      - name: Generate isolated Docker E2E chain spec
+        env:
+          MINIJAM_NODE_IMAGE: minijam-node:${{ steps.source.outputs.short_sha }}
+          MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY: ${{ steps.credentials.outputs.ingress_public_key }}
+          MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY: ${{ steps.credentials.outputs.ingress_public_key }}
+        run: |
+          docker run --rm --network none \
+            -e MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY \
+            -e MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY \
+            "${MINIJAM_NODE_IMAGE}" build-spec --chain stage1-e2e > chain-specs/stage1-e2e.json
+          test "$(jq -r '.id' chain-specs/stage1-e2e.json)" = minijam_stage1_e2e
+          printf 'DOCKER_E2E_CHAIN_SPEC=PASS\n'
+
       - name: Smoke candidate Docker stack
         id: docker-smoke
         env:
           MINIJAM_NODE_IMAGE: minijam-node:${{ steps.source.outputs.short_sha }}
           MINIJAM_WORKER_IMAGE: minijam-worker:${{ steps.source.outputs.short_sha }}
           MINIJAM_FORMAL_RPC_IMAGE: minijam-formal-rpc:${{ steps.source.outputs.short_sha }}
-          MINIJAM_STAGE1_CHAIN_SPEC_FILE: ${{ github.workspace }}/chain-specs/stage1.json
+          MINIJAM_STAGE1_CHAIN_SPEC_FILE: ${{ github.workspace }}/chain-specs/stage1-e2e.json
+          MINIJAM_STAGE1_COMPOSE_OVERRIDE_FILE: ${{ github.workspace }}/deploy/stage1/compose.create-service-e2e.yml
           MINIJAM_STAGE1_SMOKE_PROJECT: minijam-stage1-create-service-smoke
         run: |
           started=$SECONDS
@@ -306,7 +320,8 @@ jobs:
           MINIJAM_NODE_IMAGE: minijam-node:${{ steps.source.outputs.short_sha }}
           MINIJAM_WORKER_IMAGE: minijam-worker:${{ steps.source.outputs.short_sha }}
           MINIJAM_FORMAL_RPC_IMAGE: minijam-formal-rpc:${{ steps.source.outputs.short_sha }}
-          MINIJAM_STAGE1_CHAIN_SPEC_FILE: ${{ github.workspace }}/chain-specs/stage1.json
+          MINIJAM_STAGE1_CHAIN_SPEC_FILE: ${{ github.workspace }}/chain-specs/stage1-e2e.json
+          MINIJAM_STAGE1_COMPOSE_OVERRIDE_FILE: ${{ github.workspace }}/deploy/stage1/compose.create-service-e2e.yml
           MINIJAM_STAGE1_CREATE_SERVICE_PROJECT: minijam-stage1-create-service-e2e
           MINIJAM_DOCKER_ARTIFACT_DIR: ${{ github.workspace }}/.stage1-docker-artifacts
         run: |

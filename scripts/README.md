@@ -20,6 +20,7 @@ and release helpers are removed instead of being kept as compatibility shims.
 - `test-stage1-core.sh`
 - `test-stage1-docker-smoke.sh`
 - `test-stage1-native-create-service.sh`
+- `run-stage1-native-create-service-local.sh`
 - `test-stage1-docker-create-service.sh`
 - `export-stage1-chain-specs-image.sh`
 
@@ -43,9 +44,20 @@ and release helpers are removed instead of being kept as compatibility shims.
   progress, and exercises `minijam_createServiceV1` through its finalized
   receipt, preimage, dispatch, and finalized `ServiceInfo` checks. It never
   builds images or invokes Docker.
+- `run-stage1-native-create-service-local.sh` performs the targeted incremental
+  debug build, creates ephemeral test credentials, and runs the native gate.
+  Set `MINIJAM_SKIP_BUILD=1` to reuse existing debug binaries after script-only
+  changes.
 - `test-stage1-docker-create-service.sh` runs the same CreateService request
   against exact Compose image references and preserves Compose logs and the
   JSON response when an artifact directory is provided.
+- `stage1-native-local-up.sh` starts a persistent, isolated native Stage-1 E2E
+  network for another process or repository to consume.
+- `stage1-native-local-status.sh` reports node, block progression, finality,
+  and Formal RPC readiness without exposing credentials.
+- `stage1-native-local-down.sh` stops the persistent native network while
+  retaining logs, chain spec, and node data by default. Set
+  `MINIJAM_LOCAL_PURGE=1` to remove the runtime directory.
 
 When adding a script, add its workflow or documentation caller in the same
 change and keep the repository root resolution independent of the current

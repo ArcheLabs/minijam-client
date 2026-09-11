@@ -9,6 +9,8 @@ fi
 for required in 'node:' 'worker:' 'formal-rpc:'; do
   grep -Eq "^[[:space:]]*$required" "$root/deploy/stage1/compose.compact.yml"
 done
+grep -Eq '^[[:space:]]+- --alice$' "$root/deploy/stage1/compose.create-service-e2e.yml"
+grep -Eq '^[[:space:]]+- --force-authoring$' "$root/deploy/stage1/compose.create-service-e2e.yml"
 
 for profile in compact split; do
   compose="$root/deploy/stage1/compose.${profile}.yml"
@@ -31,6 +33,16 @@ if grep -Eq '0\.0\.0\.0:9944' "$root/deploy/stage1/compose.split.yml"; then
   echo 'Split Stage-1 profile must not publish node RPC on a public host interface' >&2
   exit 1
 fi
+release_spec_export="$root/scripts/export-stage1-chain-specs-image.sh"
+grep -Fq 'build-spec --chain stage1 >' "${release_spec_export}"
+if grep -RFn -- 'stage1-e2e' \
+  "$root/.github/workflows/stage1-release.yml" \
+  "$root/deploy/stage1" \
+  "${release_spec_export}"; then
+  echo 'Stage-1 release or deployment path must not use the E2E chain spec' >&2
+  exit 1
+fi
 printf 'COMPACT_RPC_HOST_BOUNDARY=PASS\n'
 printf 'COMPACT_NODE_EDGE=PASS\n'
 printf 'RPC_METHODS_SAFE=PASS\n'
+printf 'STAGE1_RELEASE_SPEC_NOT_E2E=PASS\n'

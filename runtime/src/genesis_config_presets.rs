@@ -281,6 +281,27 @@ pub fn stage1_config_genesis(ingress_relayer: AccountId, allocation_relayer: Acc
     )
 }
 
+/// Local/CI-only Stage-1 genesis with development consensus keys.
+///
+/// This keeps the production Stage-1 protocol state intact while allowing an
+/// ephemeral node started with `--alice` to author and finalize blocks.
+pub fn stage1_e2e_config_genesis(
+    ingress_relayer: AccountId,
+    allocation_relayer: AccountId,
+) -> Value {
+    testnet_genesis(
+        vec![(
+            Sr25519Keyring::Alice.public().into(),
+            sp_keyring::Ed25519Keyring::Alice.public().into(),
+        )],
+        stage0_endowed_accounts(),
+        AccountId::new(STAGE0_SUDO_ACCOUNT),
+        stage0_workers(),
+        ingress_relayer,
+        allocation_relayer,
+    )
+}
+
 pub fn get_preset(id: &PresetId) -> Option<Vec<u8>> {
     let patch = match id.as_ref() {
         sp_genesis_builder::DEV_RUNTIME_PRESET => development_config_genesis(),
@@ -391,6 +412,17 @@ mod tests {
             }
     }
 
+    fn remove_consensus_authorities(patch: &mut Value) {
+        for section_name in ["aura", "grandpa"] {
+            patch
+                .get_mut(section_name)
+                .and_then(Value::as_object_mut)
+                .expect("consensus genesis section must be an object")
+                .remove("authorities")
+                .expect("consensus authority field must be present");
+        }
+    }
+
     #[test]
     fn development_genesis_seeds_stage0_service_and_workers() {
         let patch = development_config_genesis();
@@ -434,6 +466,60 @@ mod tests {
         let committed_state = serde_json::to_value(system_service_zero_protocol_state())
             .expect("committed Service 0 state must serialize");
         assert_eq!(protocol_state, committed_state.as_array().unwrap());
+    }
+
+    #[test]
+    fn stage1_e2e_changes_only_consensus_authorities() {
+        let ingress = AccountId::new([0x11; 32]);
+        let allocation = AccountId::new([0x22; 32]);
+        let mut production = stage1_config_genesis(ingress.clone(), allocation.clone());
+        let mut e2e = stage1_e2e_config_genesis(ingress, allocation);
+
+        let production_aura = field(
+            section(&production, "aura", "aura"),
+            "authorities",
+            "authorities",
+        );
+        let production_grandpa = field(
+            section(&production, "grandpa", "grandpa"),
+            "authorities",
+            "authorities",
+        );
+        let expected_production_aura = serde_json::to_value(vec![AuraId::from(
+            sr25519::Public::from_raw(STAGE0_AURA_AUTHORITIES[0]),
+        )])
+        .unwrap();
+        let expected_production_grandpa = serde_json::to_value(vec![(
+            GrandpaId::from(ed25519::Public::from_raw(STAGE0_GRANDPA_AUTHORITIES[0])),
+            1,
+        )])
+        .unwrap();
+        assert_eq!(production_aura, &expected_production_aura);
+        assert_eq!(production_grandpa, &expected_production_grandpa);
+        println!("STAGE1_PRODUCTION_AUTHORITIES_UNCHANGED=PASS");
+
+        let e2e_aura = field(section(&e2e, "aura", "aura"), "authorities", "authorities");
+        let e2e_grandpa = field(
+            section(&e2e, "grandpa", "grandpa"),
+            "authorities",
+            "authorities",
+        );
+        let expected_e2e_aura =
+            serde_json::to_value(vec![AuraId::from(Sr25519Keyring::Alice.public())]).unwrap();
+        let expected_e2e_grandpa = serde_json::to_value(vec![(
+            GrandpaId::from(sp_keyring::Ed25519Keyring::Alice.public()),
+            1,
+        )])
+        .unwrap();
+        assert_eq!(e2e_aura, &expected_e2e_aura);
+        assert_eq!(e2e_grandpa, &expected_e2e_grandpa);
+        assert_ne!(e2e_aura, production_aura);
+        assert_ne!(e2e_grandpa, production_grandpa);
+        println!("STAGE1_E2E_ALICE_AUTHORITY=PASS");
+
+        remove_consensus_authorities(&mut production);
+        remove_consensus_authorities(&mut e2e);
+        assert_eq!(production, e2e);
     }
 
     #[test]
