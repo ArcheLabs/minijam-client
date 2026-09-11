@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use jsonrpsee::{core::RpcResult, types::ErrorObjectOwned, RpcModule};
-use minijam_protocol::WorkId;
+use minijam_protocol::{WorkId, WorkerTaskV1};
 use minijam_rpc_runtime_api::MiniJamRuntimeApi;
 use minijam_runtime::{opaque::Block, AccountId, Balance, Nonce};
 use sc_transaction_pool_api::TransactionPool;
@@ -24,6 +24,17 @@ struct FinalizedContextV1 {
     block_number: u32,
     state_root: String,
     slot: u32,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingWorkTaskSummaryV1 {
+    work_id: WorkId,
+    round: u8,
+    assignment_epoch: u32,
+    assigned_workers: Vec<u64>,
+    candidate_producer: u64,
+    package_hash: String,
 }
 
 /// Full client dependencies.
@@ -106,6 +117,30 @@ where
                 .get_pending_work_tasks(finalized_hash(&client))
                 .map_err(runtime_api_error)?;
             Ok(hex_encode(&parity_scale_codec::Encode::encode(&tasks)))
+        }
+    })?;
+
+    // Read-only JSON projection of the same finalized pending-task view used
+    // by workers. It makes local operator/E2E reports identify the assigned
+    // worker without teaching shell scripts to decode SCALE bytes.
+    module.register_method("minijam_getPendingWorkTaskSummaryV1", {
+        let client = client.clone();
+        move |_, _, _| -> RpcResult<Vec<PendingWorkTaskSummaryV1>> {
+            let tasks: Vec<WorkerTaskV1> = client
+                .runtime_api()
+                .get_pending_work_tasks(finalized_hash(&client))
+                .map_err(runtime_api_error)?;
+            Ok(tasks
+                .into_iter()
+                .map(|task| PendingWorkTaskSummaryV1 {
+                    work_id: task.work_id,
+                    round: task.round,
+                    assignment_epoch: task.assignment_epoch,
+                    assigned_workers: task.assigned_workers.into_inner(),
+                    candidate_producer: task.candidate_producer,
+                    package_hash: hex_encode(&task.package_hash),
+                })
+                .collect())
         }
     })?;
 

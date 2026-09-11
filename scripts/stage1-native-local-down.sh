@@ -21,6 +21,13 @@ stop_process() {
   rm -f -- "${file}"
 }
 
+# Stop workers before the services they depend on, then stop Formal RPC and the
+# node. The chain database, bundles, logs, and per-worker recovery databases
+# remain in place unless the operator explicitly requests a purge.
+for worker_id in 2 1 0; do
+  stop_process "${RUNTIME}/worker-${worker_id}.pid"
+  printf 'MINIJAM_LOCAL_WORKER_%s=STOPPED\n' "${worker_id}"
+done
 stop_process "${RUNTIME}/formal-rpc.pid"
 stop_process "${RUNTIME}/node.pid"
 printf 'MINIJAM_LOCAL_FORMAL_RPC=STOPPED\n'
