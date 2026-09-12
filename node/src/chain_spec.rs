@@ -1,6 +1,7 @@
 use minijam_runtime::{
     genesis_config_presets::{
         stage0_config_genesis, stage1_config_genesis, stage1_e2e_config_genesis,
+        stage1_work_e2e_config_genesis,
     },
     AccountId, WASM_BINARY,
 };
@@ -72,6 +73,11 @@ pub fn stage1_e2e_chain_spec() -> Result<ChainSpec, String> {
     stage1_e2e_chain_spec_with_relayers(ingress_relayer, allocation_relayer)
 }
 
+pub fn stage1_work_e2e_chain_spec() -> Result<ChainSpec, String> {
+    let (ingress_relayer, allocation_relayer) = stage1_relayers_from_env()?;
+    stage1_work_e2e_chain_spec_with_relayers(ingress_relayer, allocation_relayer)
+}
+
 fn stage1_relayers_from_env() -> Result<(AccountId, AccountId), String> {
     let ingress = std::env::var("MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY")
         .map_err(|_| "MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY is required".to_string())?;
@@ -111,6 +117,25 @@ pub fn stage1_e2e_chain_spec_with_relayers(
     .with_id("minijam_stage1_e2e")
     .with_chain_type(ChainType::Development)
     .with_genesis_config_patch(stage1_e2e_config_genesis(
+        ingress_relayer,
+        allocation_relayer,
+    ))
+    .with_properties(chain_properties())
+    .build())
+}
+
+pub fn stage1_work_e2e_chain_spec_with_relayers(
+    ingress_relayer: AccountId,
+    allocation_relayer: AccountId,
+) -> Result<ChainSpec, String> {
+    Ok(ChainSpec::builder(
+        WASM_BINARY.ok_or_else(|| "Stage-1 wasm not available".to_string())?,
+        None,
+    )
+    .with_name("MiniJAM Stage-1 Work E2E")
+    .with_id("minijam_stage1_work_e2e")
+    .with_chain_type(ChainType::Development)
+    .with_genesis_config_patch(stage1_work_e2e_config_genesis(
         ingress_relayer,
         allocation_relayer,
     ))
@@ -222,6 +247,23 @@ mod tests {
         assert_ne!(
             production.as_json(false).unwrap(),
             e2e.as_json(false).unwrap()
+        );
+    }
+
+    #[test]
+    fn stage1_work_e2e_spec_has_the_local_only_identity() {
+        let ingress = AccountId::new([0x44; 32]);
+        let allocation = AccountId::new([0x55; 32]);
+        let production =
+            stage1_chain_spec_with_relayers(ingress.clone(), allocation.clone()).unwrap();
+        let work_e2e = stage1_work_e2e_chain_spec_with_relayers(ingress, allocation).unwrap();
+
+        assert_eq!(work_e2e.id(), "minijam_stage1_work_e2e");
+        assert_eq!(work_e2e.name(), "MiniJAM Stage-1 Work E2E");
+        assert_eq!(work_e2e.chain_type(), ChainType::Development);
+        assert_ne!(
+            production.as_json(false).unwrap(),
+            work_e2e.as_json(false).unwrap()
         );
     }
 }

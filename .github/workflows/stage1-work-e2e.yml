@@ -1,0 +1,214 @@
+name: Stage-1 Work E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag, or commit to test
+        required: true
+        type: string
+        default: codex/stage1-full-local-work-e2e
+      run_docker:
+        description: Build local images and run the three-worker Docker Work E2E
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TEST_THREADS: 1
+
+jobs:
+  native-work-e2e:
+    name: Native provider and real Work recovery
+    if: github.repository == 'ArcheLabs/minijam-client'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout requested MiniJAM source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+
+      - name: Check Jambda App configuration
+        env:
+          JAMBDA_APP_CLIENT_ID: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          JAMBDA_APP_PRIVATE_KEY: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+        run: |
+          test -n "${JAMBDA_APP_CLIENT_ID}"
+          test -n "${JAMBDA_APP_PRIVATE_KEY}"
+
+      - name: Read pinned Jambda commit
+        id: jambda-pin
+        run: |
+          jambda_sha="$(git ls-tree HEAD external/jambda | awk '{print $3}')"
+          [[ "${jambda_sha}" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=${jambda_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create Jambda token
+        id: jambda-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+          owner: ArcheLabs
+          repositories: jambda
+          permission-contents: read
+
+      - name: Checkout pinned Jambda
+        uses: actions/checkout@v7
+        with:
+          repository: ArcheLabs/jambda
+          ref: ${{ steps.jambda-pin.outputs.sha }}
+          token: ${{ steps.jambda-token.outputs.token }}
+          path: external/jambda
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify pinned Jambda checkout
+        run: ./scripts/check-submodule.sh
+
+      - name: Run complete Rust verification
+        run: |
+          cargo test --workspace --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Build native provider binaries
+        run: cargo build --locked -p minijam-node -p minijam-formal-rpc -p minijam-worker
+
+      - name: Run native lifecycle acceptance
+        env:
+          MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
+          MINIJAM_NATIVE_NODE_BIN: ${{ github.workspace }}/target/debug/minijam-node
+          MINIJAM_NATIVE_FORMAL_RPC_BIN: ${{ github.workspace }}/target/debug/minijam-formal-rpc
+          MINIJAM_NATIVE_WORKER_BIN: ${{ github.workspace }}/target/debug/minijam-worker
+          MINIJAM_SKIP_BUILD: '1'
+        run: ./scripts/test-stage1-native-local-lifecycle.sh
+
+      - name: Run native real Work E2E
+        env:
+          MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
+          MINIJAM_NATIVE_WORK_E2E_ARTIFACT_DIR: ${{ github.workspace }}/.stage1-native-work-artifacts
+        run: ./scripts/test-stage1-native-work-e2e.sh
+
+      - name: Run native provider recovery acceptance
+        env:
+          MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
+          MINIJAM_NATIVE_WORK_E2E_ARTIFACT_DIR: ${{ github.workspace }}/.stage1-native-work-artifacts
+        run: ./scripts/test-stage1-native-work-recovery.sh
+
+      - name: Upload native Work diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: minijam-stage1-native-work-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            .stage1-native-work-artifacts/
+            target/stage1-native-local/logs/
+
+  docker-work-e2e:
+    name: Three-worker Docker Work E2E
+    if: github.repository == 'ArcheLabs/minijam-client' && inputs.run_docker
+    needs: native-work-e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout requested MiniJAM source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+
+      - name: Check Jambda App configuration
+        env:
+          JAMBDA_APP_CLIENT_ID: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          JAMBDA_APP_PRIVATE_KEY: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+        run: |
+          test -n "${JAMBDA_APP_CLIENT_ID}"
+          test -n "${JAMBDA_APP_PRIVATE_KEY}"
+
+      - name: Read pinned Jambda commit
+        id: jambda-pin
+        run: |
+          jambda_sha="$(git ls-tree HEAD external/jambda | awk '{print $3}')"
+          [[ "${jambda_sha}" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=${jambda_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create Jambda token
+        id: jambda-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+          owner: ArcheLabs
+          repositories: jambda
+          permission-contents: read
+
+      - name: Checkout pinned Jambda
+        uses: actions/checkout@v7
+        with:
+          repository: ArcheLabs/jambda
+          ref: ${{ steps.jambda-pin.outputs.sha }}
+          token: ${{ steps.jambda-token.outputs.token }}
+          path: external/jambda
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build local Work E2E images
+        run: |
+          for role in node worker formal-rpc; do
+            docker build --target "${role}" \
+              -f deploy/stage1/Dockerfile \
+              -t "minijam-${role}:stage1-work-e2e" .
+          done
+
+      - name: Prepare local Docker credentials and chain spec
+        env:
+          NODE_IMAGE: minijam-node:stage1-work-e2e
+        run: |
+          node_key="$(docker run --rm --network=none "${NODE_IMAGE}" key generate-node-key | tr -d '\r\n')"
+          relayer_uri="0x$(openssl rand -hex 32)"
+          relayer_public_key="$(docker run --rm --network=none "${NODE_IMAGE}" key inspect "${relayer_uri}" \
+            | sed -nE 's/^[[:space:]]*Public key \(hex\):[[:space:]]*(0x[0-9a-fA-F]{64})[[:space:]]*$/\1/p' \
+            | head -n1)"
+          [[ "${node_key}" =~ ^(0x)?[0-9a-fA-F]{64}$ ]]
+          [[ "${relayer_public_key}" =~ ^0x[0-9a-fA-F]{64}$ ]]
+          MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY="${relayer_public_key}" \
+          MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY="${relayer_public_key}" \
+            docker run --rm --network=none \
+              -e MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY \
+              -e MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY \
+              "${NODE_IMAGE}" build-spec --chain stage1-work-e2e > chain-specs.stage1-work-e2e.json
+          test "$(jq -r '.id' chain-specs.stage1-work-e2e.json)" = minijam_stage1_work_e2e
+          {
+            echo "MINIJAM_NODE_NETWORK_KEY=${node_key}"
+            echo "MINIJAM_FORMAL_RPC_RELAYER_URI=${relayer_uri}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Run Docker real Work E2E
+        env:
+          MINIJAM_NODE_IMAGE: minijam-node:stage1-work-e2e
+          MINIJAM_WORKER_IMAGE: minijam-worker:stage1-work-e2e
+          MINIJAM_FORMAL_RPC_IMAGE: minijam-formal-rpc:stage1-work-e2e
+          MINIJAM_STAGE1_WORK_E2E_CHAIN_SPEC_FILE: ${{ github.workspace }}/chain-specs.stage1-work-e2e.json
+          MINIJAM_DOCKER_WORK_E2E_ARTIFACT_DIR: ${{ github.workspace }}/.stage1-docker-work-artifacts
+        run: ./scripts/test-stage1-docker-work-e2e.sh
+
+      - name: Upload Docker Work diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: minijam-stage1-docker-work-${{ github.sha }}
+          if-no-files-found: warn
+          path: .stage1-docker-work-artifacts/

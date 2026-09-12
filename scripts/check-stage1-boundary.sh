@@ -42,6 +42,22 @@ if grep -RFn -- 'stage1-e2e' \
   echo 'Stage-1 release or deployment path must not use the E2E chain spec' >&2
   exit 1
 fi
+for production_file in \
+  "$root/deploy/stage1/compose.compact.yml" \
+  "$root/deploy/stage1/compose.split.yml" \
+  "$root/deploy/stage1/Dockerfile" \
+  "$root/.github/workflows/stage1-release.yml"; do
+  if grep -Fq 'stage1-work-e2e' "${production_file}"; then
+    echo "production path references the local-only stage1-work-e2e profile: ${production_file}" >&2
+    exit 1
+  fi
+done
+grep -Fq -- '--chain=/chain-specs/stage1-work-e2e.json' \
+  "$root/deploy/stage1/compose.work-e2e.yml"
+for worker_service in worker-0: worker-1: worker-2:; do
+  grep -Eq "^[[:space:]]*${worker_service}" "$root/deploy/stage1/compose.work-e2e.yml"
+done
+printf 'STAGE1_WORK_E2E_LOCAL_ONLY=PASS\n'
 printf 'COMPACT_RPC_HOST_BOUNDARY=PASS\n'
 printf 'COMPACT_NODE_EDGE=PASS\n'
 printf 'RPC_METHODS_SAFE=PASS\n'

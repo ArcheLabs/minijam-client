@@ -3,8 +3,16 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 RUNTIME="${MINIJAM_NATIVE_LOCAL_RUNTIME:-${ROOT}/target/stage1-native-local}"
-NODE_RPC="${MINIJAM_NODE_RPC:-http://127.0.0.1:9944}"
-FORMAL_URL="${MINIJAM_FORMAL_RPC_URL:-http://127.0.0.1:8090}"
+NODE_PORT="${MINIJAM_NATIVE_NODE_RPC_PORT:-9944}"
+FORMAL_PORT="${MINIJAM_NATIVE_FORMAL_RPC_PORT:-8090}"
+NODE_RPC="${MINIJAM_NODE_RPC:-http://127.0.0.1:${NODE_PORT}}"
+FORMAL_URL="${MINIJAM_FORMAL_RPC_URL:-http://127.0.0.1:${FORMAL_PORT}}"
+WORKER_HEALTH_BASE_PORT="${MINIJAM_NATIVE_WORKER_HEALTH_BASE_PORT:-8082}"
+WORKER_IDS=(0 1 2)
+
+for command in curl jq; do
+  command -v "${command}" >/dev/null 2>&1 || { echo "${command} is required" >&2; exit 127; }
+done
 
 rpc_call() {
   local method="$1" params="${2:-[]}"
@@ -22,12 +30,27 @@ block_number() {
   esac
 }
 
+process_alive() {
+  local file="$1" pid
+  [[ -s "${file}" ]] || return 1
+  pid="$(<"${file}")"
+  [[ "${pid}" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "${pid}" 2>/dev/null
+}
+
+worker_health() {
+  local worker_id="$1"
+  curl -fsS --max-time 5 \
+    "http://127.0.0.1:$((WORKER_HEALTH_BASE_PORT + worker_id))/health/ready" 2>/dev/null
+}
+
 node_ok=0
 best=unknown
 finalized=unknown
-if [[ -s "${RUNTIME}/node.pid" ]] && kill -0 "$(<"${RUNTIME}/node.pid")" 2>/dev/null; then
+if process_alive "${RUNTIME}/node.pid"; then
   printf 'NODE_PROCESS=RUNNING\n'
-  if health="$(rpc_call system_health 2>/dev/null)" && jq -e '.result != null and .error == null' <<<"${health}" >/dev/null; then
+  if health="$(rpc_call system_health 2>/dev/null)" \
+    && jq -e '.result != null and .error == null' <<<"${health}" >/dev/null; then
     node_ok=1
     printf 'NODE_RPC=PASS\n'
     best_hex="$(rpc_call chain_getHeader 2>/dev/null | jq -er '.result.number' 2>/dev/null || true)"
@@ -48,7 +71,7 @@ printf 'BEST_BLOCK=%s\n' "${best}"
 printf 'FINALIZED_BLOCK=%s\n' "${finalized}"
 
 formal_ok=0
-if [[ -s "${RUNTIME}/formal-rpc.pid" ]] && kill -0 "$(<"${RUNTIME}/formal-rpc.pid")" 2>/dev/null; then
+if process_alive "${RUNTIME}/formal-rpc.pid"; then
   printf 'FORMAL_RPC_PROCESS=RUNNING\n'
   if response="$(curl -fsS --max-time 5 "${FORMAL_URL}/health/ready" 2>/dev/null)" \
     && jq -e '.status == "ready"' <<<"${response}" >/dev/null; then
@@ -62,7 +85,29 @@ else
   printf 'FORMAL_RPC_READY=FAIL\n'
 fi
 
-if (( node_ok == 1 && formal_ok == 1 )); then
+worker_ok=1
+for worker_id in "${WORKER_IDS[@]}"; do
+  if process_alive "${RUNTIME}/worker-${worker_id}.pid"; then
+    printf 'WORKER_%s_PROCESS=RUNNING\n' "${worker_id}"
+  else
+    worker_ok=0
+    printf 'WORKER_%s_PROCESS=STOPPED\n' "${worker_id}"
+  fi
+  if response="$(worker_health "${worker_id}" 2>/dev/null)" && [[ "${response}" == *ready* ]]; then
+    printf 'WORKER_%s_HEALTH=PASS\n' "${worker_id}"
+  else
+    worker_ok=0
+    printf 'WORKER_%s_HEALTH=FAIL\n' "${worker_id}"
+  fi
+  if grep -q 'minijam worker poll completed' "${RUNTIME}/logs/worker-${worker_id}.log" 2>/dev/null; then
+    printf 'WORKER_%s_NODE_POLL=PASS\n' "${worker_id}"
+  else
+    worker_ok=0
+    printf 'WORKER_%s_NODE_POLL=FAIL\n' "${worker_id}"
+  fi
+done
+
+if (( node_ok == 1 && formal_ok == 1 && worker_ok == 1 )); then
   printf 'MINIJAM_LOCAL_NETWORK=READY\n'
 else
   printf 'MINIJAM_LOCAL_NETWORK=NOT_READY\n'

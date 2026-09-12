@@ -195,6 +195,16 @@ fn stage0_endowed_accounts() -> Vec<AccountId> {
         .collect()
 }
 
+fn stage1_work_e2e_endowed_accounts() -> Vec<AccountId> {
+    let mut accounts = stage0_endowed_accounts();
+    for (account, _, _) in development_workers() {
+        if !accounts.iter().any(|endowed| endowed == &account) {
+            accounts.push(account);
+        }
+    }
+    accounts
+}
+
 pub(crate) fn system_service_zero_protocol_state() -> Vec<(Vec<u8>, Vec<u8>)> {
     system_service_genesis_state(SystemServiceGenesisConfig {
         code_blob: SYSTEM_SERVICE_BLOB.to_vec(),
@@ -297,6 +307,29 @@ pub fn stage1_e2e_config_genesis(
         stage0_endowed_accounts(),
         AccountId::new(STAGE0_SUDO_ACCOUNT),
         stage0_workers(),
+        ingress_relayer,
+        allocation_relayer,
+    )
+}
+
+/// Local/CI-only Stage-1 Work E2E genesis.
+///
+/// The production Stage-1 authorities, protocol state, and worker stake are
+/// unchanged. Only consensus uses Alice and the worker registry uses the
+/// deterministic Alice/Bob/Charlie development identities so all three local
+/// daemons can execute the real Work path without production credentials.
+pub fn stage1_work_e2e_config_genesis(
+    ingress_relayer: AccountId,
+    allocation_relayer: AccountId,
+) -> Value {
+    testnet_genesis(
+        vec![(
+            Sr25519Keyring::Alice.public().into(),
+            sp_keyring::Ed25519Keyring::Alice.public().into(),
+        )],
+        stage1_work_e2e_endowed_accounts(),
+        AccountId::new(STAGE0_SUDO_ACCOUNT),
+        development_workers(),
         ingress_relayer,
         allocation_relayer,
     )
@@ -520,6 +553,64 @@ mod tests {
         remove_consensus_authorities(&mut production);
         remove_consensus_authorities(&mut e2e);
         assert_eq!(production, e2e);
+    }
+
+    #[test]
+    fn stage1_work_e2e_uses_real_protocol_state_and_development_workers() {
+        let ingress = AccountId::new([0x11; 32]);
+        let allocation = AccountId::new([0x22; 32]);
+        let production = stage1_config_genesis(ingress.clone(), allocation.clone());
+        let e2e = stage1_work_e2e_config_genesis(ingress, allocation);
+
+        assert_eq!(
+            field(
+                section(&e2e, "mini_jam", "miniJam"),
+                "protocol_state",
+                "protocolState"
+            ),
+            field(
+                section(&production, "mini_jam", "miniJam"),
+                "protocol_state",
+                "protocolState"
+            )
+        );
+        assert_eq!(
+            field(
+                section(&e2e, "mini_jam", "miniJam"),
+                "service_fuel",
+                "serviceFuel"
+            ),
+            &Value::Array(Vec::new())
+        );
+
+        let workers = field(
+            section(&e2e, "mini_jam_workers", "miniJamWorkers"),
+            "workers",
+            "workers",
+        );
+        let expected_workers =
+            serde_json::to_value(development_workers().into_iter().collect::<Vec<_>>())
+                .expect("development workers must serialize");
+        assert_eq!(workers, &expected_workers);
+
+        let balances = field(
+            section(&e2e, "balances", "balances"),
+            "balances",
+            "balances",
+        )
+        .as_array()
+        .expect("balances must be a JSON array");
+        for (account, _, _) in development_workers() {
+            let account = serde_json::to_value(account).expect("worker account must serialize");
+            assert!(
+                balances.iter().any(|entry| {
+                    entry
+                        .as_array()
+                        .is_some_and(|pair| pair.first() == Some(&account))
+                }),
+                "development worker must be explicitly endowed"
+            );
+        }
     }
 
     #[test]

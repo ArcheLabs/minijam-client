@@ -39,6 +39,7 @@ impl SubstrateCli for Cli {
             "stage0" => Box::new(chain_spec::stage0_chain_spec()?),
             "stage1" => Box::new(chain_spec::stage1_chain_spec()?),
             "stage1-e2e" => Box::new(chain_spec::stage1_e2e_chain_spec()?),
+            "stage1-work-e2e" => Box::new(chain_spec::stage1_work_e2e_chain_spec()?),
             path => Box::new(chain_spec::ChainSpec::from_json_file(
                 std::path::PathBuf::from(path),
             )?),
