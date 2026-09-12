@@ -75,6 +75,43 @@ jobs:
       - name: Verify pinned Jambda checkout
         run: ./scripts/check-submodule.sh
 
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            libclang-dev \
+            llvm \
+            llvm-dev \
+            protobuf-compiler
+
+          clang --version
+          llvm_config="$(command -v llvm-config || true)"
+          if [[ -z "${llvm_config}" ]]; then
+            llvm_config="$(find /usr/bin -maxdepth 1 -type f -name 'llvm-config-*' | sort -V | tail -n1)"
+          fi
+          test -n "${llvm_config}"
+          "${llvm_config}" --version
+          protoc --version
+
+          libclang_path="$("${llvm_config}" --libdir 2>/dev/null || true)"
+          if [[ -z "${libclang_path}" || ! -d "${libclang_path}" ]] || ! find "${libclang_path}" -maxdepth 1 \
+            \( -type f -o -type l \) \( -name 'libclang.so' -o -name 'libclang-*.so*' \) \
+            -print -quit 2>/dev/null | grep -q .; then
+            libclang_file="$(find /usr/lib /usr/local/lib \
+              \( -type f -o -type l \) \
+              \( -name 'libclang.so' -o -name 'libclang-*.so*' \) \
+              -print -quit 2>/dev/null)"
+            test -n "${libclang_file}"
+            libclang_path="$(dirname "${libclang_file}")"
+          fi
+          test -n "${libclang_path}"
+          test -d "${libclang_path}"
+          echo "LIBCLANG_PATH=${libclang_path}" >> "${GITHUB_ENV}"
+          echo "LLVM_CONFIG_PATH=${llvm_config}" >> "${GITHUB_ENV}"
+
+          printf 'NATIVE_BUILD_DEPENDENCIES=PASS\n'
+
       - name: Run complete Rust verification
         run: |
           cargo test --workspace --locked
@@ -92,6 +129,18 @@ jobs:
           MINIJAM_SKIP_BUILD: '1'
         run: ./scripts/test-stage1-native-local-lifecycle.sh
 
+      - name: Start native provider for Work acceptance
+        env:
+          MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
+          MINIJAM_NATIVE_NODE_BIN: ${{ github.workspace }}/target/debug/minijam-node
+          MINIJAM_NATIVE_FORMAL_RPC_BIN: ${{ github.workspace }}/target/debug/minijam-formal-rpc
+          MINIJAM_NATIVE_WORKER_BIN: ${{ github.workspace }}/target/debug/minijam-worker
+          MINIJAM_SKIP_BUILD: '1'
+        run: |
+          ./scripts/stage1-native-local-up.sh | tee /tmp/minijam-native-up.log
+          grep -Eq '^MINIJAM_LOCAL_NETWORK=(READY|ALREADY_RUNNING)$' \
+            /tmp/minijam-native-up.log
+
       - name: Run native real Work E2E
         env:
           MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
@@ -103,6 +152,12 @@ jobs:
           MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
           MINIJAM_NATIVE_WORK_E2E_ARTIFACT_DIR: ${{ github.workspace }}/.stage1-native-work-artifacts
         run: ./scripts/test-stage1-native-work-recovery.sh
+
+      - name: Stop native provider
+        if: always()
+        env:
+          MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
+        run: ./scripts/stage1-native-local-down.sh || true
 
       - name: Upload native Work diagnostics
         if: failure()
