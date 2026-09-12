@@ -129,6 +129,18 @@ jobs:
           MINIJAM_SKIP_BUILD: '1'
         run: ./scripts/test-stage1-native-local-lifecycle.sh
 
+      - name: Start native provider for Work acceptance
+        env:
+          MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
+          MINIJAM_NATIVE_NODE_BIN: ${{ github.workspace }}/target/debug/minijam-node
+          MINIJAM_NATIVE_FORMAL_RPC_BIN: ${{ github.workspace }}/target/debug/minijam-formal-rpc
+          MINIJAM_NATIVE_WORKER_BIN: ${{ github.workspace }}/target/debug/minijam-worker
+          MINIJAM_SKIP_BUILD: '1'
+        run: |
+          ./scripts/stage1-native-local-up.sh | tee /tmp/minijam-native-up.log
+          grep -Eq '^MINIJAM_LOCAL_NETWORK=(READY|ALREADY_RUNNING)$' \
+            /tmp/minijam-native-up.log
+
       - name: Run native real Work E2E
         env:
           MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
@@ -140,6 +152,12 @@ jobs:
           MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
           MINIJAM_NATIVE_WORK_E2E_ARTIFACT_DIR: ${{ github.workspace }}/.stage1-native-work-artifacts
         run: ./scripts/test-stage1-native-work-recovery.sh
+
+      - name: Stop native provider
+        if: always()
+        env:
+          MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
+        run: ./scripts/stage1-native-local-down.sh || true
 
       - name: Upload native Work diagnostics
         if: failure()
