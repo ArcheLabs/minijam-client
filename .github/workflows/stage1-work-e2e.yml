@@ -75,6 +75,38 @@ jobs:
       - name: Verify pinned Jambda checkout
         run: ./scripts/check-submodule.sh
 
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            libclang-dev \
+            protobuf-compiler
+
+          clang --version
+          protoc --version
+
+          libclang_path="$(
+            find /usr/lib \
+              -type f -o -type l 2>/dev/null \
+              | grep -E '/libclang(-[0-9]+)?\.so(\.[0-9]+)*$' \
+              | head -n1 \
+              | xargs -r dirname
+          )"
+          test -n "${libclang_path}"
+          echo "LIBCLANG_PATH=${libclang_path}" >> "${GITHUB_ENV}"
+
+          if command -v llvm-config >/dev/null 2>&1; then
+            echo "LLVM_CONFIG_PATH=$(command -v llvm-config)" >> "${GITHUB_ENV}"
+          else
+            llvm_config="$(find /usr/bin -maxdepth 1 -type f -name 'llvm-config-*' | sort -V | tail -n1)"
+            if [[ -n "${llvm_config}" ]]; then
+              echo "LLVM_CONFIG_PATH=${llvm_config}" >> "${GITHUB_ENV}"
+            fi
+          fi
+
+          printf 'NATIVE_BUILD_DEPENDENCIES=PASS\n'
+
       - name: Run complete Rust verification
         run: |
           cargo test --workspace --locked
