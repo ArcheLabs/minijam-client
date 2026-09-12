@@ -1,6 +1,7 @@
 .git
 target
 **/target
+external/jambda/jam-conformance/fuzz-reports
 **/node_modules
 .stage1-native-bin
 .stage1-native-artifacts

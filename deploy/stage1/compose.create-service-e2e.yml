@@ -1,0 +1,11 @@
+services:
+  node:
+    command:
+      - --chain=/chain-specs/stage1.json
+      - --base-path=/data
+      - --node-key-file=/run/secrets/node_network_key
+      - --alice
+      - --force-authoring
+      - --unsafe-rpc-external
+      - --rpc-methods=safe
+      - --rpc-cors=all

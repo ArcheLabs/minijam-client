@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 COMPOSE_FILE="${MINIJAM_STAGE1_COMPOSE_FILE:-${ROOT}/deploy/stage1/compose.compact.yml}"
+COMPOSE_OVERRIDE_FILE="${MINIJAM_STAGE1_COMPOSE_OVERRIDE_FILE:-}"
 PROJECT="${MINIJAM_STAGE1_SMOKE_PROJECT:-minijam-stage1-smoke}"
 CHAIN_SPEC="${MINIJAM_STAGE1_CHAIN_SPEC_FILE:?set the Stage-1 chain-spec file}"
 NODE_IMAGE="${MINIJAM_NODE_IMAGE:?set the exact Stage-1 node image reference}"
@@ -19,6 +20,9 @@ docker info >/dev/null
 
 CHAIN_SPEC="$(realpath "${CHAIN_SPEC}")"
 compose=(docker compose --project-name "${PROJECT}" -f "${COMPOSE_FILE}")
+if [[ -n "${COMPOSE_OVERRIDE_FILE}" ]]; then
+  compose+=( -f "${COMPOSE_OVERRIDE_FILE}" )
+fi
 
 cleanup() {
   if (( ${KEEP_STAGE1_SMOKE_STACK:-0} != 1 )); then
