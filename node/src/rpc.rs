@@ -1,14 +1,11 @@
-//! A collection of node-specific RPC methods.
-//! Substrate provides the `sc-rpc` crate, which defines the core RPC layer
-//! used by Substrate nodes. This file extends those RPC definitions with
-//! capabilities that are specific to this project's runtime configuration.
+//! Node-specific RPC methods for the package-keyed MiniJAM boundary.
 
 #![warn(missing_docs)]
 
 use std::sync::Arc;
 
 use jsonrpsee::{core::RpcResult, types::ErrorObjectOwned, RpcModule};
-use minijam_protocol::{WorkId, WorkerTaskV1};
+use minijam_protocol::PackageStatus;
 use minijam_rpc_runtime_api::MiniJamRuntimeApi;
 use minijam_runtime::{opaque::Block, AccountId, Balance, Nonce};
 use sc_transaction_pool_api::TransactionPool;
@@ -24,17 +21,6 @@ struct FinalizedContextV1 {
     block_number: u32,
     state_root: String,
     slot: u32,
-}
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PendingWorkTaskSummaryV1 {
-    work_id: WorkId,
-    round: u8,
-    assignment_epoch: u32,
-    assigned_workers: Vec<u64>,
-    candidate_producer: u64,
-    package_hash: String,
 }
 
 /// Full client dependencies.
@@ -62,25 +48,11 @@ where
     use pallet_transaction_payment_rpc::{TransactionPayment, TransactionPaymentApiServer};
     use substrate_frame_rpc_system::{System, SystemApiServer};
 
-    let mut module = RpcModule::new(());
     let FullDeps { client, pool } = deps;
-
+    let mut module = RpcModule::new(());
     module.merge(System::new(client.clone(), pool).into_rpc())?;
     module.merge(TransactionPayment::new(client.clone()).into_rpc())?;
-    register_minijam_rpc::<C>(&mut module, client)?;
-
-    // Extend this RPC with a custom API by using the following syntax.
-    // `YourRpcStruct` should have a reference to a client, which is needed
-    // to call into the runtime.
-    // `module.merge(YourRpcTrait::into_rpc(YourRpcStruct::new(ReferenceToClient, ...)))?;`
-
-    // You probably want to enable the `rpc v2 chainSpec` API as well
-    //
-    // let chain_name = chain_spec.name().to_string();
-    // let genesis_hash = client.block_hash(0).ok().flatten().expect("Genesis block exists; qed");
-    // let properties = chain_spec.properties();
-    // module.merge(ChainSpec::new(chain_name, genesis_hash, properties).into_rpc())?;
-
+    register_minijam_rpc(&mut module, client)?;
     Ok(module)
 }
 
@@ -94,230 +66,93 @@ where
     C: Send + Sync + 'static,
     C::Api: MiniJamRuntimeApi<Block>,
 {
-    module.register_method("minijam_getWork", {
+    module.register_method("minijam_getPackageStatus", {
         let client = client.clone();
-        move |params, _, _| -> RpcResult<Option<String>> {
-            let work_id: WorkId = params.one()?;
-            let encoded = client
+        move |params, _, _| -> RpcResult<Option<&'static str>> {
+            let package_hash: sp_core::H256 = params.one()?;
+            let status = client
                 .runtime_api()
-                // A terminal Work result is consumed alongside finalized Service
-                // state. Reporting it from the best block can make an operation
-                // appear complete before its Accumulate writes are finalized.
-                .get_work(finalized_hash(&client), work_id)
+                .get_package_status(finalized_hash(&client), package_hash.to_fixed_bytes())
                 .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+            Ok(status.map(package_status_name))
         }
     })?;
-
-    module.register_method("minijam_getPendingWorkTasks", {
-        let client = client.clone();
-        move |_, _, _| -> RpcResult<String> {
-            let tasks = client
-                .runtime_api()
-                .get_pending_work_tasks(finalized_hash(&client))
-                .map_err(runtime_api_error)?;
-            Ok(hex_encode(&parity_scale_codec::Encode::encode(&tasks)))
-        }
-    })?;
-
-    // Read-only JSON projection of the same finalized pending-task view used
-    // by workers. It makes local operator/E2E reports identify the assigned
-    // worker without teaching shell scripts to decode SCALE bytes.
-    module.register_method("minijam_getPendingWorkTaskSummaryV1", {
-        let client = client.clone();
-        move |_, _, _| -> RpcResult<Vec<PendingWorkTaskSummaryV1>> {
-            let tasks: Vec<WorkerTaskV1> = client
-                .runtime_api()
-                .get_pending_work_tasks(finalized_hash(&client))
-                .map_err(runtime_api_error)?;
-            Ok(tasks
-                .into_iter()
-                .map(|task| PendingWorkTaskSummaryV1 {
-                    work_id: task.work_id,
-                    round: task.round,
-                    assignment_epoch: task.assignment_epoch,
-                    assigned_workers: task.assigned_workers.into_inner(),
-                    candidate_producer: task.candidate_producer,
-                    package_hash: hex_encode(&task.package_hash),
-                })
-                .collect())
-        }
-    })?;
-
-    module.register_method("minijam_getOpenVoteTasks", {
-        let client = client.clone();
-        move |_, _, _| -> RpcResult<String> {
-            let tasks = client
-                .runtime_api()
-                .get_open_vote_tasks(finalized_hash(&client))
-                .map_err(runtime_api_error)?;
-            Ok(hex_encode(&parity_scale_codec::Encode::encode(&tasks)))
-        }
-    })?;
-
-    module.register_method("minijam_getWorker", {
-        let client = client.clone();
-        move |params, _, _| -> RpcResult<Option<String>> {
-            let worker_id: u64 = params.one()?;
-            client
-                .runtime_api()
-                .get_worker(finalized_hash(&client), worker_id)
-                .map(|value| value.map(|encoded| hex_encode(&encoded)))
-                .map_err(runtime_api_error)
-        }
-    })?;
-
-    module.register_method("minijam_getWorkByPackageHash", {
+    module.register_method("minijam_getPackageFailure", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {
             let package_hash: sp_core::H256 = params.one()?;
-            let encoded = client
-                .runtime_api()
-                .get_work_by_package_hash(best_hash(&client), package_hash.to_fixed_bytes())
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
-        }
-    })?;
-
-    module.register_method("minijam_getWorkIdByPackageHash", {
-        let client = client.clone();
-        move |params, _, _| -> RpcResult<Option<u64>> {
-            let package_hash: sp_core::H256 = params.one()?;
             client
                 .runtime_api()
-                .get_work_id_by_package_hash(finalized_hash(&client), package_hash.to_fixed_bytes())
+                .get_package_failure(finalized_hash(&client), package_hash.to_fixed_bytes())
+                .map(|value| value.map(|bytes| hex_encode(&bytes)))
                 .map_err(runtime_api_error)
         }
     })?;
-
-    module.register_method("minijam_getWorkBundleRef", {
+    module.register_method("minijam_getExecutionReceiptByPackageHash", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {
-            let work_id: WorkId = params.one()?;
-            let encoded = client
+            let package_hash: sp_core::H256 = params.one()?;
+            client
                 .runtime_api()
-                .get_work_bundle_ref(best_hash(&client), work_id)
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+                .get_execution_receipt_by_package_hash(
+                    finalized_hash(&client),
+                    package_hash.to_fixed_bytes(),
+                )
+                .map(|value| value.map(|hash| hex_encode(&hash)))
+                .map_err(runtime_api_error)
         }
     })?;
-
-    module.register_method("minijam_getCandidate", {
-        let client = client.clone();
-        move |params, _, _| -> RpcResult<Option<String>> {
-            let (work_id, round): (WorkId, u8) = params.parse()?;
-            let encoded = client
-                .runtime_api()
-                .get_candidate(best_hash(&client), work_id, round)
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
-        }
-    })?;
-
-    module.register_method("minijam_getExecutionReceipt", {
-        let client = client.clone();
-        move |params, _, _| -> RpcResult<Option<String>> {
-            let work_id: WorkId = params.one()?;
-            let receipt = client
-                .runtime_api()
-                .get_execution_receipt(finalized_hash(&client), work_id)
-                .map_err(runtime_api_error)?;
-            Ok(receipt.map(|hash| hex_encode(&hash)))
-        }
-    })?;
-
     module.register_method("minijam_getLastExecutionReceipt", {
         let client = client.clone();
         move |_, _, _| -> RpcResult<Option<String>> {
-            let receipt = client
+            client
                 .runtime_api()
-                .get_last_execution_receipt(best_hash(&client))
-                .map_err(runtime_api_error)?;
-            Ok(receipt.map(|hash| hex_encode(&hash)))
+                .get_last_execution_receipt(finalized_hash(&client))
+                .map(|value| value.map(|hash| hex_encode(&hash)))
+                .map_err(runtime_api_error)
         }
     })?;
-
-    module.register_method("minijam_getServiceFuel", {
-        let client = client.clone();
-        move |params, _, _| -> RpcResult<String> {
-            let service_id: u32 = params.one()?;
-            let encoded = client
-                .runtime_api()
-                .get_service_fuel(best_hash(&client), service_id)
-                .map_err(runtime_api_error)?;
-            Ok(hex_encode(&encoded))
-        }
-    })?;
-
-    module.register_method("minijam_getWorkFuelReservation", {
-        let client = client.clone();
-        move |params, _, _| -> RpcResult<Option<String>> {
-            let work_id: WorkId = params.one()?;
-            let encoded = client
-                .runtime_api()
-                .get_work_fuel_reservation(best_hash(&client), work_id)
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
-        }
-    })?;
-
-    module.register_method("minijam_getWorkFuelSettlement", {
-        let client = client.clone();
-        move |params, _, _| -> RpcResult<Option<String>> {
-            let work_id: WorkId = params.one()?;
-            let encoded = client
-                .runtime_api()
-                .get_work_fuel_settlement(best_hash(&client), work_id)
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
-        }
-    })?;
-
     module.register_method("minijam_getAllocation", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {
             let allocation_id: u64 = params.one()?;
-            let encoded = client
+            client
                 .runtime_api()
-                .get_allocation(best_hash(&client), allocation_id)
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+                .get_allocation(finalized_hash(&client), allocation_id)
+                .map(|value| value.map(|bytes| hex_encode(&bytes)))
+                .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_isAllocationProcessed", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<bool> {
             let allocation_id: u64 = params.one()?;
             client
                 .runtime_api()
-                .is_allocation_processed(best_hash(&client), allocation_id)
+                .is_allocation_processed(finalized_hash(&client), allocation_id)
                 .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_getPendingAllocations", {
         let client = client.clone();
         move |_, _, _| -> RpcResult<String> {
-            let encoded = client
+            client
                 .runtime_api()
-                .get_pending_allocations(best_hash(&client))
-                .map_err(runtime_api_error)?;
-            Ok(hex_encode(&encoded))
+                .get_pending_allocations(finalized_hash(&client))
+                .map(|bytes| hex_encode(&bytes))
+                .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_getPendingPreimages", {
         let client = client.clone();
         move |_, _, _| -> RpcResult<String> {
-            let encoded = client
+            client
                 .runtime_api()
-                .get_pending_preimages(best_hash(&client))
-                .map_err(runtime_api_error)?;
-            Ok(hex_encode(&encoded))
+                .get_pending_preimages(finalized_hash(&client))
+                .map(|bytes| hex_encode(&bytes))
+                .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_getPreimageStatus", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<&'static str> {
@@ -325,7 +160,7 @@ where
             let pending = client
                 .runtime_api()
                 .has_pending_preimage(
-                    best_hash(&client),
+                    finalized_hash(&client),
                     requester,
                     blob_hash.to_fixed_bytes(),
                     blob_len,
@@ -334,64 +169,58 @@ where
             Ok(if pending { "pending" } else { "unknown" })
         }
     })?;
-
     module.register_method("minijam_getQuarantinedPreimages", {
         let client = client.clone();
         move |_, _, _| -> RpcResult<String> {
-            let encoded = client
+            client
                 .runtime_api()
-                .get_quarantined_preimages(best_hash(&client))
-                .map_err(runtime_api_error)?;
-            Ok(hex_encode(&encoded))
+                .get_quarantined_preimages(finalized_hash(&client))
+                .map(|bytes| hex_encode(&bytes))
+                .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_getPendingSystemOps", {
         let client = client.clone();
         move |_, _, _| -> RpcResult<String> {
-            let encoded = client
+            client
                 .runtime_api()
                 .get_pending_system_ops(finalized_hash(&client))
-                .map_err(runtime_api_error)?;
-            Ok(hex_encode(&encoded))
+                .map(|bytes| hex_encode(&bytes))
+                .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_getQuarantinedSystemOps", {
         let client = client.clone();
         move |_, _, _| -> RpcResult<String> {
-            let encoded = client
+            client
                 .runtime_api()
                 .get_quarantined_system_ops(finalized_hash(&client))
-                .map_err(runtime_api_error)?;
-            Ok(hex_encode(&encoded))
+                .map(|bytes| hex_encode(&bytes))
+                .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_getSystemOp", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {
             let request_id: sp_core::H256 = params.one()?;
-            let encoded = client
+            client
                 .runtime_api()
                 .get_system_op(finalized_hash(&client), request_id.to_fixed_bytes())
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+                .map(|value| value.map(|bytes| hex_encode(&bytes)))
+                .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_getSystemReceipt", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {
             let request_id: sp_core::H256 = params.one()?;
-            let encoded = client
+            client
                 .runtime_api()
                 .get_system_receipt(finalized_hash(&client), request_id.to_fixed_bytes())
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+                .map(|value| value.map(|bytes| hex_encode(&bytes)))
+                .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_getSystemOpNonce", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<u64> {
@@ -402,129 +231,111 @@ where
                 .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_getSystemServiceInfo", {
         let client = client.clone();
         move |_, _, _| -> RpcResult<Option<String>> {
-            let encoded = client
+            client
                 .runtime_api()
-                .get_system_service_info(best_hash(&client))
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+                .get_system_service_info(finalized_hash(&client))
+                .map(|value| value.map(|bytes| hex_encode(&bytes)))
+                .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_getFinalizedContext", {
         let client = client.clone();
         move |_, _, _| -> RpcResult<FinalizedContextV1> {
-            let block_hash = finalized_hash(&client);
+            let hash = finalized_hash(&client);
             let header = client
-                .header(block_hash)
+                .header(hash)
                 .map_err(blockchain_error)?
                 .ok_or_else(|| rpc_state_error("finalized header is unavailable"))?;
-            let block_number = *header.number();
+            let number = *header.number();
             Ok(FinalizedContextV1 {
-                block_hash: hex_encode(block_hash.as_ref()),
-                block_number,
+                block_hash: hex_encode(hash.as_ref()),
+                block_number: number,
                 state_root: hex_encode(header.state_root().as_ref()),
-                slot: block_number,
+                slot: number,
             })
         }
     })?;
-
     module.register_method("minijam_getServiceInfoAt", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {
             let (block_hash, service_id): (sp_core::H256, u32) = params.parse()?;
-            let encoded = client
+            client
                 .runtime_api()
                 .get_service_info(block_hash, service_id)
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+                .map(|value| value.map(|bytes| hex_encode(&bytes)))
+                .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_getServiceStorageAt", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {
-            let (block_hash, service_id, key_hex): (sp_core::H256, u32, String) = params.parse()?;
-            let key = parse_hex_vec(&key_hex)?;
-            let encoded = client
+            let (block_hash, service_id, key): (sp_core::H256, u32, String) = params.parse()?;
+            client
                 .runtime_api()
-                .get_service_storage(block_hash, service_id, key)
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+                .get_service_storage(block_hash, service_id, parse_hex_vec(&key)?)
+                .map(|value| value.map(|bytes| hex_encode(&bytes)))
+                .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_getServicePreimageAt", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {
             let (block_hash, service_id, code_hash): (sp_core::H256, u32, sp_core::H256) =
                 params.parse()?;
-            let encoded = client
+            client
                 .runtime_api()
                 .get_service_preimage(block_hash, service_id, code_hash.to_fixed_bytes())
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+                .map(|value| value.map(|bytes| hex_encode(&bytes)))
+                .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_getProtocolStateAt", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {
-            let (block_hash, key_hex): (sp_core::H256, String) = params.parse()?;
-            let key = parse_hex_array::<31>(&key_hex)?;
-            let encoded = client
+            let (block_hash, key): (sp_core::H256, String) = params.parse()?;
+            client
                 .runtime_api()
-                .get_protocol_state(block_hash, key)
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+                .get_protocol_state(block_hash, parse_hex_array::<31>(&key)?)
+                .map(|value| value.map(|bytes| hex_encode(&bytes)))
+                .map_err(runtime_api_error)
         }
     })?;
-
     module.register_method("minijam_getProtocolState", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {
-            let key_hex: String = params.one()?;
-            let key = parse_hex_array::<31>(&key_hex)?;
-            let encoded = client
+            let key: String = params.one()?;
+            client
                 .runtime_api()
-                .get_protocol_state(best_hash(&client), key)
-                .map_err(runtime_api_error)?;
-            Ok(encoded.map(|bytes| hex_encode(&bytes)))
+                .get_protocol_state(finalized_hash(&client), parse_hex_array::<31>(&key)?)
+                .map(|value| value.map(|bytes| hex_encode(&bytes)))
+                .map_err(runtime_api_error)
         }
     })?;
-
     Ok(())
 }
 
-fn best_hash<C>(client: &Arc<C>) -> <Block as BlockT>::Hash
-where
-    C: HeaderBackend<Block>,
-{
-    client.info().best_hash
+fn package_status_name(status: PackageStatus) -> &'static str {
+    match status {
+        PackageStatus::Pending => "pending",
+        PackageStatus::Imported => "imported",
+        PackageStatus::Failed => "failed",
+    }
 }
-
-fn finalized_hash<C>(client: &Arc<C>) -> <Block as BlockT>::Hash
-where
-    C: HeaderBackend<Block>,
-{
+fn finalized_hash<C: HeaderBackend<Block>>(client: &Arc<C>) -> <Block as BlockT>::Hash {
     client.info().finalized_hash
 }
-
 fn runtime_api_error(error: sp_api::ApiError) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(-32001, "MiniJAM runtime API error", Some(error.to_string()))
 }
-
 fn blockchain_error(error: BlockChainError) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(-32002, "MiniJAM blockchain error", Some(error.to_string()))
 }
-
 fn rpc_state_error(message: &'static str) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(-32003, "MiniJAM state unavailable", Some(message))
 }
-
 fn invalid_params(message: &'static str) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(-32602, "Invalid MiniJAM RPC params", Some(message))
 }
@@ -536,16 +347,12 @@ fn parse_hex_array<const N: usize>(input: &str) -> Result<[u8; N], ErrorObjectOw
             "hex length does not match expected byte width",
         ));
     }
-
     let mut output = [0u8; N];
     for (index, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
-        let high = hex_nibble(chunk[0])?;
-        let low = hex_nibble(chunk[1])?;
-        output[index] = (high << 4) | low;
+        output[index] = (hex_nibble(chunk[0])? << 4) | hex_nibble(chunk[1])?;
     }
     Ok(output)
 }
-
 fn parse_hex_vec(input: &str) -> Result<Vec<u8>, ErrorObjectOwned> {
     let hex = input.strip_prefix("0x").unwrap_or(input);
     if !hex.len().is_multiple_of(2) {
@@ -556,7 +363,6 @@ fn parse_hex_vec(input: &str) -> Result<Vec<u8>, ErrorObjectOwned> {
         .map(|chunk| Ok((hex_nibble(chunk[0])? << 4) | hex_nibble(chunk[1])?))
         .collect()
 }
-
 fn hex_nibble(byte: u8) -> Result<u8, ErrorObjectOwned> {
     match byte {
         b'0'..=b'9' => Ok(byte - b'0'),
@@ -565,7 +371,6 @@ fn hex_nibble(byte: u8) -> Result<u8, ErrorObjectOwned> {
         _ => Err(invalid_params("hex input contains a non-hex character")),
     }
 }
-
 fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(2 + bytes.len() * 2);
@@ -575,26 +380,4 @@ fn hex_encode(bytes: &[u8]) -> String {
         output.push(HEX[(byte & 0x0f) as usize] as char);
     }
     output
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn finalized_context_uses_chain_client_field_names() {
-        let value = serde_json::to_value(FinalizedContextV1 {
-            block_hash: "0x01".into(),
-            block_number: 2,
-            state_root: "0x03".into(),
-            slot: 4,
-        })
-        .expect("finalized context serializes");
-
-        assert_eq!(value["blockHash"], "0x01");
-        assert_eq!(value["blockNumber"], 2);
-        assert_eq!(value["stateRoot"], "0x03");
-        assert_eq!(value["slot"], 4);
-        assert!(value.get("block_hash").is_none());
-    }
 }

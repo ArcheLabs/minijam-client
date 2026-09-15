@@ -9,9 +9,9 @@ Stage-1 是当前支持的 MiniJAM 部署。发布单元是一组不可变镜像
 compact 和 split 配置包含相同的三个角色：
 
 - `node`：validator 和安全 JSON-RPC 端点；
-- `worker`：使用独立签名密钥和状态 volume 的 Worker daemon；
-- `formal-rpc`：应用无关的 Work 与 bundle gateway，持有 Work-ingress relayer
-  密钥和 bundle volume。
+- `worker`：使用 WorkerAccount 密钥和状态 volume 的单一 Worker daemon；
+- `formal-rpc`：应用无关的 transaction queue 与 bundle gateway，使用 bundle
+  volume。
 
 可选 Service compiler 位于 `deploy/compiler`，不属于 Stage-1 runtime 网络。
 
@@ -49,7 +49,7 @@ export MINIJAM_FORMAL_RPC_IMAGE=ghcr.io/archelabs/minijam-formal-rpc@sha256:<dig
 export MINIJAM_STAGE1_CHAIN_SPEC_FILE=./chain-specs/stage1.json
 export MINIJAM_NODE_NETWORK_KEY=0x<64-hex-bytes>
 export MINIJAM_WORKER_SEED=0x<64-hex-bytes>
-export MINIJAM_FORMAL_RPC_RELAYER_URI=0x<64-hex-bytes>
+export MINIJAM_SIGNER_URI=//Alice-or-the-worker-key
 
 docker compose -f deploy/stage1/compose.compact.yml config
 docker compose -f deploy/stage1/compose.compact.yml up -d

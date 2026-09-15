@@ -19,9 +19,9 @@ node, worker, and application-neutral Formal RPC.
 
 The compact profile runs all three roles on one host while retaining separate
 containers, networks, data, and signing material. The split profile uses the
-same boundary across private hosts. Formal RPC owns only its Work-ingress
-relayer key and bundle store. The worker owns only its worker key. Validator,
-deployment-controller, and external-faucet keys are separate.
+same boundary across private hosts. Formal RPC owns the durable transaction
+queue and bundle store. The single Worker owns the WorkerAccount key. Validator,
+deployment signer, allocation relayer, and external-faucet keys are separate.
 
 In the compact profile, node RPC is published on the host loopback only at
 `127.0.0.1:9944`. The node also joins a non-internal edge bridge for that
@@ -39,8 +39,8 @@ Formal RPC performs bounded startup retries while waiting for the node RPC to
 become available. A node container may therefore be started before its RPC
 listener is ready without requiring an external sleep-based startup sequence.
 
-Compose reads `MINIJAM_NODE_NETWORK_KEY`, `MINIJAM_WORKER_SEED`, and
-`MINIJAM_FORMAL_RPC_RELAYER_URI` from the operator environment and mounts them
+Compose reads `MINIJAM_NODE_NETWORK_KEY` and `MINIJAM_WORKER_SEED` from the
+operator environment and mounts them
 as `0400` `/run/secrets/*` files owned by UID/GID `10001`. The node uses
 `--base-path=/data` and the explicit node key file so its libp2p identity and
 chain database survive restarts. Do not replace these secret mounts with

@@ -9,8 +9,8 @@ the MiniJAM client.
 Browser and native clients may use the node JSON-RPC directly:
 
 - `minijam_getFinalizedContext`
-- `minijam_getWork` and `minijam_getWorkIdByPackageHash`
-- `minijam_getExecutionReceipt`
+- `minijam_getPackageStatus`
+- `minijam_getPackageFailure` and `minijam_getExecutionReceiptByPackageHash`
 - `minijam_getServiceInfoAt` and `minijam_getServiceStorageAt`
 - `system_accountNextIndex`
 - `author_submitExtrinsic` for an already encoded and wallet-signed transaction
@@ -18,26 +18,24 @@ Browser and native clients may use the node JSON-RPC directly:
 These methods are application-neutral. New Services must not require a custom
 node RPC method.
 
-## Work ingress
+## Transaction ingress
 
-Formal RPC is the application-neutral ingress and bundle gateway. It is an
-adapter, not the application protocol. A client may replace it when it can:
+Formal RPC is the application-neutral transaction queue and bundle gateway. It
+is an adapter, not the application protocol. A client may replace it when it can:
 
-1. build the canonical Work package and auditable bundle;
+1. batch transactions by `(serviceId, serviceCodeHash)` into a canonical package;
 2. publish the bundle at the committed `ContentRef`;
 3. encode the runtime call using current metadata and nonce;
 4. ask the user's wallet to sign the extrinsic;
-5. submit it through `author_submitExtrinsic` and follow finalized Work/Receipt state.
+5. submit the Worker-signed canonical report through `author_submitExtrinsic` and
+   follow finalized package status/receipt state.
 
 ## Authenticated application principal
 
-The Work-ingress relayer verifies the request before submitting the runtime
-operation. A Service may bind the account included in its payload while the
-relayer is the only authorized ingress.
+The Formal RPC validates ServiceInfo and code hash at a finalized context before
+queuing the transaction. Deployment uses an ordinary signed system operation;
+the Worker is the only account authorized to submit canonical reports.
 
-This trust does **not** automatically survive direct node ingress: the signed
-extrinsic currently identifies the ingress account, and `WorkPackage` does not
-carry a chain-validated end-user principal. Before enabling untrusted or direct
-ingress, introduce a versioned authorization envelope in the protocol, validate
-it in the runtime, and expose the validated principal to Service execution.
-Never treat an unchecked account string in a payload as authenticated.
+Transaction payloads are service-defined bytes. An account string inside a
+payload is not authenticated by MiniJAM; services must define and validate any
+application-level principal themselves.

@@ -29,14 +29,14 @@ extract_sr25519_account_id() {
     | head -n1
 }
 
-relayer_uri="0x$(openssl rand -hex 32)"
-if ! relayer_info="$("${NODE_BIN}" key inspect "${relayer_uri}" 2>&1)"; then
-  echo 'node failed to inspect the ephemeral sr25519 relayer URI' >&2
+signer_uri="0x$(openssl rand -hex 32)"
+if ! signer_info="$("${NODE_BIN}" key inspect "${signer_uri}" 2>&1)"; then
+  echo 'node failed to inspect the ephemeral deployment signer URI' >&2
   exit 1
 fi
-relayer_public_key="$(extract_sr25519_account_id <<<"${relayer_info}")"
-[[ "${relayer_public_key}" =~ ^0x[0-9a-fA-F]{64}$ ]] || {
-  echo 'unable to derive the ephemeral relayer AccountId32' >&2
+worker_public_key="$(extract_sr25519_account_id <<<"${signer_info}")"
+[[ "${worker_public_key}" =~ ^0x[0-9a-fA-F]{64}$ ]] || {
+  echo 'unable to derive the ephemeral Worker AccountId32' >&2
   exit 1
 }
 
@@ -59,14 +59,14 @@ print("0x" + hashlib.blake2b(pathlib.Path(sys.argv[1]).read_bytes(), digest_size
 PY
 )"
 
-printf 'LOCAL_RELAYER_ACCOUNT=%s\n' "${relayer_public_key}"
+printf 'LOCAL_WORKER_ACCOUNT=%s\n' "${worker_public_key}"
 printf 'LOCAL_SERVICE_CODE_HASH=%s\n' "${service_code_hash}"
 
 MINIJAM_NATIVE_NODE_BIN="${NODE_BIN}" \
 MINIJAM_NATIVE_FORMAL_RPC_BIN="${FORMAL_RPC_BIN}" \
-MINIJAM_NATIVE_RELAYER_URI="${relayer_uri}" \
-MINIJAM_NATIVE_INGRESS_RELAYER_PUBLIC_KEY="${relayer_public_key}" \
-MINIJAM_NATIVE_ALLOCATION_RELAYER_PUBLIC_KEY="${relayer_public_key}" \
+MINIJAM_NATIVE_SIGNER_URI="${signer_uri}" \
+MINIJAM_NATIVE_WORKER_PUBLIC_KEY="${worker_public_key}" \
+MINIJAM_NATIVE_ALLOCATION_RELAYER_PUBLIC_KEY="${worker_public_key}" \
 MINIJAM_NODE_NETWORK_KEY="${node_network_key}" \
 MINIJAM_NATIVE_SERVICE_BLOB="${SERVICE_BLOB}" \
 MINIJAM_NATIVE_SERVICE_CODE_HASH="${service_code_hash}" \

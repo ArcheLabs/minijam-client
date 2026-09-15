@@ -19,7 +19,6 @@ pallet-aura.workspace = true
 pallet-balances.workspace = true
 pallet-grandpa.workspace = true
 pallet-minijam = { path = "../pallets/minijam", default-features = false }
-pallet-minijam-workers = { path = "../pallets/minijam-workers", default-features = false }
 pallet-sudo.workspace = true
 pallet-timestamp.workspace = true
 pallet-transaction-payment.workspace = true
@@ -64,7 +63,6 @@ std = [
   "pallet-aura/std",
   "pallet-balances/std",
   "pallet-grandpa/std",
-  "pallet-minijam-workers/std",
   "pallet-minijam/std",
   "pallet-sudo/std",
   "pallet-timestamp/std",

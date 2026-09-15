@@ -3370,6 +3370,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]
@@ -3378,13 +3379,16 @@ version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
 dependencies = [
+ "base64",
  "bytes",
  "futures-channel",
  "futures-util",
  "http 1.4.2",
  "http-body 1.0.1",
  "hyper 1.10.1",
+ "ipnet",
  "libc",
+ "percent-encoding",
  "pin-project-lite",
  "socket2 0.6.4",
  "tokio",
@@ -4717,7 +4721,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tracing",
  "url",
- "webpki-roots",
+ "webpki-roots 0.25.4",
 ]
 
 [[package]]
@@ -5203,6 +5207,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "minijam-protocol",
+ "pallet-minijam",
  "parity-scale-codec",
  "serde_json",
 ]
@@ -5354,7 +5359,6 @@ dependencies = [
  "pallet-balances",
  "pallet-grandpa",
  "pallet-minijam",
- "pallet-minijam-workers",
  "pallet-sudo",
  "pallet-timestamp",
  "pallet-transaction-payment",
@@ -5408,6 +5412,7 @@ name = "minijam-worker"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "clap",
  "futures",
  "jam-codec",
@@ -5422,31 +5427,16 @@ dependencies = [
  "minijam-chain-client",
  "minijam-protocol",
  "minijam-runtime",
- "minijam-worker-engine",
  "pallet-minijam",
- "pallet-minijam-workers",
  "parity-scale-codec",
+ "reqwest",
  "serde",
  "serde_json",
  "sp-core",
  "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
  "toml 0.8.23",
-]
-
-[[package]]
-name = "minijam-worker-engine"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bounded-collections 0.2.4",
- "cid",
- "futures",
- "jam-codec",
- "jambda-refine",
- "jp-core-primitives",
- "minijam-protocol",
- "parity-scale-codec",
- "scale-info",
 ]
 
 [[package]]
@@ -6050,7 +6040,6 @@ dependencies = [
  "minijam-protocol",
  "minijam-state-adapter",
  "pallet-balances",
- "pallet-minijam-workers",
  "parity-scale-codec",
  "scale-info",
  "sp-core",
@@ -6069,21 +6058,6 @@ dependencies = [
  "pallet-balances",
  "parity-scale-codec",
  "scale-info",
- "sp-io",
- "sp-runtime",
-]
-
-[[package]]
-name = "pallet-minijam-workers"
-version = "0.1.0"
-dependencies = [
- "frame-support",
- "frame-system",
- "minijam-protocol",
- "pallet-balances",
- "parity-scale-codec",
- "scale-info",
- "sp-core",
  "sp-io",
  "sp-runtime",
 ]
@@ -7286,6 +7260,44 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "reqwest"
+version = "0.12.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
+dependencies = [
+ "base64",
+ "bytes",
+ "futures-core",
+ "http 1.4.2",
+ "http-body 1.0.1",
+ "http-body-util",
+ "hyper 1.10.1",
+ "hyper-rustls",
+ "hyper-util",
+ "js-sys",
+ "log",
+ "percent-encoding",
+ "pin-project-lite",
+ "quinn",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sync_wrapper",
+ "tokio",
+ "tokio-rustls",
+ "tower 0.5.3",
+ "tower-http 0.6.11",
+ "tower-service",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "webpki-roots 1.0.9",
+]
 
 [[package]]
 name = "resolv-conf"
@@ -10001,6 +10013,9 @@ name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
+dependencies = [
+ "futures-core",
+]
 
 [[package]]
 name = "synstructure"
@@ -10456,12 +10471,15 @@ checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
  "bitflags 2.13.0",
  "bytes",
+ "futures-util",
  "http 1.4.2",
  "http-body 1.0.1",
  "http-body-util",
  "pin-project-lite",
+ "tower 0.5.3",
  "tower-layer",
  "tower-service",
+ "url",
 ]
 
 [[package]]
@@ -11380,6 +11398,15 @@ name = "webpki-roots"
 version = "0.25.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f20c57d8d7db6d3b86154206ae5d8fba62dd39573114de97c2cb0578251f8e1"
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+dependencies = [
+ "rustls-pki-types",
+]
 
 [[package]]
 name = "wide"

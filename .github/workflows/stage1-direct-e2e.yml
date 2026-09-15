@@ -1,0 +1,124 @@
+name: Stage-1 Direct Refine E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag, or commit to test
+        required: true
+        type: string
+        default: codex/minijam-direct-refine-v1
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TEST_THREADS: 1
+
+jobs:
+  native-direct-e2e:
+    name: Native single-Worker direct refine
+    if: github.repository == 'ArcheLabs/minijam-client'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout requested MiniJAM source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+
+      - name: Check Jambda App configuration
+        env:
+          JAMBDA_APP_CLIENT_ID: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          JAMBDA_APP_PRIVATE_KEY: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+        run: |
+          test -n "${JAMBDA_APP_CLIENT_ID}"
+          test -n "${JAMBDA_APP_PRIVATE_KEY}"
+
+      - name: Read pinned Jambda commit
+        id: jambda-pin
+        run: |
+          jambda_sha="$(git ls-tree HEAD external/jambda | awk '{print $3}')"
+          [[ "${jambda_sha}" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=${jambda_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create Jambda token
+        id: jambda-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.JAMBDA_APP_CLIENT_ID }}
+          private-key: ${{ secrets.JAMBDA_APP_PRIVATE_KEY }}
+          owner: ArcheLabs
+          repositories: jambda
+          permission-contents: read
+
+      - name: Checkout pinned Jambda
+        uses: actions/checkout@v7
+        with:
+          repository: ArcheLabs/jambda
+          ref: ${{ steps.jambda-pin.outputs.sha }}
+          token: ${{ steps.jambda-token.outputs.token }}
+          path: external/jambda
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libclang-dev llvm llvm-dev protobuf-compiler
+          llvm_config="$(command -v llvm-config || find /usr/bin -maxdepth 1 -type f -name 'llvm-config-*' | sort -V | tail -n1)"
+          echo "LIBCLANG_PATH=$("${llvm_config}" --libdir)" >> "${GITHUB_ENV}"
+          echo "LLVM_CONFIG_PATH=${llvm_config}" >> "${GITHUB_ENV}"
+
+      - name: Verify and test Rust workspace
+        run: |
+          ./scripts/check-submodule.sh
+          cargo fmt --all -- --check
+          cargo test --workspace --locked
+
+      - name: Build native provider binaries
+        run: cargo build --locked -p minijam-node -p minijam-formal-rpc -p minijam-worker
+
+      - name: Run local lifecycle acceptance
+        env:
+          MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
+          MINIJAM_NATIVE_NODE_BIN: ${{ github.workspace }}/target/debug/minijam-node
+          MINIJAM_NATIVE_FORMAL_RPC_BIN: ${{ github.workspace }}/target/debug/minijam-formal-rpc
+          MINIJAM_NATIVE_WORKER_BIN: ${{ github.workspace }}/target/debug/minijam-worker
+          MINIJAM_SKIP_BUILD: '1'
+        run: ./scripts/test-stage1-native-local-lifecycle.sh
+
+      - name: Start local provider
+        env:
+          MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
+          MINIJAM_NATIVE_NODE_BIN: ${{ github.workspace }}/target/debug/minijam-node
+          MINIJAM_NATIVE_FORMAL_RPC_BIN: ${{ github.workspace }}/target/debug/minijam-formal-rpc
+          MINIJAM_NATIVE_WORKER_BIN: ${{ github.workspace }}/target/debug/minijam-worker
+          MINIJAM_SKIP_BUILD: '1'
+        run: ./scripts/stage1-native-local-up.sh
+
+      - name: Run direct transaction E2E
+        env:
+          MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
+          MINIJAM_NATIVE_DIRECT_E2E_ARTIFACT_DIR: ${{ github.workspace }}/.stage1-native-direct-artifacts
+        run: ./scripts/test-stage1-native-direct-e2e.sh
+
+      - name: Stop local provider
+        if: always()
+        env:
+          MINIJAM_NATIVE_LOCAL_RUNTIME: ${{ github.workspace }}/target/stage1-native-local
+        run: ./scripts/stage1-native-local-down.sh || true
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: minijam-stage1-direct-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            .stage1-native-direct-artifacts/
+            target/stage1-native-local/logs/

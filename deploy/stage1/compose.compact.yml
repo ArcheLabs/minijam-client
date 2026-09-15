@@ -26,8 +26,8 @@ services:
     networks: [chain, node-edge]
   worker:
     image: ${MINIJAM_WORKER_IMAGE:-ghcr.io/archelabs/minijam-worker:stage1}
-    command: [--rpc-url=http://node:9944, --worker-id=0, --ipfs-gateway=http://formal-rpc:8080/ipfs, --health-bind=0.0.0.0:8082, --submit-candidates, --submit-support-votes]
-    depends_on: [node]
+    command: [--rpc-url=ws://node:9944, --formal-rpc-url=http://formal-rpc:8090, --recovery-db=/data/recovery.json]
+    depends_on: [node, formal-rpc]
     environment: {MINIJAM_WORKER_SEED_FILE: /run/secrets/worker_signing_key}
     secrets:
       - source: worker_signing_key
@@ -43,9 +43,9 @@ services:
       MINIJAM_RPC_URL: ws://node:9944
       MINIJAM_FORMAL_RPC_BIND: 0.0.0.0:8080
       MINIJAM_BUNDLE_DIR: /bundles
-      MINIJAM_RELAYER_URI_FILE: /run/secrets/work_ingress_key
+      MINIJAM_SIGNER_URI_FILE: /run/secrets/deployment_signer
     secrets:
-      - source: work_ingress_key
+      - source: deployment_signer
         uid: "10001"
         gid: "10001"
         mode: 0400
@@ -62,5 +62,5 @@ secrets:
     environment: MINIJAM_NODE_NETWORK_KEY
   worker_signing_key:
     environment: MINIJAM_WORKER_SEED
-  work_ingress_key:
-    environment: MINIJAM_FORMAL_RPC_RELAYER_URI
+  deployment_signer:
+    environment: MINIJAM_SIGNER_URI

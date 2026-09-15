@@ -4,24 +4,15 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use minijam_protocol::{Hash, WorkId, WorkerTaskV1, WorkerVerificationTaskV1};
+use minijam_protocol::{Hash, PackageStatus};
 use sp_api::decl_runtime_apis;
 
 decl_runtime_apis! {
     pub trait MiniJamRuntimeApi {
-        fn get_work(work_id: WorkId) -> Option<Vec<u8>>;
-        fn get_pending_work_tasks() -> Vec<WorkerTaskV1>;
-        fn get_open_vote_tasks() -> Vec<WorkerVerificationTaskV1>;
-        fn get_worker(worker_id: u64) -> Option<Vec<u8>>;
-        fn get_work_by_package_hash(package_hash: Hash) -> Option<Vec<u8>>;
-        fn get_work_id_by_package_hash(package_hash: Hash) -> Option<u64>;
-        fn get_work_bundle_ref(work_id: WorkId) -> Option<Vec<u8>>;
-        fn get_candidate(work_id: WorkId, round: u8) -> Option<Vec<u8>>;
-        fn get_execution_receipt(work_id: WorkId) -> Option<Hash>;
+        fn get_package_status(package_hash: Hash) -> Option<PackageStatus>;
+        fn get_package_failure(package_hash: Hash) -> Option<Vec<u8>>;
+        fn get_execution_receipt_by_package_hash(package_hash: Hash) -> Option<Hash>;
         fn get_last_execution_receipt() -> Option<Hash>;
-        fn get_service_fuel(service_id: u32) -> Vec<u8>;
-        fn get_work_fuel_reservation(work_id: WorkId) -> Option<Vec<u8>>;
-        fn get_work_fuel_settlement(work_id: WorkId) -> Option<Vec<u8>>;
         fn get_allocation(allocation_id: u64) -> Option<Vec<u8>>;
         fn is_allocation_processed(allocation_id: u64) -> bool;
         fn get_pending_allocations() -> Vec<u8>;

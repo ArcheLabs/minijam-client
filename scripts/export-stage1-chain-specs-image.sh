@@ -4,14 +4,14 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 NODE_IMAGE="${MINIJAM_NODE_IMAGE:?set the exact Stage-1 node image reference}"
 OUT="${MINIJAM_STAGE1_CHAIN_SPEC_DIR:-${ROOT}/chain-specs}"
-: "${MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY:?set the public Work-ingress AccountId32}"
+: "${MINIJAM_STAGE1_WORKER_PUBLIC_KEY:?set the public single Worker AccountId32}"
 : "${MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY:?set the public allocation/deployment AccountId32}"
 
 docker image inspect "${NODE_IMAGE}" >/dev/null
 mkdir -p "${OUT}"
 
 docker run --rm --network none \
-  -e MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY \
+  -e MINIJAM_STAGE1_WORKER_PUBLIC_KEY \
   -e MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY \
   "${NODE_IMAGE}" \
   build-spec --chain stage1 > "${OUT}/stage1.json"

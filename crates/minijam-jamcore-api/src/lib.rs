@@ -254,7 +254,7 @@ pub fn interface_hash() -> Hash {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minijam_protocol::SystemOpV1;
+    use minijam_protocol::SystemOpV2;
 
     #[test]
     fn receipt_commits_input_hash_and_system_ops() {
@@ -268,11 +268,10 @@ mod tests {
         b.input_hash = [0u8; 32];
         a.consumed_system_ops
             .try_push(
-                SystemOpV1::new(
+                SystemOpV2::new(
                     [1u8; 32],
                     0,
-                    minijam_protocol::SystemCommandV1::CreateService {
-                        controller: [1u8; 32],
+                    minijam_protocol::SystemCommandV2::CreateService {
                         code_hash: [9u8; 32],
                         code_len: 1,
                         min_item_gas: 1,

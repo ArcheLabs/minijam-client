@@ -8,14 +8,14 @@ STAGE1_CORE_PACKAGES=(
   minijam-rpc-runtime-api
   minijam-jamcore-api
   minijam-jamcore-mock
-  minijam-worker-engine
   minijam-work-package-builder
   minijam-chain-client
+  minijam-formal-rpc
+  minijam-worker
   minijam-runtime
   pallet-minijam
   minijam-bridge-engine
   minijam-state-adapter
-  pallet-minijam-workers
   minijam-cli
   minijam-pvm-executor
   minijam-bulletin-api

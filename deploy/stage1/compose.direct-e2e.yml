@@ -1,0 +1,63 @@
+name: minijam-stage1-direct-e2e
+x-minijam-local-only: &minijam-local-only "LOCAL/CI ONLY — NEVER PUBLIC"
+services:
+  node:
+    image: ${MINIJAM_NODE_IMAGE:-ghcr.io/archelabs/minijam-node:stage1}
+    labels: {com.archelabs.minijam.scope: *minijam-local-only}
+    command:
+      - --chain=/chain-specs/stage1-direct-e2e.json
+      - --base-path=/data
+      - --node-key-file=/run/secrets/node_network_key
+      - --alice
+      - --force-authoring
+      - --unsafe-rpc-external
+      - --rpc-methods=safe
+      - --rpc-cors=all
+    ports: ["127.0.0.1:9944:9944"]
+    secrets:
+      - source: node_network_key
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+    volumes:
+      - node-direct-e2e-data:/data
+      - type: bind
+        source: ${MINIJAM_STAGE1_DIRECT_E2E_CHAIN_SPEC_FILE:-./chain-specs/stage1-direct-e2e.json}
+        target: /chain-specs/stage1-direct-e2e.json
+        read_only: true
+    networks: [chain, node-edge]
+
+  formal-rpc:
+    image: ${MINIJAM_FORMAL_RPC_IMAGE:-ghcr.io/archelabs/minijam-formal-rpc:stage1}
+    labels: {com.archelabs.minijam.scope: *minijam-local-only}
+    depends_on: [node]
+    environment:
+      MINIJAM_RPC_URL: ws://node:9944
+      MINIJAM_FORMAL_RPC_BIND: 0.0.0.0:8080
+      MINIJAM_BUNDLE_DIR: /bundles
+      MINIJAM_SIGNER_URI: //Alice
+    volumes: [direct-e2e-bundle-data:/bundles]
+    ports: ["127.0.0.1:8080:8080"]
+    networks: [chain, work]
+
+  worker:
+    image: ${MINIJAM_WORKER_IMAGE:-ghcr.io/archelabs/minijam-worker:stage1}
+    labels: {com.archelabs.minijam.scope: *minijam-local-only}
+    command: [--rpc-url=ws://node:9944, --formal-rpc-url=http://formal-rpc:8080, --key=//Alice, --recovery-db=/data/recovery.json]
+    depends_on: [node, formal-rpc]
+    volumes: [worker-direct-e2e-data:/data]
+    networks: [chain, work]
+
+volumes:
+  node-direct-e2e-data: {}
+  worker-direct-e2e-data: {}
+  direct-e2e-bundle-data: {}
+
+networks:
+  chain: {internal: true}
+  work: {}
+  node-edge: {}
+
+secrets:
+  node_network_key:
+    environment: MINIJAM_NODE_NETWORK_KEY

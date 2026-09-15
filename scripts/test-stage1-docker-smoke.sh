@@ -11,7 +11,7 @@ WORKER_IMAGE="${MINIJAM_WORKER_IMAGE:?set the exact Stage-1 worker image referen
 FORMAL_RPC_IMAGE="${MINIJAM_FORMAL_RPC_IMAGE:?set the exact Stage-1 Formal RPC image reference}"
 NODE_NETWORK_KEY="${MINIJAM_NODE_NETWORK_KEY:?set the ephemeral node network key}"
 WORKER_SEED="${MINIJAM_WORKER_SEED:?set the ephemeral worker seed}"
-RELAYER_URI="${MINIJAM_FORMAL_RPC_RELAYER_URI:?set the ephemeral Work-ingress relayer URI}"
+SIGNER_URI="${MINIJAM_SIGNER_URI:?set the ephemeral ordinary deployment signer URI}"
 
 test -f "${CHAIN_SPEC}" || { echo "missing smoke input: ${CHAIN_SPEC}" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo 'curl is required for Stage-1 smoke' >&2; exit 127; }
@@ -49,7 +49,7 @@ export MINIJAM_FORMAL_RPC_IMAGE="${FORMAL_RPC_IMAGE}"
 export MINIJAM_STAGE1_CHAIN_SPEC_FILE="${CHAIN_SPEC}"
 export MINIJAM_NODE_NETWORK_KEY="${NODE_NETWORK_KEY}"
 export MINIJAM_WORKER_SEED="${WORKER_SEED}"
-export MINIJAM_FORMAL_RPC_RELAYER_URI="${RELAYER_URI}"
+export MINIJAM_SIGNER_URI="${SIGNER_URI}"
 
 assert_node_host_port_published() {
   local mapping

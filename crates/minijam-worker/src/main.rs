@@ -1,366 +1,93 @@
-// SPDX-License-Identifier: Apache-2.0
-#![feature(generic_const_exprs)]
-#![allow(incomplete_features)]
-#![recursion_limit = "4096"]
-
-use std::{path::PathBuf, sync::Arc, thread, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use clap::Parser;
-use futures::executor::block_on;
-use minijam_worker::{
-    check_bundle_gateway_ready, spawn_prometheus_metrics_server, spawn_worker_health_server,
-    sr25519_pair_from_uri, BlockingHttpBytesClient, BlockingHttpWorkerChainSource, WorkerConfig,
-    WorkerHealth, WorkerMetrics, WorkerRecoveryDb, WorkerRunner, WorkerSignedTxContext,
-};
-use minijam_worker_engine::{fetch::IpfsGatewayFetcher, MiniJamWorkBundleDecoder};
-use sp_core::Pair;
+use minijam_worker::{WorkerConfig, WorkerError, WorkerMetrics, WorkerRunner};
 
 #[derive(Debug, Parser)]
 #[command(name = "minijam-worker")]
-#[command(about = "MiniJAM stage-0 worker daemon")]
 struct Cli {
     #[arg(long)]
     config: Option<PathBuf>,
-
     #[arg(long)]
     rpc_url: Option<String>,
-
+    #[arg(long)]
+    formal_rpc_url: Option<String>,
     #[arg(long)]
     key: Option<String>,
-
     #[arg(long)]
-    worker_id: Option<u64>,
-
+    poll_ms: Option<u64>,
     #[arg(long)]
-    core_index: Option<u16>,
-
-    #[arg(long)]
-    submit_candidates: bool,
-
-    #[arg(long)]
-    submit_support_votes: bool,
-
-    #[arg(long)]
-    poll_interval_ms: Option<u64>,
-
-    #[arg(long)]
-    execution_lanes: Option<u16>,
-
-    #[arg(long)]
-    state_db: Option<PathBuf>,
-
-    #[arg(long)]
-    metrics_bind: Option<String>,
-
-    #[arg(long)]
-    health_bind: Option<String>,
-
-    #[arg(long)]
-    ipfs_gateway: Option<String>,
-
-    #[arg(long)]
-    request_timeout_secs: Option<u64>,
-
-    #[arg(long)]
-    max_bundle_bytes: Option<u64>,
-
-    #[arg(long)]
-    once: bool,
+    recovery_db: Option<PathBuf>,
 }
 
-fn build_config(cli: &Cli) -> Result<WorkerConfig, String> {
+fn load_config(cli: &Cli) -> Result<WorkerConfig, String> {
     let mut config = if let Some(path) = &cli.config {
-        let contents = std::fs::read_to_string(path)
-            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-        WorkerConfig::from_toml_str(&contents)
-            .map_err(|error| format!("failed to parse {}: {error}", path.display()))?
+        let contents = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+        WorkerConfig::from_toml_str(&contents).map_err(|error| error.to_string())?
     } else {
         WorkerConfig::default()
     };
-
-    if let Some(rpc_url) = &cli.rpc_url {
-        config.rpc_url = rpc_url.clone();
+    if let Some(value) = &cli.rpc_url {
+        config.rpc_url = value.clone();
     }
-    if let Some(key) = &cli.key {
-        config.key = Some(key.clone());
+    if let Some(value) = &cli.formal_rpc_url {
+        config.formal_rpc_url = value.clone();
     }
-    if let Some(worker_id) = cli.worker_id {
-        config.worker_id = Some(worker_id);
+    if let Some(value) = &cli.key {
+        config.key = Some(value.clone());
     }
-    if let Some(core_index) = cli.core_index {
-        config.core_index = core_index;
+    if config.key.is_none() {
+        config.key = std::env::var("MINIJAM_WORKER_SEED_FILE")
+            .ok()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|value| value.trim().to_owned())
+            .or_else(|| std::env::var("MINIJAM_WORKER_KEY").ok());
     }
-    if cli.submit_candidates {
-        config.submit_candidates = true;
+    if let Some(value) = cli.poll_ms {
+        config.poll_interval = Duration::from_millis(value);
     }
-    if cli.submit_support_votes {
-        config.submit_support_votes = true;
+    if let Some(value) = &cli.recovery_db {
+        config.recovery_db_path = Some(value.clone());
     }
-    if let Some(poll_interval_ms) = cli.poll_interval_ms {
-        config.poll_interval = Duration::from_millis(poll_interval_ms);
-    }
-    if let Some(execution_lanes) = cli.execution_lanes {
-        config.execution_lanes = execution_lanes;
-    }
-    if let Some(state_db) = &cli.state_db {
-        config.recovery_db_path = Some(state_db.clone());
-    }
-    if let Some(metrics_bind) = &cli.metrics_bind {
-        config.metrics_bind = Some(metrics_bind.clone());
-    }
-    if let Some(health_bind) = &cli.health_bind {
-        config.health_bind = Some(health_bind.clone());
-    }
-    if let Some(ipfs_gateway) = &cli.ipfs_gateway {
-        config.ipfs_gateway = ipfs_gateway.clone();
-    }
-    if let Some(request_timeout_secs) = cli.request_timeout_secs {
-        config.request_timeout = Duration::from_secs(request_timeout_secs);
-    }
-    if let Some(max_bundle_bytes) = cli.max_bundle_bytes {
-        config.max_bundle_bytes = max_bundle_bytes;
-    }
-    if let Ok(value) = std::env::var("WORKER_ID") {
-        config.worker_id = Some(
-            value
-                .parse()
-                .map_err(|error| format!("invalid WORKER_ID: {error}"))?,
-        );
-    }
-    if let Ok(value) = std::env::var("NODE_RPC_URL") {
-        config.rpc_url = value;
-    }
-    if let Ok(value) = std::env::var("BUNDLE_GATEWAY_URL") {
-        config.ipfs_gateway = value;
-    }
-    if let Ok(value) = std::env::var("POLL_INTERVAL") {
-        config.poll_interval = Duration::from_millis(
-            value
-                .parse()
-                .map_err(|error| format!("invalid POLL_INTERVAL: {error}"))?,
-        );
-    }
-    if let Ok(path) = std::env::var("MINIJAM_WORKER_SEED_FILE") {
-        config.key = Some(
-            std::fs::read_to_string(&path)
-                .map_err(|error| format!("failed to read worker seed file {path}: {error}"))?
-                .trim()
-                .to_owned(),
-        );
-    } else if let Ok(value) = std::env::var("WORKER_SIGNING_KEY") {
-        config.key = Some(value);
-    }
+    config
+        .validate()
+        .map_err(|error| format!("invalid worker configuration: {error:?}"))?;
     Ok(config)
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
-    let once = cli.once;
-    let config = match build_config(&cli) {
+    let config = match load_config(&cli) {
         Ok(config) => config,
         Err(error) => {
-            eprintln!("{error}");
+            eprintln!("minijam worker configuration failed: {error}");
             std::process::exit(2);
         }
-    };
-    if let Err(error) = config.validate() {
-        eprintln!("invalid worker config: {error:?}");
-        std::process::exit(2);
-    }
-
-    eprintln!(
-        "minijam worker configured rpc={} ipfs_gateway={} poll_ms={} execution_lanes={} max_bundle_bytes={} state_db={} metrics={}",
-        config.rpc_url,
-        config.ipfs_gateway,
-        config.poll_interval.as_millis(),
-        config.execution_lanes,
-        config.max_bundle_bytes,
-        config
-            .recovery_db_path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "disabled".into()),
-        config.metrics_bind.as_deref().unwrap_or("disabled")
-    );
-    if config.submit_candidates && (config.worker_id.is_none() || config.key.is_none()) {
-        eprintln!("--submit-candidates requires --worker-id and --key");
-        std::process::exit(2);
-    }
-    if config.submit_support_votes && (config.worker_id.is_none() || config.key.is_none()) {
-        eprintln!("--submit-support-votes requires --worker-id and --key");
-        std::process::exit(2);
-    }
-    let signing_pair = if config.submit_candidates || config.submit_support_votes {
-        match sr25519_pair_from_uri(config.key.as_deref().unwrap()) {
-            Ok(pair) => Some(pair),
-            Err(error) => {
-                eprintln!("{error:?}");
-                std::process::exit(2);
-            }
-        }
-    } else {
-        None
     };
     let metrics = Arc::new(WorkerMetrics::new());
-    if let Some(bind) = &config.metrics_bind {
-        if let Err(error) = spawn_prometheus_metrics_server(bind, Arc::clone(&metrics)) {
-            eprintln!("failed to start worker metrics endpoint at {bind}: {error}");
-            std::process::exit(2);
-        }
-        eprintln!("minijam worker metrics listening on {bind}");
-    }
-    let health = Arc::new(WorkerHealth::default());
-    if let Some(bind) = &config.health_bind {
-        if let Err(error) = spawn_worker_health_server(bind, Arc::clone(&health)) {
-            eprintln!("failed to start worker health endpoint at {bind}: {error}");
-            std::process::exit(2);
-        }
-        eprintln!("minijam worker health listening on {bind}");
-    }
-    let recovery_db = config.recovery_db_path.as_ref().map(WorkerRecoveryDb::new);
-    let statuses = if let Some(db) = &recovery_db {
-        match db.load_statuses() {
-            Ok(statuses) => {
-                eprintln!(
-                    "minijam worker recovery db loaded path={} statuses={}",
-                    db.path().display(),
-                    statuses.len()
-                );
-                statuses
-            }
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(2);
-            }
-        }
-    } else {
-        Default::default()
-    };
-
-    let chain = match BlockingHttpWorkerChainSource::new(config.rpc_url.clone()) {
-        Ok(chain) => chain,
+    let mut runner = match WorkerRunner::connect(config.clone(), metrics).await {
+        Ok(runner) => runner,
         Err(error) => {
-            eprintln!("{error:?}");
-            std::process::exit(2);
-        }
-    };
-    refresh_health(&health, &config, signing_pair.as_ref());
-    let fetcher = IpfsGatewayFetcher::new(BlockingHttpBytesClient, config.ipfs_gateway.clone());
-    let mut runner = WorkerRunner::with_statuses(
-        chain,
-        fetcher,
-        MiniJamWorkBundleDecoder,
-        config.max_bundle_bytes,
-        statuses,
-    );
-
-    if once {
-        if let Err(error) = poll_and_persist(
-            &mut runner,
-            &metrics,
-            recovery_db.as_ref(),
-            &config,
-            signing_pair.as_ref(),
-        ) {
-            eprintln!("minijam worker poll failed: {error:?}");
+            eprintln!("minijam worker startup failed: {error}");
             std::process::exit(1);
         }
-        return;
-    }
-
+    };
+    eprintln!(
+        "minijam worker started; formal_rpc_url={} poll_ms={}",
+        config.formal_rpc_url,
+        config.poll_interval.as_millis()
+    );
     loop {
-        thread::sleep(config.poll_interval);
-        if let Err(error) = poll_and_persist(
-            &mut runner,
-            &metrics,
-            recovery_db.as_ref(),
-            &config,
-            signing_pair.as_ref(),
-        ) {
-            eprintln!("minijam worker poll failed: {error:?}");
-            health.set_ready(false);
-        } else {
-            refresh_health(&health, &config, signing_pair.as_ref());
+        match runner.poll_once().await {
+            Ok(true) => eprintln!("minijam worker refined and submitted one package report"),
+            Ok(false) => {}
+            Err(WorkerError::Http(error)) => eprintln!("minijam worker poll failed: {error}"),
+            Err(error) => eprintln!("minijam worker iteration failed: {error}"),
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(config.poll_interval) => {},
+            _ = tokio::signal::ctrl_c() => break,
         }
     }
-}
-
-fn refresh_health(
-    health: &WorkerHealth,
-    config: &WorkerConfig,
-    signing_pair: Option<&sp_core::sr25519::Pair>,
-) {
-    let Ok(chain) = BlockingHttpWorkerChainSource::new(config.rpc_url.clone()) else {
-        health.set_ready(false);
-        return;
-    };
-    let identity_ready = signing_pair
-        .zip(config.worker_id)
-        .is_some_and(|(pair, worker_id)| {
-            chain
-                .registered_session_key(worker_id)
-                .is_ok_and(|key| key == Some(pair.public().0))
-        });
-    let dependencies_ready = chain.genesis_hash().is_ok_and(|hash| {
-        config
-            .expected_genesis_hash
-            .is_none_or(|expected| hash == expected)
-    }) && check_bundle_gateway_ready(&config.ipfs_gateway).is_ok();
-    health.set_ready(identity_ready && dependencies_ready);
-}
-
-fn poll_and_persist<C, F, D>(
-    runner: &mut WorkerRunner<C, F, D>,
-    metrics: &WorkerMetrics,
-    recovery_db: Option<&WorkerRecoveryDb>,
-    config: &WorkerConfig,
-    signing_pair: Option<&sp_core::sr25519::Pair>,
-) -> Result<(), minijam_worker::WorkerError>
-where
-    C: minijam_worker::WorkerChainSource
-        + minijam_worker::WorkerTxSubmitter
-        + minijam_worker::ProtocolStateSource
-        + minijam_worker::WorkerSignedTxContext,
-    F: minijam_worker_engine::fetch::ContentFetcher,
-    D: minijam_worker_engine::WorkBundleDecoder,
-{
-    let submitted_candidates = if config.submit_candidates {
-        block_on(runner.submit_candidate_reports_with_lanes(
-            config.worker_id.unwrap(),
-            signing_pair.expect("signing pair is checked before polling"),
-            config.chain_id,
-            config.core_index,
-            config.execution_lanes,
-            Some(metrics),
-        ))?
-        .len()
-    } else {
-        0
-    };
-    let processed = if config.submit_candidates {
-        0
-    } else {
-        block_on(runner.poll_once_with_metrics(metrics))?
-    };
-    let submitted_votes = if config.submit_support_votes {
-        block_on(runner.submit_refine_votes(
-            config.worker_id.unwrap(),
-            signing_pair.expect("signing pair is checked before polling"),
-            config.chain_id,
-            config.core_index,
-            Some(metrics),
-        ))?
-        .len()
-    } else {
-        block_on(runner.poll_open_vote_tasks_with_metrics(metrics))?.len()
-    };
-    if let Some(db) = recovery_db {
-        db.save_statuses(runner.statuses())
-            .map_err(|error| minijam_worker::WorkerError::Chain(error.to_string()))?;
-    }
-    eprintln!(
-        "minijam worker poll completed processed={} submitted_candidates={} vote_tasks_or_submitted={}",
-        processed, submitted_candidates, submitted_votes
-    );
-    Ok(())
 }

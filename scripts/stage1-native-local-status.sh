@@ -7,8 +7,6 @@ NODE_PORT="${MINIJAM_NATIVE_NODE_RPC_PORT:-9944}"
 FORMAL_PORT="${MINIJAM_NATIVE_FORMAL_RPC_PORT:-8090}"
 NODE_RPC="${MINIJAM_NODE_RPC:-http://127.0.0.1:${NODE_PORT}}"
 FORMAL_URL="${MINIJAM_FORMAL_RPC_URL:-http://127.0.0.1:${FORMAL_PORT}}"
-WORKER_HEALTH_BASE_PORT="${MINIJAM_NATIVE_WORKER_HEALTH_BASE_PORT:-8082}"
-WORKER_IDS=(0 1 2)
 
 for command in curl jq; do
   command -v "${command}" >/dev/null 2>&1 || { echo "${command} is required" >&2; exit 127; }
@@ -36,12 +34,6 @@ process_alive() {
   pid="$(<"${file}")"
   [[ "${pid}" =~ ^[1-9][0-9]*$ ]] || return 1
   kill -0 "${pid}" 2>/dev/null
-}
-
-worker_health() {
-  local worker_id="$1"
-  curl -fsS --max-time 5 \
-    "http://127.0.0.1:$((WORKER_HEALTH_BASE_PORT + worker_id))/health/ready" 2>/dev/null
 }
 
 node_ok=0
@@ -85,27 +77,18 @@ else
   printf 'FORMAL_RPC_READY=FAIL\n'
 fi
 
-worker_ok=1
-for worker_id in "${WORKER_IDS[@]}"; do
-  if process_alive "${RUNTIME}/worker-${worker_id}.pid"; then
-    printf 'WORKER_%s_PROCESS=RUNNING\n' "${worker_id}"
-  else
-    worker_ok=0
-    printf 'WORKER_%s_PROCESS=STOPPED\n' "${worker_id}"
-  fi
-  if response="$(worker_health "${worker_id}" 2>/dev/null)" && [[ "${response}" == *ready* ]]; then
-    printf 'WORKER_%s_HEALTH=PASS\n' "${worker_id}"
-  else
-    worker_ok=0
-    printf 'WORKER_%s_HEALTH=FAIL\n' "${worker_id}"
-  fi
-  if grep -q 'minijam worker poll completed' "${RUNTIME}/logs/worker-${worker_id}.log" 2>/dev/null; then
-    printf 'WORKER_%s_NODE_POLL=PASS\n' "${worker_id}"
-  else
-    worker_ok=0
-    printf 'WORKER_%s_NODE_POLL=FAIL\n' "${worker_id}"
-  fi
-done
+worker_ok=0
+if process_alive "${RUNTIME}/worker.pid"; then
+  worker_ok=1
+  printf 'WORKER_PROCESS=RUNNING\n'
+else
+  printf 'WORKER_PROCESS=STOPPED\n'
+fi
+if grep -Eq 'minijam worker (refined and submitted|started)' "${RUNTIME}/logs/worker.log" 2>/dev/null; then
+  printf 'WORKER_ACTIVITY=PASS\n'
+else
+  printf 'WORKER_ACTIVITY=WAITING\n'
+fi
 
 if (( node_ok == 1 && formal_ok == 1 && worker_ok == 1 )); then
   printf 'MINIJAM_LOCAL_NETWORK=READY\n'

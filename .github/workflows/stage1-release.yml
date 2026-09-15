@@ -30,7 +30,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_TEST_THREADS: 1
   MINIJAM_IMAGE_REGISTRY: ghcr.io/archelabs
-  MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY: '0x1111111111111111111111111111111111111111111111111111111111111111'
+  MINIJAM_STAGE1_WORKER_PUBLIC_KEY: '0x1111111111111111111111111111111111111111111111111111111111111111'
   MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY: '0x2222222222222222222222222222222222222222222222222222222222222222'
 
 jobs:
@@ -173,14 +173,17 @@ jobs:
             exit 1
           fi
           worker_seed="0x$(openssl rand -hex 32)"
-          relayer_uri="0x$(openssl rand -hex 32)"
+          signer_uri="0x$(openssl rand -hex 32)"
+          worker_public_key="$(docker run --rm --network=none "${NODE_IMAGE}" key inspect "${worker_seed}" | sed -nE 's/^[[:space:]]*Public key \(hex\):[[:space:]]*(0x[0-9a-fA-F]{64})[[:space:]]*$/\1/p' | head -n1)"
+          test "${worker_public_key}" =~ ^0x[0-9a-fA-F]{64}$
           echo "::add-mask::${node_key}"
           echo "::add-mask::${worker_seed}"
-          echo "::add-mask::${relayer_uri}"
+          echo "::add-mask::${signer_uri}"
           {
             echo "MINIJAM_NODE_NETWORK_KEY=${node_key}"
             echo "MINIJAM_WORKER_SEED=${worker_seed}"
-            echo "MINIJAM_FORMAL_RPC_RELAYER_URI=${relayer_uri}"
+            echo "MINIJAM_STAGE1_WORKER_PUBLIC_KEY=${worker_public_key}"
+            echo "MINIJAM_SIGNER_URI=${signer_uri}"
           } >> "${GITHUB_ENV}"
 
       - name: Generate Stage-1 chain specs from candidate node image

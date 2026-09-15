@@ -109,7 +109,6 @@ jobs:
       - name: Run core fast gate
         run: |
           cargo test -p pallet-minijam
-          cargo test -p pallet-minijam-workers
 
       - name: Test Stage-1 core
         run: ./scripts/test-stage1-core.sh
@@ -119,7 +118,7 @@ jobs:
           cargo check
           -p minijam-protocol
           -p minijam-jamcore-api
-          -p minijam-worker-engine
+          -p minijam-work-package-builder
           --no-default-features
           --target wasm32-unknown-unknown
 

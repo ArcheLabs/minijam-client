@@ -10,9 +10,10 @@ deployment stack.
 The compact and split profiles contain the same three roles:
 
 - `node`: validator and safe JSON-RPC endpoint;
-- `worker`: Worker daemon with its own signing key and state volume;
-- `formal-rpc`: application-neutral Work and bundle gateway with the Work-ingress
-  relayer key and bundle volume.
+- `worker`: the single Worker daemon with the configured WorkerAccount key and
+  state volume;
+- `formal-rpc`: application-neutral transaction queue and bundle gateway with a
+  bundle volume.
 
 The optional Service compiler is a separate image from `deploy/compiler` and is
 not part of the Stage-1 runtime network.
@@ -52,7 +53,7 @@ export MINIJAM_FORMAL_RPC_IMAGE=ghcr.io/archelabs/minijam-formal-rpc@sha256:<dig
 export MINIJAM_STAGE1_CHAIN_SPEC_FILE=./chain-specs/stage1.json
 export MINIJAM_NODE_NETWORK_KEY=0x<64-hex-bytes>
 export MINIJAM_WORKER_SEED=0x<64-hex-bytes>
-export MINIJAM_FORMAL_RPC_RELAYER_URI=0x<64-hex-bytes>
+export MINIJAM_SIGNER_URI=//Alice-or-the-worker-key
 
 docker compose -f deploy/stage1/compose.compact.yml config
 docker compose -f deploy/stage1/compose.compact.yml up -d

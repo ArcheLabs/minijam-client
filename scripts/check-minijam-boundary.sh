@@ -8,7 +8,6 @@ production_paths=(
   "${root}/crates/minijam-work-package-builder/src"
   "${root}/runtime/src"
   "${root}/pallets/minijam/src"
-  "${root}/pallets/minijam-workers/src"
   "${root}/node/src"
   "${root}/external/jambda/crates/minijam-executive/src"
 )

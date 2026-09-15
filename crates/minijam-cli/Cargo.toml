@@ -11,5 +11,6 @@ path = "src/main.rs"
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
 minijam-protocol = { path = "../minijam-protocol", default-features = true }
+pallet-minijam = { path = "../../pallets/minijam", default-features = true }
 parity-scale-codec = { workspace = true, default-features = true }
 serde_json = { workspace = true, features = ["std"] }

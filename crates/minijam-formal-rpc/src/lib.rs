@@ -1,10 +1,10 @@
-//! JamScript-agnostic MiniJAM Work ingress.
+//! Persistent, JamScript-agnostic MiniJAM transaction ingress.
 
 use std::{
     future::Future,
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -17,26 +17,22 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
-use jam_codec::Decode as JamDecode;
-use jp_core_primitives::{
-    simple::ByteSequence,
-    types::{Preimage, ServiceInfo},
-};
+use jam_codec::{Decode as JamDecode, Encode as JamEncode};
+use jp_core_primitives::{simple::ByteSequence, types::Preimage};
 use minijam_chain_client::{FinalizedContext, MiniJamChainClient};
-use minijam_protocol::{blake2_256, Hash, SystemOpV2, SystemReceiptV2};
-use parity_scale_codec::Decode;
+use minijam_protocol::{blake2_256, Hash, SystemReceiptV2};
+use parity_scale_codec::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use sp_core::{sr25519, Pair};
 use thiserror::Error;
 use tokio::sync::Semaphore;
 use tower_http::limit::RequestBodyLimitLayer;
 
-const MAX_WORK_BYTES: usize = 1_048_576;
 const MAX_RPC_BODY_BYTES: usize = 8 * 1_048_576;
+const MAX_BATCH_ITEMS: usize = 4;
+const MAX_WORK_PACKAGE_BYTES: usize = 1_048_576;
 const MAX_RPC_CONCURRENCY: usize = 32;
-const FORMAL_RPC_CONNECT_DEADLINE: Duration = Duration::from_secs(60);
-const FORMAL_RPC_CONNECT_INITIAL_DELAY: Duration = Duration::from_millis(250);
-const FORMAL_RPC_CONNECT_MAX_DELAY: Duration = Duration::from_secs(2);
+const CONNECT_DEADLINE: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug)]
 struct ConnectRetryPolicy {
@@ -44,17 +40,15 @@ struct ConnectRetryPolicy {
     initial_delay: Duration,
     max_delay: Duration,
 }
-
 impl Default for ConnectRetryPolicy {
     fn default() -> Self {
         Self {
-            deadline: FORMAL_RPC_CONNECT_DEADLINE,
-            initial_delay: FORMAL_RPC_CONNECT_INITIAL_DELAY,
-            max_delay: FORMAL_RPC_CONNECT_MAX_DELAY,
+            deadline: CONNECT_DEADLINE,
+            initial_delay: Duration::from_millis(250),
+            max_delay: Duration::from_secs(2),
         }
     }
 }
-
 async fn retry_connection<T, F, Fut>(
     policy: ConnectRetryPolicy,
     mut connect: F,
@@ -66,27 +60,21 @@ where
     let started = Instant::now();
     let mut delay = policy.initial_delay;
     let mut last_error = None;
-
     loop {
         let remaining = policy.deadline.saturating_sub(started.elapsed());
         if remaining.is_zero() {
-            return Err(last_error.unwrap_or_else(|| {
-                "Formal RPC startup connection deadline elapsed before the first attempt".into()
-            }));
+            return Err(last_error.unwrap_or_else(|| "connection deadline elapsed".into()));
         }
-
         match tokio::time::timeout(remaining, connect()).await {
             Ok(Ok(value)) => return Ok(value),
             Ok(Err(error)) => last_error = Some(error),
             Err(_) => {
-                return Err(last_error
-                    .unwrap_or_else(|| "Formal RPC startup connection attempt timed out".into()));
+                return Err(last_error.unwrap_or_else(|| "connection attempt timed out".into()))
             }
         }
-
         let remaining = policy.deadline.saturating_sub(started.elapsed());
         if remaining.is_zero() {
-            return Err(last_error.expect("a failed attempt must provide an error"));
+            return Err(last_error.expect("failed attempt has an error"));
         }
         tokio::time::sleep(delay.min(remaining)).await;
         delay = delay.saturating_mul(2).min(policy.max_delay);
@@ -96,7 +84,7 @@ where
 async fn connect_chain_with_retry(
     rpc_url: &str,
     signer_uri: &str,
-    request_timeout: Duration,
+    timeout: Duration,
 ) -> Result<MiniJamChainClient, String> {
     let rpc_url = rpc_url.to_owned();
     let signer_uri = signer_uri.to_owned();
@@ -106,23 +94,60 @@ async fn connect_chain_with_retry(
         async move {
             let signer =
                 sr25519::Pair::from_string(&signer_uri, None).map_err(|error| error.to_string())?;
-            MiniJamChainClient::connect(rpc_url, signer, request_timeout)
+            MiniJamChainClient::connect(rpc_url, signer, timeout)
                 .await
                 .map_err(|error| error.to_string())
         }
     })
     .await
-    .map_err(startup_connection_error)
+    .map_err(|error| format!("failed to connect to MiniJAM node before startup deadline: {error}"))
 }
 
-fn startup_connection_error(error: impl std::fmt::Display) -> String {
-    format!("failed to connect to MiniJAM node before startup deadline: {error}")
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum TransactionState {
+    Queued,
+    Packaged,
+    Refining,
+    Reported,
+    Imported,
+    Failed,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct QueueEntry {
+    id: Hash,
+    service_id: u32,
+    service_code_hash: Hash,
+    payload: Vec<u8>,
+    extrinsics: Vec<Vec<u8>>,
+    state: TransactionState,
+    package_hash: Option<Hash>,
+    item_index: Option<u32>,
+    receipt: Option<Hash>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ActivePackage {
+    package_hash: Hash,
+    transaction_ids: Vec<Hash>,
+    bundle_hash: Hash,
+    context: ContextResult,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct QueueStore {
+    entries: Vec<QueueEntry>,
+    active: Option<ActivePackage>,
 }
 
 #[derive(Clone)]
 pub struct FormalRpc {
     chain: Arc<MiniJamChainClient>,
     bundle_dir: PathBuf,
+    queue_path: PathBuf,
+    store: Arc<Mutex<QueueStore>>,
     admission: Arc<Semaphore>,
 }
 
@@ -130,35 +155,46 @@ impl FormalRpc {
     pub fn new(chain: Arc<MiniJamChainClient>, bundle_dir: PathBuf) -> Result<Self, RpcError> {
         std::fs::create_dir_all(&bundle_dir)
             .map_err(|error| RpcError::Storage(error.to_string()))?;
+        let queue_path = bundle_dir.join("transactions.json");
+        let store = if queue_path.exists() {
+            let bytes =
+                std::fs::read(&queue_path).map_err(|error| RpcError::Storage(error.to_string()))?;
+            serde_json::from_slice(&bytes)
+                .map_err(|error| RpcError::Storage(format!("invalid durable queue: {error}")))?
+        } else {
+            QueueStore::default()
+        };
         Ok(Self {
             chain,
             bundle_dir,
+            queue_path,
+            store: Arc::new(Mutex::new(store)),
             admission: Arc::new(Semaphore::new(MAX_RPC_CONCURRENCY)),
         })
     }
-
     pub fn router(self) -> Router {
         Router::new()
             .route("/", post(json_rpc))
+            .route("/worker/v1/task", get(worker_task))
+            .route("/worker/v1/report-submitted", post(report_submitted))
             .route("/ipfs/{cid}", get(get_bundle))
             .route("/health/ready", get(ready))
             .layer(RequestBodyLimitLayer::new(MAX_RPC_BODY_BYTES))
             .with_state(self)
     }
 
-    async fn submit_work(&self, request: SubmitWorkParams) -> Result<SubmitWorkResult, RpcError> {
-        let finalized = self.chain.finalized_context().await.map_err(chain_error)?;
-        request.context.matches(&finalized)?;
-
-        let service_info = self
-            .chain
-            .service_info_at(finalized.block_hash, request.service_id)
-            .await
-            .map_err(chain_error)?
-            .ok_or(RpcError::ServiceNotFound)?;
-        let service_info = decode_service_info(&service_info)?;
-        validate_code_hash(&service_info, request.service_code_hash.0)?;
-
+    fn persist_locked(&self, store: &QueueStore) -> Result<(), RpcError> {
+        let bytes = serde_json::to_vec_pretty(store)
+            .map_err(|error| RpcError::Storage(error.to_string()))?;
+        let temporary = self.queue_path.with_extension("json.tmp");
+        std::fs::write(&temporary, bytes)
+            .and_then(|_| std::fs::rename(&temporary, &self.queue_path))
+            .map_err(|error| RpcError::Storage(error.to_string()))
+    }
+    async fn submit_transaction(
+        &self,
+        request: SubmitTransactionParams,
+    ) -> Result<SubmitTransactionResult, RpcError> {
         let payload = STANDARD
             .decode(request.payload_base64)
             .map_err(|error| RpcError::InvalidParams(format!("invalid payloadBase64: {error}")))?;
@@ -171,72 +207,287 @@ impl FormalRpc {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let id = transaction_id(
+            request.service_id,
+            request.service_code_hash.0,
+            &payload,
+            &extrinsics,
+        );
+        let finalized = self.chain.finalized_context().await.map_err(chain_error)?;
+        let service_info = self
+            .chain
+            .service_info_at(finalized.block_hash, request.service_id)
+            .await
+            .map_err(chain_error)?
+            .ok_or(RpcError::ServiceNotFound)?;
+        let service_info = decode_service_info(&service_info)?;
+        if service_info.code_hash.0 != request.service_code_hash.0 {
+            return Err(RpcError::CodeHashMismatch);
+        }
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| RpcError::Storage("queue lock poisoned".into()))?;
+        if let Some(existing) = store.entries.iter().find(|entry| entry.id == id) {
+            return Ok(SubmitTransactionResult {
+                transaction_id: hex(&existing.id),
+                status: existing.state,
+                package_hash: existing.package_hash.map(|hash| hex(&hash)),
+                item_index: existing.item_index,
+            });
+        }
+        store.entries.push(QueueEntry {
+            id,
+            service_id: request.service_id,
+            service_code_hash: request.service_code_hash.0,
+            payload,
+            extrinsics,
+            state: TransactionState::Queued,
+            package_hash: None,
+            item_index: None,
+            receipt: None,
+            error: None,
+        });
+        let result = SubmitTransactionResult {
+            transaction_id: hex(&id),
+            status: TransactionState::Queued,
+            package_hash: None,
+            item_index: None,
+        };
+        self.persist_locked(&store)?;
+        Ok(result)
+    }
 
-        let built = minijam_work_package_builder::build_work_package(
-            minijam_work_package_builder::BuildWorkInput {
-                service_id: request.service_id,
-                service_code_hash: request.service_code_hash.0,
-                payload,
-                extrinsics,
+    async fn refresh_active(&self) -> Result<(), RpcError> {
+        let active = self
+            .store
+            .lock()
+            .map_err(|_| RpcError::Storage("queue lock poisoned".into()))?
+            .active
+            .clone();
+        let Some(active) = active else {
+            return Ok(());
+        };
+        let Some(status) = self
+            .chain
+            .package_status(active.package_hash)
+            .await
+            .map_err(chain_error)?
+        else {
+            return Ok(());
+        };
+        let receipt = if matches!(status, minijam_protocol::PackageStatus::Imported) {
+            self.chain
+                .execution_receipt_by_package_hash(active.package_hash)
+                .await
+                .map_err(chain_error)?
+        } else {
+            None
+        };
+        let failure = if matches!(status, minijam_protocol::PackageStatus::Failed) {
+            self.chain
+                .package_failure(active.package_hash)
+                .await
+                .map_err(chain_error)?
+                .map(|bytes| hex(&bytes))
+                .unwrap_or_else(|| "package failed".into())
+        } else {
+            String::new()
+        };
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| RpcError::Storage("queue lock poisoned".into()))?;
+        match status {
+            minijam_protocol::PackageStatus::Pending => {}
+            minijam_protocol::PackageStatus::Imported => {
+                for entry in &mut store.entries {
+                    if active.transaction_ids.contains(&entry.id) {
+                        entry.state = TransactionState::Imported;
+                        entry.receipt = receipt;
+                    }
+                }
+                store.active = None;
+            }
+            minijam_protocol::PackageStatus::Failed => {
+                for entry in &mut store.entries {
+                    if active.transaction_ids.contains(&entry.id) {
+                        entry.state = TransactionState::Failed;
+                        entry.error = Some(failure.clone());
+                    }
+                }
+                store.active = None;
+            }
+        }
+        self.persist_locked(&store)
+    }
+
+    async fn build_active_package(&self) -> Result<(), RpcError> {
+        if self
+            .store
+            .lock()
+            .map_err(|_| RpcError::Storage("queue lock poisoned".into()))?
+            .active
+            .is_some()
+        {
+            return Ok(());
+        }
+        let first = {
+            let store = self
+                .store
+                .lock()
+                .map_err(|_| RpcError::Storage("queue lock poisoned".into()))?;
+            store
+                .entries
+                .iter()
+                .find(|entry| matches!(entry.state, TransactionState::Queued))
+                .cloned()
+        };
+        let Some(first) = first else {
+            return Ok(());
+        };
+        let finalized = self.chain.finalized_context().await.map_err(chain_error)?;
+        let selected = {
+            let store = self
+                .store
+                .lock()
+                .map_err(|_| RpcError::Storage("queue lock poisoned".into()))?;
+            store
+                .entries
+                .iter()
+                .filter(|entry| {
+                    matches!(entry.state, TransactionState::Queued)
+                        && entry.service_id == first.service_id
+                        && entry.service_code_hash == first.service_code_hash
+                })
+                .take(MAX_BATCH_ITEMS)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let built = minijam_work_package_builder::build_work_batch(
+            minijam_work_package_builder::BuildWorkBatchInput {
+                service_id: first.service_id,
+                service_code_hash: first.service_code_hash,
+                transactions: selected
+                    .iter()
+                    .map(
+                        |entry| minijam_work_package_builder::BuildTransactionInput {
+                            payload: entry.payload.clone(),
+                            extrinsics: entry.extrinsics.clone(),
+                        },
+                    )
+                    .collect(),
                 anchor_hash: finalized.block_hash,
                 state_root: finalized.state_root,
                 lookup_anchor_slot: finalized.slot,
             },
         )
         .map_err(|error| RpcError::InvalidParams(error.to_string()))?;
-        if built.canonical_work_package.len() > MAX_WORK_BYTES {
+        if built.canonical_work_package.len() > MAX_WORK_PACKAGE_BYTES {
             return Err(RpcError::InvalidParams("work package is too large".into()));
         }
-
-        self.save_bundle(&built.bundle_bytes, built.content_ref.content_hash)?;
-        let submission = self
-            .chain
-            .submit_work(
-                built.canonical_work_package,
-                built.content_ref,
-                built.package_hash,
-            )
-            .await
-            .map_err(chain_error)?;
-
-        Ok(SubmitWorkResult {
-            package_hash: hex(&built.package_hash),
-            submission_hash: hex(&submission.extrinsic_hash),
+        save_bundle_to_dir(
+            &self.bundle_dir,
+            &built.bundle_bytes,
+            built.content_ref.content_hash,
+        )?;
+        let active = ActivePackage {
+            package_hash: built.package_hash,
+            transaction_ids: selected.iter().map(|entry| entry.id).collect(),
+            bundle_hash: built.content_ref.content_hash,
             context: ContextResult::from(finalized),
-        })
+        };
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| RpcError::Storage("queue lock poisoned".into()))?;
+        for (index, id) in active.transaction_ids.iter().enumerate() {
+            if let Some(entry) = store.entries.iter_mut().find(|entry| entry.id == *id) {
+                entry.state = TransactionState::Packaged;
+                entry.package_hash = Some(active.package_hash);
+                entry.item_index = Some(index as u32);
+            }
+        }
+        store.active = Some(active);
+        self.persist_locked(&store)
     }
 
-    async fn work_status(&self, package_hash: Hash) -> Result<WorkStatusResult, RpcError> {
-        let context = self.chain.finalized_context().await.map_err(chain_error)?;
-        let work_id = self
-            .chain
-            .work_id_by_package_hash(package_hash)
-            .await
-            .map_err(chain_error)?;
-        let Some(work_id) = work_id else {
-            return Err(RpcError::WorkNotFound);
+    async fn worker_task(&self) -> Result<Option<WorkerTaskResponse>, RpcError> {
+        self.refresh_active().await?;
+        self.build_active_package().await?;
+        let active = self
+            .store
+            .lock()
+            .map_err(|_| RpcError::Storage("queue lock poisoned".into()))?
+            .active
+            .clone();
+        let Some(active) = active else {
+            return Ok(None);
         };
-        let work = self
-            .chain
-            .work_status::<pallet_minijam::WorkRecord<minijam_runtime::Runtime>>(work_id)
-            .await
-            .map_err(chain_error)?
-            .ok_or(RpcError::WorkNotFound)?;
-        let execution_receipt = if matches!(work.status, pallet_minijam::WorkStatus::Imported) {
-            self.chain
-                .execution_receipt(work_id)
-                .await
-                .map_err(chain_error)?
-                .map(|hash| hex(&hash))
-        } else {
-            None
-        };
-        Ok(WorkStatusResult {
-            package_hash: hex(&package_hash),
-            work_id: Some(work_id),
-            status: WorkStatus::from(work.status),
-            execution_receipt,
-            context: ContextResult::from(context),
+        let bytes = std::fs::read(
+            self.bundle_dir
+                .join(hex_without_prefix(&active.bundle_hash)),
+        )
+        .map_err(|error| RpcError::Storage(error.to_string()))?;
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| RpcError::Storage("queue lock poisoned".into()))?;
+        for entry in &mut store.entries {
+            if active.transaction_ids.contains(&entry.id)
+                && matches!(entry.state, TransactionState::Packaged)
+            {
+                entry.state = TransactionState::Refining;
+            }
+        }
+        self.persist_locked(&store)?;
+        Ok(Some(WorkerTaskResponse {
+            package_hash: hex(&active.package_hash),
+            bundle_base64: STANDARD.encode(bytes),
+            context: active.context,
+        }))
+    }
+
+    fn mark_reported(&self, package_hash: Hash) -> Result<(), RpcError> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| RpcError::Storage("queue lock poisoned".into()))?;
+        let transaction_ids = store
+            .active
+            .as_ref()
+            .filter(|active| active.package_hash == package_hash)
+            .ok_or(RpcError::TransactionNotFound)?
+            .transaction_ids
+            .clone();
+        for entry in &mut store.entries {
+            if transaction_ids.contains(&entry.id)
+                && matches!(entry.state, TransactionState::Refining)
+            {
+                entry.state = TransactionState::Reported;
+            }
+        }
+        self.persist_locked(&store)
+    }
+
+    async fn transaction_status(&self, id: Hash) -> Result<TransactionStatusResult, RpcError> {
+        self.refresh_active().await?;
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| RpcError::Storage("queue lock poisoned".into()))?;
+        let entry = store
+            .entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .ok_or(RpcError::TransactionNotFound)?;
+        Ok(TransactionStatusResult {
+            transaction_id: hex(&entry.id),
+            status: entry.state,
+            package_hash: entry.package_hash.map(|hash| hex(&hash)),
+            item_index: entry.item_index,
+            execution_receipt: entry.receipt.map(|hash| hex(&hash)),
+            error: entry.error.clone(),
         })
     }
 
@@ -256,8 +507,6 @@ impl FormalRpc {
         if request.code_hash.0 != code_hash {
             return Err(RpcError::CodeHashMismatch);
         }
-        deployment_phase("CREATE_SERVICE_REQUEST_RECEIVED");
-        deployment_phase("CREATE_SERVICE_SYSTEM_OP_PREPARED");
         let submitted = self
             .chain
             .submit_create_service(
@@ -269,29 +518,20 @@ impl FormalRpc {
             )
             .await
             .map_err(deployment_chain_error)?;
-
-        deployment_phase("CREATE_SERVICE_EXTRINSIC_SUBMITTED");
-        deployment_phase("CREATE_SERVICE_FINALIZED");
-        deployment_phase("CREATE_SERVICE_WAITING_RECEIPT");
         let receipt = wait_for_system_receipt(&self.chain, submitted.correlation).await?;
-        deployment_phase("CREATE_SERVICE_RECEIPT_RECEIVED");
         let service_id = match receipt {
             SystemReceiptV2::ServiceCreated { service_id } => service_id,
             SystemReceiptV2::Rejected { code } => return Err(RpcError::DeploymentRejected(code)),
         };
-        let canonical = jam_codec::Encode::encode(&Preimage {
+        let canonical = JamEncode::encode(&Preimage {
             requester: service_id,
             blob: ByteSequence::from(blob),
         });
-        deployment_phase("CREATE_SERVICE_PREIMAGE_SUBMITTED");
         self.chain
             .submit_preimage_finalized(canonical)
             .await
             .map_err(deployment_chain_error)?;
-        deployment_phase("CREATE_SERVICE_PREIMAGE_FINALIZED");
         let context = wait_for_service_code_hash(&self.chain, service_id, code_hash).await?;
-        deployment_phase("CREATE_SERVICE_CODE_HASH_CONFIRMED");
-        deployment_phase("CREATE_SERVICE_COMPLETE");
         Ok(DeploymentResult {
             operation_id: hex(&submitted.correlation),
             service_id,
@@ -300,192 +540,29 @@ impl FormalRpc {
             context: ContextResult::from(context),
         })
     }
-
-    fn save_bundle(&self, bytes: &[u8], expected_hash: Hash) -> Result<(), RpcError> {
-        save_bundle_to_dir(&self.bundle_dir, bytes, expected_hash)
-    }
 }
 
-fn save_bundle_to_dir(
-    bundle_dir: &FsPath,
-    bytes: &[u8],
-    expected_hash: Hash,
-) -> Result<(), RpcError> {
-    if blake2_256(bytes) != expected_hash {
-        return Err(RpcError::Storage("bundle hash mismatch".into()));
-    }
-    let path = bundle_dir.join(hex_without_prefix(&expected_hash));
-    if path.exists() {
-        let existing =
-            std::fs::read(&path).map_err(|error| RpcError::Storage(error.to_string()))?;
-        if existing != bytes {
-            return Err(RpcError::Storage("bundle hash collision".into()));
-        }
-        return Ok(());
-    }
-    let temporary = bundle_dir.join(format!(".{}.tmp", hex_without_prefix(&expected_hash)));
-    std::fs::write(&temporary, bytes)
-        .and_then(|_| std::fs::rename(&temporary, &path))
-        .map_err(|error| RpcError::Storage(error.to_string()))
-}
-
-fn validate_code_hash(service_info: &ServiceInfo, expected: Hash) -> Result<(), RpcError> {
-    if service_info.code_hash.0 != expected {
-        return Err(RpcError::CodeHashMismatch);
-    }
-    Ok(())
-}
-
-async fn wait_for_system_receipt(
-    chain: &MiniJamChainClient,
-    request_id: Hash,
-) -> Result<SystemReceiptV2, RpcError> {
-    let mut last_state = DeploymentOperationState::Missing;
-    for _ in 0..120 {
-        if let Some(receipt) = chain
-            .system_receipt::<SystemReceiptV2>(request_id)
-            .await
-            .map_err(chain_error)?
-        {
-            return Ok(receipt);
-        }
-        last_state = deployment_operation_state(chain, request_id).await?;
-        if let DeploymentOperationState::Quarantined(reason) = &last_state {
-            return Err(RpcError::DeploymentQuarantined(reason.clone()));
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    Err(RpcError::DeploymentReceiptTimeout(
-        last_state.as_str().into(),
-    ))
-}
-
-#[derive(Clone, Debug)]
-enum DeploymentOperationState {
-    Pending,
-    Quarantined(String),
-    Missing,
-}
-
-impl DeploymentOperationState {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Pending => "pending",
-            Self::Quarantined(_) => "quarantined",
-            Self::Missing => "missing",
-        }
-    }
-}
-
-async fn deployment_operation_state(
-    chain: &MiniJamChainClient,
-    request_id: Hash,
-) -> Result<DeploymentOperationState, RpcError> {
-    if chain
-        .system_op::<SystemOpV2>(request_id)
-        .await
-        .map_err(chain_error)?
-        .is_some()
-    {
-        return Ok(DeploymentOperationState::Pending);
-    }
-
-    let quarantined: Vec<pallet_minijam::QuarantinedSystemOp<minijam_runtime::Runtime>> =
-        chain.quarantined_system_ops().await.map_err(chain_error)?;
-    Ok(quarantined
-        .into_iter()
-        .find(|operation| operation.op.request_id == request_id)
-        .map(|operation| {
-            DeploymentOperationState::Quarantined(format!("{:?}", operation.error_code))
-        })
-        .unwrap_or(DeploymentOperationState::Missing))
-}
-
-fn deployment_phase(phase: &str) {
-    eprintln!("minijam_createServiceV1 phase={phase}");
-}
-
-async fn wait_for_service_code_hash(
-    chain: &MiniJamChainClient,
+#[derive(Clone, Debug, Deserialize, Encode)]
+struct TransactionForId {
     service_id: u32,
-    expected: Hash,
-) -> Result<FinalizedContext, RpcError> {
-    for _ in 0..120 {
-        let context = chain.finalized_context().await.map_err(chain_error)?;
-        if chain
-            .service_code_hash_at(context.block_hash, service_id)
-            .await
-            .map_err(chain_error)?
-            == Some(expected)
-        {
-            return Ok(context);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    Err(RpcError::Chain(
-        "timed out waiting for finalized ServiceInfo/codeHash verification".into(),
-    ))
+    service_code_hash: Hash,
+    payload: Vec<u8>,
+    extrinsics: Vec<Vec<u8>>,
 }
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SubmitWorkParams {
-    context: ContextParams,
+struct SubmitTransactionParams {
     service_id: u32,
     service_code_hash: HashParam,
     payload_base64: String,
     #[serde(default)]
     extrinsics_base64: Vec<String>,
 }
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ContextParams {
-    block_hash: HashParam,
-    state_root: HashParam,
-    slot: u32,
+struct GetTransactionStatusParams {
+    transaction_id: HashParam,
 }
-
-impl ContextParams {
-    fn matches(&self, finalized: &FinalizedContext) -> Result<(), RpcError> {
-        if self.block_hash.0 != finalized.block_hash
-            || self.state_root.0 != finalized.state_root
-            || self.slot != finalized.slot
-        {
-            return Err(RpcError::StaleContext {
-                finalized: ContextResult::from(finalized.clone()),
-            });
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(try_from = "String")]
-struct HashParam(Hash);
-
-impl TryFrom<String> for HashParam {
-    type Error = RpcError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        let value = value.strip_prefix("0x").unwrap_or(&value);
-        if value.len() != 64 {
-            return Err(RpcError::InvalidParams("expected 32-byte hex".into()));
-        }
-        let mut output = [0; 32];
-        for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
-            output[index] = (hex_nibble(chunk[0])? << 4) | hex_nibble(chunk[1])?;
-        }
-        Ok(Self(output))
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct GetWorkStatusParams {
-    package_hash: HashParam,
-}
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreateServiceParams {
@@ -494,7 +571,40 @@ struct CreateServiceParams {
     min_item_gas: u64,
     min_memo_gas: u64,
 }
-
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "String")]
+struct HashParam(Hash);
+impl TryFrom<String> for HashParam {
+    type Error = RpcError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        decode_hash(&value).map(Self)
+    }
+}
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SubmitTransactionResult {
+    transaction_id: String,
+    status: TransactionState,
+    package_hash: Option<String>,
+    item_index: Option<u32>,
+}
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TransactionStatusResult {
+    transaction_id: String,
+    status: TransactionState,
+    package_hash: Option<String>,
+    item_index: Option<u32>,
+    execution_receipt: Option<String>,
+    error: Option<String>,
+}
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerTaskResponse {
+    package_hash: String,
+    bundle_base64: String,
+    context: ContextResult,
+}
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeploymentResult {
@@ -504,8 +614,7 @@ struct DeploymentResult {
     finalized: bool,
     context: ContextResult,
 }
-
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextResult {
     pub block_hash: String,
@@ -513,7 +622,6 @@ pub struct ContextResult {
     pub state_root: String,
     pub slot: u32,
 }
-
 impl From<FinalizedContext> for ContextResult {
     fn from(value: FinalizedContext) -> Self {
         Self {
@@ -525,48 +633,6 @@ impl From<FinalizedContext> for ContextResult {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubmitWorkResult {
-    pub package_hash: String,
-    pub submission_hash: String,
-    pub context: ContextResult,
-}
-
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkStatus {
-    InsufficientWorkers,
-    AwaitingCandidate,
-    Voting,
-    Accepted,
-    Imported,
-    Failed,
-}
-
-impl From<pallet_minijam::WorkStatus> for WorkStatus {
-    fn from(value: pallet_minijam::WorkStatus) -> Self {
-        match value {
-            pallet_minijam::WorkStatus::InsufficientWorkers => Self::InsufficientWorkers,
-            pallet_minijam::WorkStatus::AwaitingCandidate => Self::AwaitingCandidate,
-            pallet_minijam::WorkStatus::Voting => Self::Voting,
-            pallet_minijam::WorkStatus::Accepted => Self::Accepted,
-            pallet_minijam::WorkStatus::Imported => Self::Imported,
-            pallet_minijam::WorkStatus::Failed => Self::Failed,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkStatusResult {
-    pub package_hash: String,
-    pub work_id: Option<u64>,
-    pub status: WorkStatus,
-    pub execution_receipt: Option<String>,
-    pub context: ContextResult,
-}
-
 #[derive(Debug, Error)]
 pub enum RpcError {
     #[error("invalid request: {0}")]
@@ -575,22 +641,18 @@ pub enum RpcError {
     InvalidParams(String),
     #[error("method not found: {0}")]
     MethodNotFound(String),
-    #[error("stale finalized context")]
-    StaleContext { finalized: ContextResult },
     #[error("service not found")]
     ServiceNotFound,
     #[error("service code hash does not match finalized ServiceInfo")]
     CodeHashMismatch,
+    #[error("transaction not found")]
+    TransactionNotFound,
     #[error("deployment was rejected with code {0}")]
     DeploymentRejected(u32),
-    #[error("deployment extrinsic was finalized but its dispatch failed: {0}")]
-    DeploymentDispatchFailed(String),
     #[error("deployment system operation was quarantined: {0}")]
     DeploymentQuarantined(String),
     #[error("timed out waiting for deployment receipt; last operation state: {0}")]
     DeploymentReceiptTimeout(String),
-    #[error("work not found")]
-    WorkNotFound,
     #[error("storage error: {0}")]
     Storage(String),
     #[error("chain error: {0}")]
@@ -598,48 +660,32 @@ pub enum RpcError {
     #[error("formal RPC is busy")]
     Busy,
 }
-
 impl RpcError {
     fn json_parts(self) -> (i32, String, Option<serde_json::Value>) {
         match self {
             Self::InvalidRequest(message) => (-32600, message, None),
             Self::InvalidParams(message) => (-32602, message, None),
             Self::MethodNotFound(method) => (-32601, format!("method not found: {method}"), None),
-            Self::StaleContext { finalized } => (
-                -32010,
-                "stale finalized context".into(),
-                Some(serde_json::to_value(finalized).expect("context serializes")),
-            ),
             Self::ServiceNotFound => (-32011, "service not found".into(), None),
             Self::CodeHashMismatch => (-32012, "service code hash mismatch".into(), None),
+            Self::TransactionNotFound => (-32013, "transaction not found".into(), None),
             Self::DeploymentRejected(code) => (
                 -32014,
                 format!("deployment rejected with code {code}"),
                 None,
             ),
-            Self::DeploymentDispatchFailed(reason) => (
-                -32017,
-                format!("deployment dispatch failed: {reason}"),
-                None,
-            ),
-            Self::DeploymentQuarantined(reason) => (
-                -32015,
-                format!("deployment system operation quarantined: {reason}"),
-                None,
-            ),
+            Self::DeploymentQuarantined(reason) => (-32015, reason, None),
             Self::DeploymentReceiptTimeout(state) => (
                 -32016,
-                format!("timed out waiting for deployment receipt; last operation state: {state}"),
+                format!("deployment receipt timeout; state: {state}"),
                 None,
             ),
-            Self::WorkNotFound => (-32013, "work not found".into(), None),
             Self::Storage(message) => (-32020, message, None),
             Self::Chain(message) => (-32021, message, None),
             Self::Busy => (-32029, "formal RPC is busy".into(), None),
         }
     }
 }
-
 impl IntoResponse for RpcError {
     fn into_response(self) -> Response {
         let (code, message, data) = self.json_parts();
@@ -652,7 +698,6 @@ impl IntoResponse for RpcError {
         .into_response()
     }
 }
-
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
     jsonrpc: String,
@@ -661,7 +706,6 @@ struct JsonRpcRequest {
     #[serde(default)]
     params: serde_json::Value,
 }
-
 #[derive(Debug, Serialize)]
 struct JsonRpcResponse<T> {
     jsonrpc: &'static str,
@@ -671,7 +715,6 @@ struct JsonRpcResponse<T> {
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<JsonRpcError>,
 }
-
 #[derive(Debug, Serialize)]
 struct JsonRpcError {
     code: i32,
@@ -679,7 +722,6 @@ struct JsonRpcError {
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<serde_json::Value>,
 }
-
 impl<T> JsonRpcResponse<T> {
     fn ok(id: serde_json::Value, result: T) -> Self {
         Self {
@@ -689,7 +731,6 @@ impl<T> JsonRpcResponse<T> {
             error: None,
         }
     }
-
     fn error(
         id: serde_json::Value,
         code: i32,
@@ -717,23 +758,22 @@ async fn json_rpc(
     let result = if request.jsonrpc != "2.0" {
         Err(RpcError::InvalidRequest("jsonrpc must be 2.0".into()))
     } else {
-        let permit = rpc.admission.clone().try_acquire_owned();
-        match permit {
+        match rpc.admission.clone().try_acquire_owned() {
             Err(_) => Err(RpcError::Busy),
             Ok(_permit) => match request.method.as_str() {
-                "minijam_submitWorkV1" => {
-                    match serde_json::from_value::<SubmitWorkParams>(request.params) {
+                "minijam_submitTransactionV1" => {
+                    match serde_json::from_value::<SubmitTransactionParams>(request.params) {
                         Ok(params) => rpc
-                            .submit_work(params)
+                            .submit_transaction(params)
                             .await
                             .map(|value| serde_json::to_value(value).expect("result serializes")),
                         Err(error) => Err(RpcError::InvalidParams(error.to_string())),
                     }
                 }
-                "minijam_getWorkStatusV1" => {
-                    match serde_json::from_value::<GetWorkStatusParams>(request.params) {
+                "minijam_getTransactionStatusV1" => {
+                    match serde_json::from_value::<GetTransactionStatusParams>(request.params) {
                         Ok(params) => rpc
-                            .work_status(params.package_hash.0)
+                            .transaction_status(params.transaction_id.0)
                             .await
                             .map(|value| serde_json::to_value(value).expect("result serializes")),
                         Err(error) => Err(RpcError::InvalidParams(error.to_string())),
@@ -753,7 +793,7 @@ async fn json_rpc(
         }
     };
     let response = match result {
-        Ok(result) => JsonRpcResponse::ok(id, result),
+        Ok(value) => JsonRpcResponse::ok(id, value),
         Err(error) => {
             let (code, message, data) = error.json_parts();
             JsonRpcResponse::<serde_json::Value>::error(id, code, message, data)
@@ -762,6 +802,36 @@ async fn json_rpc(
     Json(serde_json::to_value(response).expect("response serializes"))
 }
 
+async fn worker_task(State(rpc): State<FormalRpc>) -> Result<Response, RpcError> {
+    let _permit = rpc
+        .admission
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| RpcError::Busy)?;
+    match rpc.worker_task().await? {
+        Some(task) => Ok(Json(task).into_response()),
+        None => Ok(StatusCode::NO_CONTENT.into_response()),
+    }
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReportSubmittedRequest {
+    package_hash: HashParam,
+}
+async fn report_submitted(
+    State(rpc): State<FormalRpc>,
+    Json(request): Json<ReportSubmittedRequest>,
+) -> Result<Response, RpcError> {
+    let _permit = rpc
+        .admission
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| RpcError::Busy)?;
+    rpc.mark_reported(request.package_hash.0)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
 async fn get_bundle(
     State(rpc): State<FormalRpc>,
     Path(cid): Path<String>,
@@ -792,50 +862,125 @@ async fn get_bundle(
         .body(Body::from(bytes))
         .map_err(|error| RpcError::Storage(error.to_string()))
 }
-
 async fn ready() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "ready"
-        })),
-    )
+    (StatusCode::OK, Json(serde_json::json!({"status":"ready"})))
 }
 
-fn decode_service_info(mut bytes: &[u8]) -> Result<ServiceInfo, RpcError> {
-    let value = minijam_protocol::StateValue::decode(&mut bytes)
+async fn wait_for_system_receipt(
+    chain: &MiniJamChainClient,
+    request_id: Hash,
+) -> Result<SystemReceiptV2, RpcError> {
+    for _ in 0..120 {
+        if let Some(receipt) = chain
+            .system_receipt::<SystemReceiptV2>(request_id)
+            .await
+            .map_err(chain_error)?
+        {
+            return Ok(receipt);
+        }
+        let quarantined: Vec<pallet_minijam::QuarantinedSystemOp<minijam_runtime::Runtime>> =
+            chain.quarantined_system_ops().await.map_err(chain_error)?;
+        if let Some(operation) = quarantined
+            .into_iter()
+            .find(|operation| operation.op.request_id == request_id)
+        {
+            return Err(RpcError::DeploymentQuarantined(format!(
+                "{:?}",
+                operation.error_code
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Err(RpcError::DeploymentReceiptTimeout("pending".into()))
+}
+async fn wait_for_service_code_hash(
+    chain: &MiniJamChainClient,
+    service_id: u32,
+    expected: Hash,
+) -> Result<FinalizedContext, RpcError> {
+    for _ in 0..120 {
+        let context = chain.finalized_context().await.map_err(chain_error)?;
+        if chain
+            .service_code_hash_at(context.block_hash, service_id)
+            .await
+            .map_err(chain_error)?
+            == Some(expected)
+        {
+            return Ok(context);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Err(RpcError::Chain(
+        "timed out waiting for finalized ServiceInfo/codeHash verification".into(),
+    ))
+}
+fn decode_service_info(bytes: &[u8]) -> Result<jp_core_primitives::types::ServiceInfo, RpcError> {
+    let mut raw = bytes;
+    let value = minijam_protocol::StateValue::decode(&mut raw)
         .map_err(|error| RpcError::Chain(error.to_string()))?;
-    let bytes = value.into_inner();
-    ServiceInfo::decode(&mut bytes.as_slice())
+    JamDecode::decode(&mut value.as_slice())
         .map_err(|error| RpcError::Chain(format!("invalid finalized ServiceInfo: {error}")))
 }
-
+pub fn transaction_id(
+    service_id: u32,
+    service_code_hash: Hash,
+    payload: &[u8],
+    extrinsics: &[Vec<u8>],
+) -> Hash {
+    let transaction = TransactionForId {
+        service_id,
+        service_code_hash,
+        payload: payload.to_vec(),
+        extrinsics: extrinsics.to_vec(),
+    };
+    let mut preimage = b"minijam/transaction/v1".to_vec();
+    preimage.extend_from_slice(&transaction.encode());
+    blake2_256(&preimage)
+}
+fn save_bundle_to_dir(
+    bundle_dir: &FsPath,
+    bytes: &[u8],
+    expected_hash: Hash,
+) -> Result<(), RpcError> {
+    if blake2_256(bytes) != expected_hash {
+        return Err(RpcError::Storage("bundle hash mismatch".into()));
+    }
+    let path = bundle_dir.join(hex_without_prefix(&expected_hash));
+    if path.exists() {
+        let existing =
+            std::fs::read(&path).map_err(|error| RpcError::Storage(error.to_string()))?;
+        if existing != bytes {
+            return Err(RpcError::Storage("bundle hash collision".into()));
+        }
+        return Ok(());
+    }
+    let temporary = bundle_dir.join(format!(".{}.tmp", hex_without_prefix(&expected_hash)));
+    std::fs::write(&temporary, bytes)
+        .and_then(|_| std::fs::rename(&temporary, &path))
+        .map_err(|error| RpcError::Storage(error.to_string()))
+}
 fn chain_error(error: minijam_chain_client::ChainClientError) -> RpcError {
     RpcError::Chain(error.to_string())
 }
-
 fn deployment_chain_error(error: minijam_chain_client::ChainClientError) -> RpcError {
     match error {
         minijam_chain_client::ChainClientError::Dispatch(reason) => {
-            RpcError::DeploymentDispatchFailed(reason)
+            RpcError::Chain(format!("deployment dispatch failed: {reason}"))
         }
-        error => chain_error(error),
+        other => chain_error(other),
     }
 }
-
-fn hex(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(2 + bytes.len() * 2);
-    output.push_str("0x");
-    for byte in bytes {
-        output.push_str(&format!("{byte:02x}"));
+fn decode_hash(value: &str) -> Result<Hash, RpcError> {
+    let value = value.strip_prefix("0x").unwrap_or(value);
+    if value.len() != 64 {
+        return Err(RpcError::InvalidParams("expected 32-byte hex".into()));
     }
-    output
+    let mut hash = [0; 32];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        hash[index] = (hex_nibble(chunk[0])? << 4) | hex_nibble(chunk[1])?;
+    }
+    Ok(hash)
 }
-
-fn hex_without_prefix(bytes: &[u8]) -> String {
-    hex(bytes).trim_start_matches("0x").to_owned()
-}
-
 fn hex_nibble(byte: u8) -> Result<u8, RpcError> {
     match byte {
         b'0'..=b'9' => Ok(byte - b'0'),
@@ -844,224 +989,61 @@ fn hex_nibble(byte: u8) -> Result<u8, RpcError> {
         _ => Err(RpcError::InvalidParams("invalid hex".into())),
     }
 }
-
-pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let bind: SocketAddr = std::env::var("MINIJAM_FORMAL_RPC_BIND")
-        .unwrap_or_else(|_| "127.0.0.1:8090".into())
-        .parse()?;
-    let rpc_url = std::env::var("MINIJAM_RPC_URL").unwrap_or_else(|_| "ws://127.0.0.1:9944".into());
-    let signer_uri = match std::env::var("MINIJAM_RELAYER_URI_FILE") {
-        Ok(path) => std::fs::read_to_string(path)?.trim().to_owned(),
-        Err(_) => std::env::var("MINIJAM_RELAYER_URI")?,
-    };
-    // Validate the signer before entering the bounded transport retry. A
-    // malformed URI is configuration failure, not a node-startup race.
-    sr25519::Pair::from_string(&signer_uri, None).map_err(|error| error.to_string())?;
-    let bundle_dir =
-        PathBuf::from(std::env::var("MINIJAM_BUNDLE_DIR").unwrap_or_else(|_| "bundles".into()));
-    std::fs::create_dir_all(&bundle_dir)?;
-    let chain =
-        Arc::new(connect_chain_with_retry(&rpc_url, &signer_uri, Duration::from_secs(15)).await?);
-    let listener = tokio::net::TcpListener::bind(bind).await?;
-    axum::serve(listener, FormalRpc::new(chain, bundle_dir)?.router()).await?;
-    Ok(())
+fn hex(bytes: &[u8]) -> String {
+    let mut value = String::with_capacity(2 + bytes.len() * 2);
+    value.push_str("0x");
+    for byte in bytes {
+        value.push_str(&format!("{byte:02x}"));
+    }
+    value
+}
+fn hex_without_prefix(bytes: &[u8]) -> String {
+    hex(bytes).trim_start_matches("0x").to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn test_retry_policy() -> ConnectRetryPolicy {
-        ConnectRetryPolicy {
-            deadline: Duration::from_millis(100),
-            initial_delay: Duration::from_millis(1),
-            max_delay: Duration::from_millis(2),
-        }
-    }
-
-    #[tokio::test]
-    async fn connection_retry_succeeds_on_first_attempt() {
-        let mut attempts = 0;
-        let result = retry_connection(test_retry_policy(), || {
-            attempts += 1;
-            async { Ok::<_, String>(42_u8) }
-        })
-        .await;
-
-        assert_eq!(result.unwrap(), 42);
-        assert_eq!(attempts, 1);
-    }
-
-    #[tokio::test]
-    async fn connection_retry_recovers_from_transient_failures() {
-        let mut attempts = 0;
-        let result = retry_connection(test_retry_policy(), || {
-            attempts += 1;
-            let attempt = attempts;
-            async move {
-                if attempt == 3 {
-                    Ok(42_u8)
-                } else {
-                    Err("node RPC is not ready".to_owned())
-                }
-            }
-        })
-        .await;
-
-        assert_eq!(result.unwrap(), 42);
-        assert_eq!(attempts, 3);
-    }
-
-    #[tokio::test]
-    async fn connection_retry_respects_startup_deadline() {
-        let policy = ConnectRetryPolicy {
-            deadline: Duration::from_millis(40),
-            initial_delay: Duration::from_millis(1),
-            max_delay: Duration::from_millis(2),
-        };
-        let mut attempts = 0;
-        let result = retry_connection(policy, || {
-            attempts += 1;
-            async { Err::<u8, _>("connection refused".to_owned()) }
-        })
-        .await;
-
-        assert_eq!(result.unwrap_err(), "connection refused");
-        assert!(attempts > 1);
-    }
-
-    #[tokio::test]
-    async fn connection_retry_preserves_terminal_startup_diagnostic() {
-        let policy = ConnectRetryPolicy {
-            deadline: Duration::from_millis(20),
-            initial_delay: Duration::from_millis(1),
-            max_delay: Duration::from_millis(1),
-        };
-        let error = retry_connection(policy, || async {
-            Err::<u8, _>("connection refused".to_owned())
-        })
-        .await
-        .unwrap_err();
-
-        assert_eq!(
-            startup_connection_error(error),
-            "failed to connect to MiniJAM node before startup deadline: connection refused"
-        );
-    }
-
     #[test]
-    fn submit_work_params_reject_application_gas_fields() {
-        let value = serde_json::json!({
-            "context": {
-                "blockHash": format!("0x{}", "11".repeat(32)),
-                "stateRoot": format!("0x{}", "22".repeat(32)),
-                "slot": 7
-            },
-            "serviceId": 1000,
-            "serviceCodeHash": format!("0x{}", "33".repeat(32)),
-            "payloadBase64": "",
-            "extrinsicsBase64": [],
-            "gas": 1
-        });
-        assert!(serde_json::from_value::<SubmitWorkParams>(value).is_err());
-    }
-
-    #[test]
-    fn work_status_uses_formal_snake_case_names() {
+    fn transaction_id_is_stable_and_input_sensitive() {
+        let first = transaction_id(7, [1; 32], b"payload", &[b"extrinsic".to_vec()]);
         assert_eq!(
-            serde_json::to_value(WorkStatus::InsufficientWorkers).unwrap(),
-            serde_json::json!("insufficient_workers")
+            first,
+            transaction_id(7, [1; 32], b"payload", &[b"extrinsic".to_vec()])
         );
-        assert_eq!(
-            serde_json::to_value(WorkStatus::Imported).unwrap(),
-            serde_json::json!("imported")
+        assert_ne!(
+            first,
+            transaction_id(7, [1; 32], b"other", &[b"extrinsic".to_vec()])
+        );
+        assert_ne!(
+            first,
+            transaction_id(8, [1; 32], b"payload", &[b"extrinsic".to_vec()])
         );
     }
+}
 
-    #[test]
-    fn json_rpc_errors_preserve_request_id_and_standard_codes() {
-        let response = JsonRpcResponse::<serde_json::Value>::error(
-            serde_json::json!(17),
-            RpcError::MethodNotFound("unknown".into()).json_parts().0,
-            "method not found".into(),
-            None,
-        );
-        let value = serde_json::to_value(response).unwrap();
-        assert_eq!(value["id"], serde_json::json!(17));
-        assert_eq!(value["error"]["code"], -32601);
-        assert_eq!(
-            RpcError::InvalidRequest("bad version".into())
-                .json_parts()
-                .0,
-            -32600
-        );
-        assert_eq!(
-            RpcError::InvalidParams("bad params".into()).json_parts().0,
-            -32602
-        );
-    }
-
-    #[test]
-    fn stale_context_and_code_hash_validation_are_explicit() {
-        let finalized = FinalizedContext {
-            block_hash: [1; 32],
-            block_number: 7,
-            state_root: [2; 32],
-            slot: 7,
-        };
-        let stale = ContextParams {
-            block_hash: HashParam([9; 32]),
-            state_root: HashParam([2; 32]),
-            slot: 7,
-        };
-        assert!(matches!(
-            stale.matches(&finalized),
-            Err(RpcError::StaleContext { .. })
-        ));
-
-        let mut info = ServiceInfo::default();
-        info.code_hash.0 = [3; 32];
-        assert!(validate_code_hash(&info, [3; 32]).is_ok());
-        assert!(matches!(
-            validate_code_hash(&info, [4; 32]),
-            Err(RpcError::CodeHashMismatch)
-        ));
-    }
-
-    #[test]
-    fn bundle_store_writes_and_verifies_content() {
-        let directory = tempfile::tempdir().unwrap();
-        let bytes = b"verified bundle";
-        let hash = blake2_256(bytes);
-        save_bundle_to_dir(directory.path(), bytes, hash).unwrap();
-        let stored = std::fs::read(directory.path().join(hex_without_prefix(&hash))).unwrap();
-        assert_eq!(stored, bytes);
-        assert!(save_bundle_to_dir(directory.path(), b"tampered", hash).is_err());
-    }
-
-    #[test]
-    fn deployment_receipt_failures_have_distinct_rpc_codes() {
-        assert_eq!(
-            RpcError::DeploymentQuarantined("Trap".into())
-                .json_parts()
-                .0,
-            -32015
-        );
-        assert_eq!(
-            RpcError::DeploymentReceiptTimeout("pending".into())
-                .json_parts()
-                .0,
-            -32016
-        );
-        assert_eq!(
-            deployment_chain_error(minijam_chain_client::ChainClientError::Dispatch(
-                "BadOrigin".into()
-            ))
-            .json_parts()
-            .0,
-            -32017
-        );
-        assert_eq!(DeploymentOperationState::Pending.as_str(), "pending");
-        assert_eq!(DeploymentOperationState::Missing.as_str(), "missing");
-    }
+pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let bind: SocketAddr = std::env::var("MINIJAM_FORMAL_RPC_BIND")
+        .unwrap_or_else(|_| "127.0.0.1:8090".into())
+        .parse()?;
+    let rpc_url = std::env::var("MINIJAM_RPC_URL").unwrap_or_else(|_| "ws://127.0.0.1:9944".into());
+    let signer_uri = match std::env::var("MINIJAM_SIGNER_URI_FILE") {
+        Ok(path) => std::fs::read_to_string(path)?.trim().to_owned(),
+        Err(_) => std::env::var("MINIJAM_SIGNER_URI")
+            .or_else(|_| {
+                std::env::var("MINIJAM_WORKER_SEED_FILE").and_then(|path| {
+                    std::fs::read_to_string(path).map_err(|_| std::env::VarError::NotPresent)
+                })
+            })
+            .map(|value| value.trim().to_owned())?,
+    };
+    sr25519::Pair::from_string(&signer_uri, None).map_err(|error| error.to_string())?;
+    let bundle_dir =
+        PathBuf::from(std::env::var("MINIJAM_BUNDLE_DIR").unwrap_or_else(|_| "bundles".into()));
+    let chain =
+        Arc::new(connect_chain_with_retry(&rpc_url, &signer_uri, Duration::from_secs(15)).await?);
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    axum::serve(listener, FormalRpc::new(chain, bundle_dir)?.router()).await?;
+    Ok(())
 }

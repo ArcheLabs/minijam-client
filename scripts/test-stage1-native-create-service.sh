@@ -4,9 +4,9 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 NODE_BIN="${MINIJAM_NATIVE_NODE_BIN:?set the built MiniJAM node binary}"
 FORMAL_RPC_BIN="${MINIJAM_NATIVE_FORMAL_RPC_BIN:?set the built Formal RPC binary}"
-RELAYER_URI="${MINIJAM_NATIVE_RELAYER_URI:?set the ingress relayer signing URI}"
-RELAYER_PUBLIC_KEY="${MINIJAM_NATIVE_INGRESS_RELAYER_PUBLIC_KEY:?set the ingress relayer AccountId32 public key}"
-ALLOCATION_PUBLIC_KEY="${MINIJAM_NATIVE_ALLOCATION_RELAYER_PUBLIC_KEY:-${RELAYER_PUBLIC_KEY}}"
+SIGNER_URI="${MINIJAM_NATIVE_SIGNER_URI:?set the ordinary deployment signer URI}"
+WORKER_PUBLIC_KEY="${MINIJAM_NATIVE_WORKER_PUBLIC_KEY:?set the single Worker AccountId32 public key}"
+ALLOCATION_PUBLIC_KEY="${MINIJAM_NATIVE_ALLOCATION_RELAYER_PUBLIC_KEY:-${WORKER_PUBLIC_KEY}}"
 NODE_NETWORK_KEY="${MINIJAM_NODE_NETWORK_KEY:?set the native node network key}"
 SERVICE_BLOB="${MINIJAM_NATIVE_SERVICE_BLOB:-${ROOT}/examples/services/counter/artifacts/counter-c.blob}"
 SERVICE_CODE_HASH="${MINIJAM_NATIVE_SERVICE_CODE_HASH:?set the BLAKE2-256 hash of the service blob}"
@@ -27,8 +27,8 @@ test -s "${SERVICE_BLOB}" || { echo "service blob is missing or empty: ${SERVICE
   echo 'MINIJAM_NATIVE_SERVICE_CODE_HASH must be a 0x-prefixed 32-byte hex value' >&2
   exit 1
 }
-[[ "${RELAYER_PUBLIC_KEY}" =~ ^0x[0-9a-fA-F]{64}$ ]] || {
-  echo 'MINIJAM_NATIVE_INGRESS_RELAYER_PUBLIC_KEY must be a 0x-prefixed 32-byte hex value' >&2
+[[ "${WORKER_PUBLIC_KEY}" =~ ^0x[0-9a-fA-F]{64}$ ]] || {
+  echo 'MINIJAM_NATIVE_WORKER_PUBLIC_KEY must be a 0x-prefixed 32-byte hex value' >&2
   exit 1
 }
 [[ "${ALLOCATION_PUBLIC_KEY}" =~ ^0x[0-9a-fA-F]{64}$ ]] || {
@@ -55,7 +55,7 @@ test "${computed_service_code_hash,,}" = "${SERVICE_CODE_HASH,,}" || {
 
 TMP="$(mktemp -d)"
 NODE_BASE_PATH="${TMP}/node-data"
-CHAIN_SPEC="${MINIJAM_NATIVE_CHAIN_SPEC_FILE:-${TMP}/stage1-e2e.json}"
+CHAIN_SPEC="${MINIJAM_NATIVE_CHAIN_SPEC_FILE:-${TMP}/stage1-direct-e2e.json}"
 NODE_LOG="${TMP}/node.log"
 FORMAL_RPC_LOG="${TMP}/formal-rpc.log"
 mkdir -p "${NODE_BASE_PATH}" "${TMP}/bundles"
@@ -68,7 +68,7 @@ cleanup() {
     mkdir -p "${ARTIFACT_DIR}"
     cp -f "${NODE_LOG}" "${ARTIFACT_DIR}/node.log" 2>/dev/null || true
     cp -f "${FORMAL_RPC_LOG}" "${ARTIFACT_DIR}/formal-rpc.log" 2>/dev/null || true
-    cp -f "${CHAIN_SPEC}" "${ARTIFACT_DIR}/stage1-e2e.json" 2>/dev/null || true
+    cp -f "${CHAIN_SPEC}" "${ARTIFACT_DIR}/stage1-direct-e2e.json" 2>/dev/null || true
     cp -f "${TMP}/create-service-response.json" \
       "${ARTIFACT_DIR}/create-service-response.json" 2>/dev/null || true
     cp -f "${TMP}/finalized-head-samples.log" \
@@ -107,9 +107,9 @@ trap failure_diagnostics ERR
 if [[ -n "${MINIJAM_NATIVE_CHAIN_SPEC_FILE:-}" ]]; then
   test -s "${CHAIN_SPEC}" || { echo "chain spec is missing or empty: ${CHAIN_SPEC}" >&2; exit 1; }
 else
-  MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY="${RELAYER_PUBLIC_KEY}" \
+  MINIJAM_STAGE1_WORKER_PUBLIC_KEY="${WORKER_PUBLIC_KEY}" \
     MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY="${ALLOCATION_PUBLIC_KEY}" \
-    "${NODE_BIN}" build-spec --chain stage1-e2e > "${CHAIN_SPEC}"
+    "${NODE_BIN}" build-spec --chain stage1-direct-e2e > "${CHAIN_SPEC}"
 fi
 
 chain_id="$(jq -er '.id | strings' "${CHAIN_SPEC}")"
@@ -117,8 +117,8 @@ chain_id="$(jq -er '.id | strings' "${CHAIN_SPEC}")"
   echo "unsafe or invalid chain id in generated Stage-1 spec: ${chain_id}" >&2
   exit 1
 }
-if [[ "${chain_id}" != "minijam_stage1_e2e" ]]; then
-  echo "native E2E requires the isolated minijam_stage1_e2e chain spec" >&2
+if [[ "${chain_id}" != "minijam_stage1_direct_e2e" ]]; then
+  echo "native E2E requires the isolated minijam_stage1_direct_e2e chain spec" >&2
   exit 1
 fi
 printf 'NATIVE_E2E_CHAIN_SPEC=PASS\n'
@@ -282,7 +282,7 @@ printf 'NATIVE_FINALITY_SECONDS=%s\n' "$((SECONDS - finality_started))"
 
 MINIJAM_RPC_URL="ws://127.0.0.1:${NODE_RPC_PORT}" \
   MINIJAM_FORMAL_RPC_BIND="127.0.0.1:${FORMAL_RPC_PORT}" \
-  MINIJAM_RELAYER_URI="${RELAYER_URI}" \
+  MINIJAM_SIGNER_URI="${SIGNER_URI}" \
   MINIJAM_BUNDLE_DIR="${TMP}/bundles" \
   "${FORMAL_RPC_BIN}" >"${FORMAL_RPC_LOG}" 2>&1 &
 formal_rpc_pid="$!"

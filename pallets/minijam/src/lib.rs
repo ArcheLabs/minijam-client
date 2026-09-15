@@ -1,86 +1,48 @@
 // SPDX-License-Identifier: Apache-2.0
 #![cfg_attr(not(feature = "std"), no_std)]
 
+//! The MiniJAM consensus boundary.
+//!
+//! WorkPackages and bundles are Formal RPC artifacts. The only work value
+//! crossing into consensus is a canonical WorkReport submitted by the
+//! configured single Worker account.
+
 extern crate alloc;
 
 pub use pallet::*;
 
 #[frame_support::pallet]
 pub mod pallet {
-    use alloc::{
-        boxed::Box,
-        collections::{BTreeMap, BTreeSet},
-        vec::Vec,
-    };
+    use alloc::{boxed::Box, collections::BTreeSet, vec::Vec};
     use frame_support::{
         pallet_prelude::*,
         storage::{with_transaction, TransactionOutcome},
-        traits::tokens::{
-            fungible::{Balanced, BalancedHold, Inspect, Mutate, MutateHold},
-            Precision, Preservation,
-        },
+        traits::tokens::fungible::Inspect,
         transactional,
     };
     use frame_system::pallet_prelude::*;
-    use jam_codec::Decode as JamDecode;
-    use jp_core_primitives::{
-        crypto::OpaqueHash,
-        simple::ByteSequence,
-        state::StoreKey,
-        types::ServiceInfo,
-        work::{WorkPackage, WorkReport},
-    };
     use minijam_jamcore_api::{
         ExecutionOutcome, MiniJamError, MiniJamExecutionInput, MiniJamExecutor,
         ProtocolStateReader, StateError,
     };
     use minijam_protocol::{
-        blake2_256, CanonicalPreimageBytes, CanonicalReportBytes, CanonicalWorkPackageBytes,
-        ContentRef, Hash, PreimageBatch, PreimageMetadataV1, ProtocolStateChange, ReportEnvelopeV1,
-        StateOperation, StateValue, SystemCommandV2, SystemOpBatch, SystemOpV2, WorkerTaskV1,
-        WorkerVerificationTaskV1, PROTOCOL_VERSION_V1,
+        blake2_256, CanonicalPreimageBytes, CanonicalReportBytes, Hash, PackageStatus,
+        PreimageBatch, PreimageMetadataV1, ProtocolStateChange, ReportBatch, StateOperation,
+        StateValue, SystemCommandV2, SystemOpBatch, SystemOpV2, PROTOCOL_VERSION_V1,
     };
     use minijam_state_adapter::{validate_execution_output, ValidatedDelta, ValidationError};
-    use pallet_minijam_workers::RoundDecision;
-    use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
+    use parity_scale_codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
+    use scale_info::TypeInfo;
+    use sp_runtime::traits::{One, SaturatedConversion, Saturating};
 
     const ALLOCATION_SYSTEM_SENDER: [u8; 32] = [0xa1; 32];
     const ALLOCATION_RECEIPT_PREFIX: &[u8] = b"system/allocation/";
-
-    pub type WorkId = u64;
-    pub type BalanceOf<T> =
-        <<T as Config>::Currency as Inspect<<T as frame_system::Config>::AccountId>>::Balance;
     const SYSTEM_SERVICE_ID: u32 = 0;
     const SYSTEM_STORAGE_RECEIPT_PREFIX: &[u8] = b"system/receipt/";
 
-    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-    pub struct ServiceFuelAccount<Balance> {
-        pub available: Balance,
-        pub reserved: Balance,
-    }
+    pub type BalanceOf<T> =
+        <<T as Config>::Currency as Inspect<<T as frame_system::Config>::AccountId>>::Balance;
 
-    impl<Balance: Default> Default for ServiceFuelAccount<Balance> {
-        fn default() -> Self {
-            Self {
-                available: Default::default(),
-                reserved: Default::default(),
-            }
-        }
-    }
-
-    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-    pub struct ServiceFuelReservation<Balance> {
-        pub service_id: u32,
-        pub refine_limit: u64,
-        pub accumulate_limit: u64,
-        pub reserved: Balance,
-    }
-
-    /// The only Hub-to-MiniJAM value crossing understood by the client.
-    ///
-    /// The balance is deliberately generic so the runtime can use the exact
-    /// balance type used by Jambda Service accounts without an intermediate
-    /// conversion.
     #[derive(
         Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
     )]
@@ -110,9 +72,9 @@ pub mod pallet {
     }
 
     #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-    pub struct WorkFuelSettlement<Balance> {
-        pub charged: Balance,
-        pub refunded: Balance,
+    pub struct PendingReport {
+        pub package_hash: Hash,
+        pub canonical_report: CanonicalReportBytes,
     }
 
     #[derive(
@@ -127,42 +89,24 @@ pub mod pallet {
         PartialEq,
         TypeInfo,
     )]
-    pub enum WorkStatus {
-        InsufficientWorkers,
-        AwaitingCandidate,
-        Voting,
-        Accepted,
-        Imported,
-        Failed,
+    pub enum ExecutionErrorCode {
+        OutOfGas,
+        Trap,
+        ServiceFailure,
+        InvalidInput,
+        InvalidOutput,
+        GasExceeded,
+        DeltaTooLarge,
     }
 
-    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-    #[scale_info(skip_type_params(T))]
-    pub struct ExecutionItem<T: Config> {
-        pub work_id: WorkId,
-        pub execute_at: BlockNumberFor<T>,
-    }
-
-    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-    #[scale_info(skip_type_params(T))]
-    pub struct WorkRecord<T: Config> {
-        pub owner: T::AccountId,
-        pub package_hash: Hash,
-        pub canonical_work_package: BoundedVec<u8, T::MaxWorkPackageBytes>,
-        pub bundle_ref: ContentRef,
-        pub fuel_reservation:
-            BoundedVec<ServiceFuelReservation<BalanceOf<T>>, T::MaxServicesPerWork>,
-        pub round: u8,
-        pub status: WorkStatus,
-        pub candidate_deadline: BlockNumberFor<T>,
-    }
-
-    #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-    #[scale_info(skip_type_params(T))]
-    pub struct CandidateRecord<T: Config> {
-        pub submitter: T::AccountId,
-        pub envelope: ReportEnvelopeV1,
-        pub vote_deadline: BlockNumberFor<T>,
+    impl From<ExecutionOutcome> for ExecutionErrorCode {
+        fn from(outcome: ExecutionOutcome) -> Self {
+            match outcome {
+                ExecutionOutcome::OutOfGas => Self::OutOfGas,
+                ExecutionOutcome::Trap => Self::Trap,
+                ExecutionOutcome::ServiceFailure => Self::ServiceFailure,
+            }
+        }
     }
 
     #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
@@ -197,29 +141,6 @@ pub mod pallet {
         pub op: SystemOpV2,
     }
 
-    #[derive(Clone, Copy, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
-    pub enum ExecutionErrorCode {
-        OutOfGas,
-        Trap,
-        ServiceFailure,
-        InvalidInput,
-        InvalidOutput,
-        GasExceeded,
-        DeltaTooLarge,
-    }
-
-    impl parity_scale_codec::DecodeWithMemTracking for ExecutionErrorCode {}
-
-    impl From<ExecutionOutcome> for ExecutionErrorCode {
-        fn from(outcome: ExecutionOutcome) -> Self {
-            match outcome {
-                ExecutionOutcome::OutOfGas => Self::OutOfGas,
-                ExecutionOutcome::Trap => Self::Trap,
-                ExecutionOutcome::ServiceFailure => Self::ServiceFailure,
-            }
-        }
-    }
-
     #[derive(Clone, Debug, Decode, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo)]
     #[scale_info(skip_type_params(T))]
     pub struct QuarantinedSystemOp<T: Config> {
@@ -250,218 +171,100 @@ pub mod pallet {
         receipt_hash: Hash,
     }
 
-    #[pallet::composite_enum]
-    pub enum HoldReason {
-        WorkDeposit,
-        CandidateBond,
-    }
-
     #[pallet::config]
-    pub trait Config: frame_system::Config + pallet_minijam_workers::Config {
+    pub trait Config: frame_system::Config {
         #[allow(deprecated)]
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
-
-        type Currency: Mutate<Self::AccountId>
-            + MutateHold<Self::AccountId, Reason = Self::JamHoldReason>
-            + BalancedHold<Self::AccountId, Reason = Self::JamHoldReason>;
-
-        type JamHoldReason: From<HoldReason>;
-
-        #[pallet::constant]
-        type ChainId: Get<[u8; 32]>;
-
-        #[pallet::constant]
-        type WorkDeposit: Get<BalanceOf<Self>>;
-
-        #[pallet::constant]
-        type CandidateBond: Get<BalanceOf<Self>>;
-
-        #[pallet::constant]
-        type CandidateRejectionSlash: Get<BalanceOf<Self>>;
-
-        #[pallet::constant]
-        type AcceptedSubmitterReward: Get<BalanceOf<Self>>;
-
-        #[pallet::constant]
-        type RewardPool: Get<Self::AccountId>;
-
-        #[pallet::constant]
-        type FuelEscrowAccount: Get<Self::AccountId>;
-
-        #[pallet::constant]
-        type RefineGasPrice: Get<BalanceOf<Self>>;
-
-        #[pallet::constant]
-        type AccumulateGasPrice: Get<BalanceOf<Self>>;
-
+        type Currency: Inspect<Self::AccountId>;
         #[pallet::constant]
         type MaxPendingAllocations: Get<u32>;
-
-        #[pallet::constant]
-        type ReportSubmissionDeadline: Get<u32>;
-
-        #[pallet::constant]
-        type VoteWindow: Get<u32>;
-
-        #[pallet::constant]
-        type MaxCandidateRounds: Get<u8>;
-
-        #[pallet::constant]
-        type MaxPendingWorks: Get<u32>;
-
         #[pallet::constant]
         type MaxExecutionReports: Get<u32>;
-
         #[pallet::constant]
         type MaxExecutionGas: Get<u64>;
-
         #[pallet::constant]
-        type MaxWorkPackageBytes: Get<u32>;
-
-        #[pallet::constant]
-        type MaxBundleBytes: Get<u64>;
-
-        #[pallet::constant]
-        type MaxServicesPerWork: Get<u32>;
-
-        type JamCoreExecutor: MiniJamExecutor + Default;
-
+        type MaxPendingReports: Get<u32>;
         #[pallet::constant]
         type MaxPendingPreimages: Get<u32>;
-
         #[pallet::constant]
         type MaxPendingSystemOps: Get<u32>;
+        #[pallet::constant]
+        type ChainId: Get<Hash>;
+        type JamCoreExecutor: MiniJamExecutor + Default;
     }
 
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
 
     #[pallet::storage]
-    #[pallet::getter(fn ingress_relayer)]
-    pub type IngressRelayer<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
-
+    #[pallet::getter(fn worker_account)]
+    pub type WorkerAccount<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
     #[pallet::storage]
     #[pallet::getter(fn allocation_relayer)]
     pub type AllocationRelayer<T: Config> = StorageValue<_, T::AccountId, OptionQuery>;
-
     #[pallet::storage]
-    pub type NextWorkId<T> = StorageValue<_, WorkId, ValueQuery>;
-
+    pub type PackageStatuses<T: Config> =
+        StorageMap<_, Blake2_128Concat, Hash, PackageStatus, OptionQuery>;
     #[pallet::storage]
-    #[pallet::getter(fn work)]
-    pub type Works<T: Config> = StorageMap<_, Blake2_128Concat, WorkId, WorkRecord<T>, OptionQuery>;
-
+    pub type PendingReports<T: Config> =
+        StorageValue<_, BoundedVec<PendingReport, T::MaxPendingReports>, ValueQuery>;
     #[pallet::storage]
-    pub type WorkByPackageHash<T: Config> =
-        StorageMap<_, Blake2_128Concat, Hash, WorkId, OptionQuery>;
-
+    pub type PackageFailures<T: Config> =
+        StorageMap<_, Blake2_128Concat, Hash, ExecutionErrorCode, OptionQuery>;
     #[pallet::storage]
-    #[pallet::getter(fn candidate)]
-    pub type Candidates<T: Config> = StorageDoubleMap<
-        _,
-        Blake2_128Concat,
-        WorkId,
-        Blake2_128Concat,
-        u8,
-        CandidateRecord<T>,
-        OptionQuery,
-    >;
-
+    pub type ExecutionReceiptsByPackageHash<T: Config> =
+        StorageMap<_, Blake2_128Concat, Hash, Hash, OptionQuery>;
     #[pallet::storage]
-    pub type PendingWorks<T: Config> =
-        StorageValue<_, BoundedVec<WorkId, T::MaxPendingWorks>, ValueQuery>;
-
+    pub type LastExecutionReceipt<T: Config> = StorageValue<_, Hash, OptionQuery>;
     #[pallet::storage]
-    pub type ExecutionQueue<T: Config> =
-        StorageValue<_, BoundedVec<ExecutionItem<T>, T::MaxPendingWorks>, ValueQuery>;
-
+    pub type ReportImportPaused<T: Config> = StorageValue<_, bool, ValueQuery>;
     #[pallet::storage]
-    pub type QuarantinedExecutionQueue<T: Config> =
-        StorageValue<_, BoundedVec<ExecutionItem<T>, T::MaxPendingWorks>, ValueQuery>;
-
+    pub type PreimageImportPaused<T: Config> = StorageValue<_, bool, ValueQuery>;
+    #[pallet::storage]
+    pub type SystemOpsPaused<T: Config> = StorageValue<_, bool, ValueQuery>;
     #[pallet::storage]
     pub type ProtocolState<T: Config> =
         StorageMap<_, Blake2_128Concat, [u8; 31], StateValue, OptionQuery>;
-
-    #[pallet::storage]
-    pub type ExecutionReceipts<T: Config> =
-        StorageMap<_, Blake2_128Concat, WorkId, Hash, OptionQuery>;
-
-    #[pallet::storage]
-    pub type LastExecutionReceipt<T: Config> = StorageValue<_, Hash, OptionQuery>;
-
-    #[pallet::storage]
-    pub type ReportImportPaused<T: Config> = StorageValue<_, bool, ValueQuery>;
-
-    #[pallet::storage]
-    pub type PreimageImportPaused<T: Config> = StorageValue<_, bool, ValueQuery>;
-
-    #[pallet::storage]
-    pub type SystemOpsPaused<T: Config> = StorageValue<_, bool, ValueQuery>;
-
     #[pallet::storage]
     pub type PendingPreimages<T: Config> =
         StorageValue<_, BoundedVec<PendingPreimage<T>, T::MaxPendingPreimages>, ValueQuery>;
-
     #[pallet::storage]
     pub type PendingPreimageKeys<T: Config> =
         StorageMap<_, Blake2_128Concat, PreimageKeyV1, (), OptionQuery>;
-
     #[pallet::storage]
     pub type QuarantinedPreimages<T: Config> =
         StorageValue<_, BoundedVec<QuarantinedPreimage<T>, T::MaxPendingPreimages>, ValueQuery>;
-
     #[pallet::storage]
     pub type PendingSystemOps<T: Config> =
         StorageValue<_, BoundedVec<PendingSystemOp<T>, T::MaxPendingSystemOps>, ValueQuery>;
-
     #[pallet::storage]
     pub type QuarantinedSystemOps<T: Config> =
         StorageValue<_, BoundedVec<QuarantinedSystemOp<T>, T::MaxPendingSystemOps>, ValueQuery>;
-
     #[pallet::storage]
     pub type PendingSystemOpKeys<T: Config> =
         StorageMap<_, Blake2_128Concat, Hash, (), OptionQuery>;
-
     #[pallet::storage]
-    pub type SystemOpNonces<T: Config> = StorageMap<_, Blake2_128Concat, [u8; 32], u64, ValueQuery>;
-
+    pub type SystemOpNonces<T: Config> = StorageMap<_, Blake2_128Concat, Hash, u64, ValueQuery>;
     #[pallet::storage]
     pub type PendingAllocations<T: Config> =
         StorageMap<_, Blake2_128Concat, u64, PendingAllocation<T>, OptionQuery>;
-
     #[pallet::storage]
     pub type ProcessedAllocations<T: Config> =
         StorageMap<_, Blake2_128Concat, u64, (), OptionQuery>;
-
     #[pallet::storage]
     pub type AllocationReceipts<T: Config> =
         StorageMap<_, Blake2_128Concat, u64, AllocationReceipt<BalanceOf<T>>, OptionQuery>;
-
     #[pallet::storage]
     pub type PendingAllocationCount<T> = StorageValue<_, u32, ValueQuery>;
-
-    #[pallet::storage]
-    pub type ServiceFuelAccounts<T: Config> =
-        StorageMap<_, Blake2_128Concat, u32, ServiceFuelAccount<BalanceOf<T>>, ValueQuery>;
-
-    #[pallet::storage]
-    pub type TotalServiceFuel<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
-
-    #[pallet::storage]
-    #[pallet::getter(fn work_fuel_settlement)]
-    pub type WorkFuelSettlements<T: Config> =
-        StorageMap<_, Blake2_128Concat, WorkId, WorkFuelSettlement<BalanceOf<T>>, OptionQuery>;
 
     #[pallet::genesis_config]
     #[derive(frame_support::DefaultNoBound)]
     pub struct GenesisConfig<T: Config> {
         pub protocol_state: Vec<(Vec<u8>, Vec<u8>)>,
-        pub service_fuel: Vec<(u32, BalanceOf<T>)>,
-        pub ingress_relayer: Option<T::AccountId>,
+        pub worker_account: Option<T::AccountId>,
         pub allocation_relayer: Option<T::AccountId>,
         #[serde(skip)]
         pub _phantom: core::marker::PhantomData<T>,
@@ -470,105 +273,37 @@ pub mod pallet {
     #[pallet::genesis_build]
     impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
         fn build(&self) {
-            if let Some(account) = &self.ingress_relayer {
-                IngressRelayer::<T>::put(account);
+            if let Some(account) = &self.worker_account {
+                WorkerAccount::<T>::put(account);
             }
             if let Some(account) = &self.allocation_relayer {
-                AllocationRelayer::<T>::put(account);
-            } else if let Some(account) = &self.ingress_relayer {
-                // Keep old genesis patches compatible while allowing
-                // production deployments to use a distinct key.
                 AllocationRelayer::<T>::put(account);
             }
             for (key, value) in &self.protocol_state {
                 let key: [u8; 31] = key
                     .as_slice()
                     .try_into()
-                    .expect("MiniJAM genesis protocol-state keys must be 31 bytes");
+                    .expect("MiniJAM protocol state keys are 31 bytes");
                 let value = StateValue::try_from(value.clone())
-                    .expect("MiniJAM genesis protocol-state values must fit StateValue");
+                    .expect("MiniJAM protocol state values fit StateValue");
                 ProtocolState::<T>::insert(key, value);
             }
-            let mut total = BalanceOf::<T>::zero();
-            for (service_id, amount) in &self.service_fuel {
-                if amount.is_zero() {
-                    continue;
-                }
-                ServiceFuelAccounts::<T>::mutate(service_id, |account| {
-                    account.available = account.available.saturating_add(*amount);
-                });
-                total = total.saturating_add(*amount);
-            }
-            TotalServiceFuel::<T>::put(total);
         }
     }
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
-        IngressRelayerChanged {
-            old: Option<T::AccountId>,
-            new: T::AccountId,
-        },
-        AllocationRelayerChanged {
-            old: Option<T::AccountId>,
-            new: T::AccountId,
-        },
-        WorkSubmitted {
-            work_id: WorkId,
-            owner: T::AccountId,
+        ReportSubmitted {
             package_hash: Hash,
-            bundle_ref: ContentRef,
-            status: WorkStatus,
-        },
-        WorkFuelReserved {
-            work_id: WorkId,
-            total: BalanceOf<T>,
-        },
-        WorkFuelReleased {
-            work_id: WorkId,
-            total: BalanceOf<T>,
-        },
-        WorkFuelSettled {
-            work_id: WorkId,
-            charged: BalanceOf<T>,
-            refunded: BalanceOf<T>,
-        },
-        AllocationQueued {
-            allocation_id: u64,
-            target_service: u32,
-            amount: BalanceOf<T>,
-        },
-        AllocationProcessed {
-            allocation_id: u64,
-            target_service: u32,
-            amount: BalanceOf<T>,
-        },
-        CandidateSubmitted {
-            work_id: WorkId,
-            round: u8,
-            submitter: T::AccountId,
-            report_hash: [u8; 32],
-        },
-        CandidateAccepted {
-            work_id: WorkId,
-            round: u8,
-        },
-        CandidateRejected {
-            work_id: WorkId,
-            round: u8,
-        },
-        WorkRoundAdvanced {
-            work_id: WorkId,
-            round: u8,
-            status: WorkStatus,
-        },
-        WorkFailed {
-            work_id: WorkId,
         },
         ReportImported {
-            work_id: WorkId,
+            package_hash: Hash,
             receipt_hash: Hash,
+        },
+        PackageFailed {
+            package_hash: Hash,
+            error_code: ExecutionErrorCode,
         },
         PreimageQueued {
             requester: u32,
@@ -583,7 +318,7 @@ pub mod pallet {
         },
         SystemOpQueued {
             request_id: Hash,
-            sender: [u8; 32],
+            sender: Hash,
         },
         SystemOpConsumed {
             request_id: Hash,
@@ -601,15 +336,19 @@ pub mod pallet {
         SystemOpQuarantineCleared {
             count: u32,
         },
-        ServiceFunded {
-            funder: T::AccountId,
-            service_id: u32,
+        AllocationQueued {
+            allocation_id: u64,
+            target_service: u32,
             amount: BalanceOf<T>,
-            new_available: BalanceOf<T>,
         },
-        ExecutionYielded {
-            work_id: WorkId,
-            outcome: ExecutionOutcome,
+        AllocationProcessed {
+            allocation_id: u64,
+            target_service: u32,
+            amount: BalanceOf<T>,
+        },
+        AllocationRelayerChanged {
+            old: Option<T::AccountId>,
+            new: T::AccountId,
         },
         ImportPaused {
             paused: bool,
@@ -621,35 +360,15 @@ pub mod pallet {
             system_op_count: u32,
             receipt_hash: Hash,
         },
-        ExecutionQueueQuarantined {
-            count: u32,
-        },
     }
 
     #[pallet::error]
     pub enum Error<T> {
-        IngressRelayerNotConfigured,
-        UnauthorizedIngress,
-        WorkIdOverflow,
-        TooManyPendingWorks,
-        InvalidWorkPackage,
-        DuplicateWorkPackage,
-        InvalidContentRef,
-        TooManyServicesPerWork,
-        InsufficientServiceFuel,
-        WorkNotFound,
-        CandidateNotExpected,
-        CandidateAlreadySubmitted,
-        CandidateDeadlineExpired,
-        InvalidEnvelope,
-        InvalidReportHash,
-        InvalidReportProjection,
-        CandidateSubmitterNotWorker,
-        CandidateSubmitterNotAssigned,
-        CandidateProducerNotSelected,
-        VotingSetupFailed,
-        InconsistentState,
-        ExecutionQueueFull,
+        WorkerNotConfigured,
+        UnauthorizedWorker,
+        InvalidReport,
+        DuplicatePackage,
+        TooManyPendingReports,
         InvalidPreimage,
         DuplicatePendingPreimage,
         TooManyPendingPreimages,
@@ -658,9 +377,6 @@ pub mod pallet {
         TooManyPendingSystemOps,
         QuarantinedSystemOpNotFound,
         UnknownService,
-        ZeroFuelAmount,
-        FuelEscrowInvariant,
-        FuelSettlementInvariant,
         AllocationRelayerNotConfigured,
         UnauthorizedAllocation,
         ZeroAllocation,
@@ -673,40 +389,6 @@ pub mod pallet {
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-        fn on_initialize(block: BlockNumberFor<T>) -> Weight {
-            let pending = PendingWorks::<T>::get();
-            for work_id in pending {
-                let Some(work) = Works::<T>::get(work_id) else {
-                    continue;
-                };
-                match work.status {
-                    WorkStatus::InsufficientWorkers => {
-                        let _ = Self::prepare_round(work_id);
-                    }
-                    WorkStatus::AwaitingCandidate if block > work.candidate_deadline => {
-                        let _ = Self::advance_or_fail(work_id, false);
-                    }
-                    WorkStatus::Voting => {
-                        if let Some(result) =
-                            pallet_minijam_workers::RoundResults::<T>::get((work_id, work.round))
-                        {
-                            let _ = match result.decision {
-                                Some(RoundDecision::Accepted) => Self::accept_candidate(work_id),
-                                Some(RoundDecision::Rejected) | None => {
-                                    Self::advance_or_fail(work_id, true)
-                                }
-                            };
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            T::DbWeight::get().reads_writes(
-                u64::from(T::MaxPendingWorks::get()).saturating_mul(4),
-                u64::from(T::MaxPendingWorks::get()).saturating_mul(4),
-            )
-        }
-
         fn on_finalize(block: BlockNumberFor<T>) {
             Self::execute_block_stf(block);
         }
@@ -715,149 +397,37 @@ pub mod pallet {
     #[pallet::call]
     impl<T: Config> Pallet<T> {
         #[pallet::call_index(0)]
-        #[pallet::weight(T::DbWeight::get().reads_writes(6, 8))]
+        #[pallet::weight(T::DbWeight::get().reads_writes(5, 5))]
         #[transactional]
-        pub fn submit_work(
+        pub fn submit_report(
             origin: OriginFor<T>,
-            canonical_work_package: BoundedVec<u8, T::MaxWorkPackageBytes>,
-            bundle_ref: ContentRef,
+            canonical_report: CanonicalReportBytes,
         ) -> DispatchResult {
-            let owner = Self::ensure_ingress_relayer(origin)?;
+            Self::ensure_worker(origin)?;
+            ensure!(!canonical_report.is_empty(), Error::<T>::InvalidReport);
+            let projection = T::JamCoreExecutor::default()
+                .project_report(&canonical_report)
+                .map_err(|_| Error::<T>::InvalidReport)?;
             ensure!(
-                !canonical_work_package.is_empty(),
-                Error::<T>::InvalidWorkPackage
+                !PackageStatuses::<T>::contains_key(projection.package_hash),
+                Error::<T>::DuplicatePackage
             );
-            Self::validate_content_ref(&bundle_ref)?;
-            Self::decode_work_package(&canonical_work_package)?;
-            let package_hash = blake2_256(&canonical_work_package);
-            ensure!(
-                !WorkByPackageHash::<T>::contains_key(package_hash),
-                Error::<T>::DuplicateWorkPackage
-            );
-            let work_id = NextWorkId::<T>::get();
-            let next = work_id.checked_add(1).ok_or(Error::<T>::WorkIdOverflow)?;
-            PendingWorks::<T>::try_mutate(|pending| {
-                pending
-                    .try_push(work_id)
-                    .map_err(|_| Error::<T>::TooManyPendingWorks)
+            PendingReports::<T>::try_mutate(|reports| {
+                reports
+                    .try_push(PendingReport {
+                        package_hash: projection.package_hash,
+                        canonical_report,
+                    })
+                    .map_err(|_| Error::<T>::TooManyPendingReports)
             })?;
-            let reason = T::JamHoldReason::from(HoldReason::WorkDeposit);
-            <T as Config>::Currency::hold(&reason, &owner, T::WorkDeposit::get())?;
-
-            Works::<T>::insert(
-                work_id,
-                WorkRecord::<T> {
-                    owner: owner.clone(),
-                    package_hash,
-                    canonical_work_package,
-                    bundle_ref: bundle_ref.clone(),
-                    // Service Fuel is a deprecated product-layer accounting
-                    // subsystem. JAM gas limits remain enforced by Jambda,
-                    // but no Service Fuel balance participates in Work.
-                    fuel_reservation: Default::default(),
-                    round: 0,
-                    status: WorkStatus::InsufficientWorkers,
-                    candidate_deadline: Zero::zero(),
-                },
-            );
-            WorkByPackageHash::<T>::insert(package_hash, work_id);
-            NextWorkId::<T>::put(next);
-            let _ = Self::prepare_round(work_id);
-            let status = Works::<T>::get(work_id)
-                .ok_or(Error::<T>::InconsistentState)?
-                .status;
-            Self::deposit_event(Event::WorkSubmitted {
-                work_id,
-                owner,
-                package_hash,
-                bundle_ref,
-                status,
+            PackageStatuses::<T>::insert(projection.package_hash, PackageStatus::Pending);
+            Self::deposit_event(Event::ReportSubmitted {
+                package_hash: projection.package_hash,
             });
             Ok(())
         }
 
         #[pallet::call_index(1)]
-        #[pallet::weight(T::DbWeight::get().reads_writes(8, 6))]
-        #[transactional]
-        pub fn submit_candidate(
-            origin: OriginFor<T>,
-            envelope: Box<ReportEnvelopeV1>,
-        ) -> DispatchResult {
-            let submitter = ensure_signed(origin)?;
-            let envelope = *envelope;
-            let mut work = Works::<T>::get(envelope.work_id).ok_or(Error::<T>::WorkNotFound)?;
-            let worker_id = pallet_minijam_workers::WorkerByAccount::<T>::get(&submitter)
-                .ok_or(Error::<T>::CandidateSubmitterNotWorker)?;
-            let assignment =
-                pallet_minijam_workers::Assignments::<T>::get(envelope.work_id, work.round)
-                    .ok_or(Error::<T>::CandidateSubmitterNotAssigned)?;
-            ensure!(
-                assignment.contains(&worker_id),
-                Error::<T>::CandidateSubmitterNotAssigned
-            );
-            ensure!(
-                assignment.iter().copied().min() == Some(worker_id),
-                Error::<T>::CandidateProducerNotSelected
-            );
-            ensure!(
-                work.status == WorkStatus::AwaitingCandidate,
-                Error::<T>::CandidateNotExpected
-            );
-            ensure!(
-                frame_system::Pallet::<T>::block_number() <= work.candidate_deadline,
-                Error::<T>::CandidateDeadlineExpired
-            );
-            ensure!(
-                !Candidates::<T>::contains_key(envelope.work_id, work.round),
-                Error::<T>::CandidateAlreadySubmitted
-            );
-            ensure!(
-                envelope.protocol_version == PROTOCOL_VERSION_V1
-                    && envelope.chain_id == <T as Config>::ChainId::get()
-                    && envelope.assignment_round == work.round,
-                Error::<T>::InvalidEnvelope
-            );
-            ensure!(
-                envelope.computed_report_hash() == envelope.canonical_report_hash,
-                Error::<T>::InvalidReportHash
-            );
-            Self::validate_candidate_report(&work, &envelope)?;
-
-            let reason = T::JamHoldReason::from(HoldReason::CandidateBond);
-            <T as Config>::Currency::hold(&reason, &submitter, T::CandidateBond::get())?;
-            let vote_deadline = frame_system::Pallet::<T>::block_number()
-                .saturating_add(T::VoteWindow::get().saturated_into());
-            pallet_minijam_workers::Pallet::<T>::open_voting(
-                envelope.work_id,
-                work.round,
-                envelope.canonical_report_hash,
-                vote_deadline,
-            )
-            .map_err(|_| Error::<T>::VotingSetupFailed)?;
-
-            let work_id = envelope.work_id;
-            let report_hash = envelope.canonical_report_hash;
-            Candidates::<T>::insert(
-                work_id,
-                work.round,
-                CandidateRecord::<T> {
-                    submitter: submitter.clone(),
-                    envelope,
-                    vote_deadline,
-                },
-            );
-            work.status = WorkStatus::Voting;
-            Works::<T>::insert(work_id, &work);
-            Self::deposit_event(Event::CandidateSubmitted {
-                work_id,
-                round: work.round,
-                submitter,
-                report_hash,
-            });
-            Ok(())
-        }
-
-        #[pallet::call_index(2)]
         #[pallet::weight(T::DbWeight::get().writes(3))]
         pub fn pause_execution(origin: OriginFor<T>, paused: bool) -> DispatchResult {
             ensure_root(origin)?;
@@ -868,28 +438,16 @@ pub mod pallet {
             Ok(())
         }
 
-        #[pallet::call_index(3)]
-        #[pallet::weight(T::DbWeight::get().reads_writes(2, 2))]
-        pub fn quarantine_pending(origin: OriginFor<T>) -> DispatchResult {
-            ensure_root(origin)?;
-            let queue = ExecutionQueue::<T>::take();
-            let count = queue.len() as u32;
-            QuarantinedExecutionQueue::<T>::put(queue);
-            Self::deposit_event(Event::ExecutionQueueQuarantined { count });
-            Ok(())
-        }
-
-        #[pallet::call_index(4)]
+        #[pallet::call_index(2)]
         #[pallet::weight(T::DbWeight::get().reads_writes(2, 2))]
         #[transactional]
         pub fn submit_preimage(
             origin: OriginFor<T>,
             canonical_preimage: CanonicalPreimageBytes,
         ) -> DispatchResult {
-            let submitter = Self::ensure_ingress_relayer(origin)?;
-            let state = FrameProtocolState::<T>(Default::default());
-            let executor = T::JamCoreExecutor::default();
-            let metadata = executor
+            let submitter = ensure_signed(origin)?;
+            let state = FrameProtocolState::<T>(core::marker::PhantomData);
+            let metadata = T::JamCoreExecutor::default()
                 .validate_preimage_submission(&canonical_preimage, &state)
                 .map_err(|_| Error::<T>::InvalidPreimage)?;
             let key = PreimageKeyV1::from(metadata);
@@ -897,10 +455,9 @@ pub mod pallet {
                 !PendingPreimageKeys::<T>::contains_key(key),
                 Error::<T>::DuplicatePendingPreimage
             );
-
             PendingPreimages::<T>::try_mutate(|pending| {
                 pending
-                    .try_push(PendingPreimage::<T> {
+                    .try_push(PendingPreimage {
                         submitter,
                         canonical: canonical_preimage,
                         metadata,
@@ -916,14 +473,14 @@ pub mod pallet {
             Ok(())
         }
 
-        #[pallet::call_index(5)]
+        #[pallet::call_index(3)]
         #[pallet::weight(T::DbWeight::get().reads_writes(3, 4))]
         #[transactional]
         pub fn submit_system_op(
             origin: OriginFor<T>,
             command: Box<SystemCommandV2>,
         ) -> DispatchResult {
-            let submitter = Self::ensure_ingress_relayer(origin)?;
+            let submitter = ensure_signed(origin)?;
             Self::validate_system_command(&command)?;
             let sender = Self::system_op_sender(&submitter);
             let nonce = SystemOpNonces::<T>::get(sender);
@@ -934,7 +491,7 @@ pub mod pallet {
             );
             PendingSystemOps::<T>::try_mutate(|pending| {
                 pending
-                    .try_push(PendingSystemOp::<T> {
+                    .try_push(PendingSystemOp {
                         submitter,
                         op: op.clone(),
                     })
@@ -949,45 +506,7 @@ pub mod pallet {
             Ok(())
         }
 
-        #[pallet::call_index(6)]
-        #[pallet::weight(T::DbWeight::get().reads_writes(4, 3))]
-        #[transactional]
-        pub fn fund_service(
-            origin: OriginFor<T>,
-            service_id: u32,
-            amount: BalanceOf<T>,
-        ) -> DispatchResult {
-            let funder = ensure_signed(origin)?;
-            ensure!(!amount.is_zero(), Error::<T>::ZeroFuelAmount);
-            ensure!(Self::service_exists(service_id), Error::<T>::UnknownService);
-
-            <T as Config>::Currency::transfer(
-                &funder,
-                &<T as Config>::FuelEscrowAccount::get(),
-                amount,
-                Preservation::Preserve,
-            )?;
-
-            let mut account = ServiceFuelAccounts::<T>::get(service_id);
-            account.available = account.available.saturating_add(amount);
-            ServiceFuelAccounts::<T>::insert(service_id, &account);
-            let total = TotalServiceFuel::<T>::get().saturating_add(amount);
-            TotalServiceFuel::<T>::put(total);
-            ensure!(
-                <T as Config>::Currency::balance(&<T as Config>::FuelEscrowAccount::get()) >= total,
-                Error::<T>::FuelEscrowInvariant
-            );
-
-            Self::deposit_event(Event::ServiceFunded {
-                funder,
-                service_id,
-                amount,
-                new_available: account.available,
-            });
-            Ok(())
-        }
-
-        #[pallet::call_index(7)]
+        #[pallet::call_index(4)]
         #[pallet::weight(T::DbWeight::get().reads_writes(2, 2))]
         pub fn drop_quarantined_system_op(
             origin: OriginFor<T>,
@@ -996,10 +515,7 @@ pub mod pallet {
             ensure_root(origin)?;
             let mut removed = false;
             QuarantinedSystemOps::<T>::mutate(|ops| {
-                if let Some(index) = ops
-                    .iter()
-                    .position(|pending| pending.op.request_id == request_id)
-                {
+                if let Some(index) = ops.iter().position(|op| op.op.request_id == request_id) {
                     ops.swap_remove(index);
                     removed = true;
                 }
@@ -1009,7 +525,7 @@ pub mod pallet {
             Ok(())
         }
 
-        #[pallet::call_index(8)]
+        #[pallet::call_index(5)]
         #[pallet::weight(T::DbWeight::get().reads_writes(4, 4))]
         #[transactional]
         pub fn retry_quarantined_system_op(
@@ -1021,25 +537,19 @@ pub mod pallet {
                 !PendingSystemOpKeys::<T>::contains_key(request_id),
                 Error::<T>::DuplicatePendingSystemOp
             );
-
             let mut retry = None;
             QuarantinedSystemOps::<T>::mutate(|ops| {
-                if let Some(index) = ops
-                    .iter()
-                    .position(|pending| pending.op.request_id == request_id)
-                {
+                if let Some(index) = ops.iter().position(|op| op.op.request_id == request_id) {
                     retry = Some(ops.swap_remove(index));
                 }
             });
             let retry = retry.ok_or(Error::<T>::QuarantinedSystemOpNotFound)?;
-            let retry = PendingSystemOp::<T> {
-                submitter: retry.submitter,
-                op: retry.op,
-            };
-
             PendingSystemOps::<T>::try_mutate(|pending| {
                 pending
-                    .try_push(retry)
+                    .try_push(PendingSystemOp {
+                        submitter: retry.submitter,
+                        op: retry.op,
+                    })
                     .map_err(|_| Error::<T>::TooManyPendingSystemOps)
             })?;
             PendingSystemOpKeys::<T>::insert(request_id, ());
@@ -1047,7 +557,7 @@ pub mod pallet {
             Ok(())
         }
 
-        #[pallet::call_index(9)]
+        #[pallet::call_index(6)]
         #[pallet::weight(T::DbWeight::get().reads_writes(1, 1))]
         pub fn clear_quarantined_system_ops(origin: OriginFor<T>) -> DispatchResult {
             ensure_root(origin)?;
@@ -1056,23 +566,7 @@ pub mod pallet {
             Ok(())
         }
 
-        #[pallet::call_index(11)]
-        #[pallet::weight(T::DbWeight::get().reads_writes(1, 1))]
-        pub fn set_ingress_relayer(
-            origin: OriginFor<T>,
-            new_relayer: T::AccountId,
-        ) -> DispatchResult {
-            ensure_root(origin)?;
-            let old = IngressRelayer::<T>::get();
-            IngressRelayer::<T>::put(&new_relayer);
-            Self::deposit_event(Event::IngressRelayerChanged {
-                old,
-                new: new_relayer,
-            });
-            Ok(())
-        }
-
-        #[pallet::call_index(12)]
+        #[pallet::call_index(7)]
         #[pallet::weight(T::DbWeight::get().reads_writes(5, 5))]
         #[transactional]
         pub fn submit_allocation(
@@ -1099,13 +593,12 @@ pub mod pallet {
                 PendingAllocationCount::<T>::get() < T::MaxPendingAllocations::get(),
                 Error::<T>::TooManyPendingAllocations
             );
-
             let allocation_id = allocation.allocation_id;
             let target_service = allocation.target_service;
             let amount = allocation.amount;
             PendingAllocations::<T>::insert(
                 allocation_id,
-                PendingAllocation::<T> {
+                PendingAllocation {
                     submitter,
                     allocation: allocation.clone(),
                 },
@@ -1126,8 +619,8 @@ pub mod pallet {
             Ok(())
         }
 
-        #[pallet::call_index(13)]
-        #[pallet::weight(T::DbWeight::get().reads_writes(4, 4))]
+        #[pallet::call_index(8)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(2, 2))]
         pub fn set_allocation_relayer(
             origin: OriginFor<T>,
             new_relayer: T::AccountId,
@@ -1145,75 +638,36 @@ pub mod pallet {
 
     #[pallet::view_functions]
     impl<T: Config> Pallet<T> {
-        pub fn get_work(work_id: WorkId) -> Option<WorkRecord<T>> {
-            Works::<T>::get(work_id)
+        pub fn get_package_status(package_hash: Hash) -> Option<PackageStatus> {
+            PackageStatuses::<T>::get(package_hash)
         }
-
-        pub fn get_work_by_package_hash(package_hash: Hash) -> Option<WorkRecord<T>> {
-            let work_id = WorkByPackageHash::<T>::get(package_hash)?;
-            Works::<T>::get(work_id)
+        pub fn get_package_failure(package_hash: Hash) -> Option<ExecutionErrorCode> {
+            PackageFailures::<T>::get(package_hash)
         }
-
-        pub fn get_work_id_by_package_hash(package_hash: Hash) -> Option<WorkId> {
-            WorkByPackageHash::<T>::get(package_hash)
+        pub fn get_execution_receipt_by_package_hash(package_hash: Hash) -> Option<Hash> {
+            ExecutionReceiptsByPackageHash::<T>::get(package_hash)
         }
-
-        pub fn get_work_bundle_ref(work_id: WorkId) -> Option<ContentRef> {
-            Works::<T>::get(work_id).map(|work| work.bundle_ref)
-        }
-
-        pub fn get_candidate(work_id: WorkId, round: u8) -> Option<CandidateRecord<T>> {
-            Candidates::<T>::get(work_id, round)
-        }
-
-        pub fn get_execution_receipt(work_id: WorkId) -> Option<Hash> {
-            ExecutionReceipts::<T>::get(work_id)
-        }
-
         pub fn get_last_execution_receipt() -> Option<Hash> {
             LastExecutionReceipt::<T>::get()
         }
-
-        pub fn get_service_fuel(service_id: u32) -> ServiceFuelAccount<BalanceOf<T>> {
-            ServiceFuelAccounts::<T>::get(service_id)
-        }
-
-        pub fn get_work_fuel_reservation(
-            work_id: WorkId,
-        ) -> Option<BoundedVec<ServiceFuelReservation<BalanceOf<T>>, T::MaxServicesPerWork>>
-        {
-            Works::<T>::get(work_id).map(|work| work.fuel_reservation)
-        }
-
-        pub fn get_work_fuel_settlement(
-            work_id: WorkId,
-        ) -> Option<WorkFuelSettlement<BalanceOf<T>>> {
-            WorkFuelSettlements::<T>::get(work_id)
-        }
-
         pub fn get_allocation(allocation_id: u64) -> Option<AllocationReceipt<BalanceOf<T>>> {
             AllocationReceipts::<T>::get(allocation_id)
         }
-
         pub fn is_allocation_processed(allocation_id: u64) -> bool {
             ProcessedAllocations::<T>::contains_key(allocation_id)
         }
-
         pub fn get_pending_allocations() -> Vec<PendingAllocation<T>> {
-            let mut pending: Vec<_> = PendingAllocations::<T>::iter_values().collect();
-            pending.sort_by_key(|item| item.allocation.allocation_id);
-            pending
+            let mut values: Vec<_> = PendingAllocations::<T>::iter_values().collect();
+            values.sort_by_key(|item| item.allocation.allocation_id);
+            values
         }
-
         pub fn get_pending_preimages() -> BoundedVec<PendingPreimage<T>, T::MaxPendingPreimages> {
             PendingPreimages::<T>::get()
         }
-
         pub fn get_quarantined_preimages(
         ) -> BoundedVec<QuarantinedPreimage<T>, T::MaxPendingPreimages> {
             QuarantinedPreimages::<T>::get()
         }
-
         pub fn has_pending_preimage(requester: u32, blob_hash: Hash, blob_len: u32) -> bool {
             PendingPreimageKeys::<T>::contains_key(PreimageKeyV1 {
                 requester,
@@ -1221,94 +675,74 @@ pub mod pallet {
                 blob_len,
             })
         }
-
         pub fn get_pending_system_ops() -> BoundedVec<PendingSystemOp<T>, T::MaxPendingSystemOps> {
             PendingSystemOps::<T>::get()
         }
-
         pub fn get_quarantined_system_ops(
         ) -> BoundedVec<QuarantinedSystemOp<T>, T::MaxPendingSystemOps> {
             QuarantinedSystemOps::<T>::get()
         }
-
         pub fn get_system_op(request_id: Hash) -> Option<SystemOpV2> {
             PendingSystemOps::<T>::get()
                 .into_iter()
                 .find(|pending| pending.op.request_id == request_id)
                 .map(|pending| pending.op)
         }
-
         pub fn get_system_receipt(request_id: Hash) -> Option<StateValue> {
             ProtocolState::<T>::get(Self::system_receipt_state_key(&request_id))
         }
-
-        pub fn get_system_op_nonce(sender: [u8; 32]) -> u64 {
+        pub fn get_system_op_nonce(sender: Hash) -> u64 {
             SystemOpNonces::<T>::get(sender)
         }
-
         pub fn get_system_service_info() -> Option<StateValue> {
             ProtocolState::<T>::get(Self::service_info_state_key(0))
         }
-
         pub fn get_service_info(service_id: u32) -> Option<StateValue> {
             ProtocolState::<T>::get(Self::service_info_state_key(service_id))
         }
-
         pub fn get_service_storage(service_id: u32, key: Vec<u8>) -> Option<StateValue> {
-            let state_key =
-                StoreKey::new_service_storage_key(&service_id, &ByteSequence::from(key))
-                    .to_state_key()
-                    .0;
+            let state_key = jp_core_primitives::state::StoreKey::new_service_storage_key(
+                &service_id,
+                &jp_core_primitives::simple::ByteSequence::from(key),
+            )
+            .to_state_key()
+            .0;
             ProtocolState::<T>::get(state_key)
         }
-
         pub fn get_service_preimage(service_id: u32, code_hash: Hash) -> Option<StateValue> {
-            let state_key = StoreKey::new_preimage_key(&service_id, &OpaqueHash(code_hash))
-                .to_state_key()
-                .0;
+            let state_key = jp_core_primitives::state::StoreKey::new_preimage_key(
+                &service_id,
+                &jp_core_primitives::crypto::OpaqueHash(code_hash),
+            )
+            .to_state_key()
+            .0;
             ProtocolState::<T>::get(state_key)
         }
-
         pub fn get_protocol_state(key: [u8; 31]) -> Option<StateValue> {
             ProtocolState::<T>::get(key)
         }
     }
 
     impl<T: Config> Pallet<T> {
-        fn ensure_ingress_relayer(origin: OriginFor<T>) -> Result<T::AccountId, DispatchError> {
+        fn ensure_worker(origin: OriginFor<T>) -> Result<T::AccountId, DispatchError> {
             let who = ensure_signed(origin)?;
-            let expected =
-                IngressRelayer::<T>::get().ok_or(Error::<T>::IngressRelayerNotConfigured)?;
-            ensure!(who == expected, Error::<T>::UnauthorizedIngress);
+            let worker = WorkerAccount::<T>::get().ok_or(Error::<T>::WorkerNotConfigured)?;
+            ensure!(who == worker, Error::<T>::UnauthorizedWorker);
             Ok(who)
         }
-
-        fn allocation_relayer_account() -> Result<T::AccountId, DispatchError> {
-            AllocationRelayer::<T>::get()
-                .or_else(IngressRelayer::<T>::get)
-                .ok_or(Error::<T>::AllocationRelayerNotConfigured.into())
-        }
-
         fn ensure_allocation_relayer(origin: OriginFor<T>) -> Result<T::AccountId, DispatchError> {
             let who = ensure_signed(origin)?;
-            let expected = Self::allocation_relayer_account()?;
+            let expected =
+                AllocationRelayer::<T>::get().ok_or(Error::<T>::AllocationRelayerNotConfigured)?;
             ensure!(who == expected, Error::<T>::UnauthorizedAllocation);
             Ok(who)
         }
-
-        /// Canonical allocation input handed to the Service 0 V2 adapter.
-        /// This is a queue handoff, not a direct protocol-state mutation or a
-        /// reverse bridge operation.
         pub fn pending_allocation_inputs() -> Vec<Vec<u8>> {
             Self::get_pending_allocations()
                 .into_iter()
                 .map(|pending| pending.allocation.encode())
                 .collect()
         }
-
-        /// Compatibility helper for the Service 0 V2 adapter. A successful
-        /// Service 0 receipt must already be present before this can consume
-        /// the queued allocation.
         pub fn consume_allocation(allocation_id: u64) -> DispatchResult {
             ensure!(
                 !ProcessedAllocations::<T>::contains_key(allocation_id),
@@ -1321,25 +755,9 @@ pub mod pallet {
                 receipt.len() >= 5 && receipt[0] == 0,
                 Error::<T>::AllocationTransitionNotConfirmed
             );
-            let pending = PendingAllocations::<T>::take(allocation_id)
-                .ok_or(Error::<T>::AllocationNotFound)?;
-            ProcessedAllocations::<T>::insert(allocation_id, ());
-            PendingAllocationCount::<T>::mutate(|count| *count = count.saturating_sub(1));
-            AllocationReceipts::<T>::insert(
-                allocation_id,
-                AllocationReceipt {
-                    allocation: pending.allocation.clone(),
-                    status: AllocationStatus::Processed,
-                },
-            );
-            Self::deposit_event(Event::AllocationProcessed {
-                allocation_id,
-                target_service: pending.allocation.target_service,
-                amount: pending.allocation.amount,
-            });
-            Ok(())
+            Self::consume_allocation_after_transition(allocation_id)
+                .map_err(|_| Error::<T>::AllocationNotFound.into())
         }
-
         fn consume_allocation_after_transition(allocation_id: u64) -> Result<(), ExecutionFailure> {
             if ProcessedAllocations::<T>::contains_key(allocation_id) {
                 return Err(ExecutionFailure::Fatal);
@@ -1363,306 +781,82 @@ pub mod pallet {
             Ok(())
         }
 
-        pub fn pending_worker_tasks() -> Vec<WorkerTaskV1> {
-            let mut tasks = PendingWorks::<T>::get()
-                .into_iter()
-                .filter_map(|work_id| {
-                    let work = Works::<T>::get(work_id)?;
-                    if work.status != WorkStatus::AwaitingCandidate {
-                        return None;
-                    }
-                    let canonical_work_package =
-                        CanonicalWorkPackageBytes::try_from(work.canonical_work_package.to_vec())
-                            .ok()?;
-                    let assignment =
-                        pallet_minijam_workers::Assignments::<T>::get(work_id, work.round)?;
-                    let assigned_workers = assignment.to_vec().try_into().ok()?;
-                    let candidate_producer = assignment.iter().copied().min()?;
-                    Some(WorkerTaskV1 {
-                        work_id,
-                        round: work.round,
-                        assignment_epoch: pallet_minijam_workers::AssignmentEpochs::<T>::get(
-                            work_id, work.round,
-                        )?,
-                        assigned_workers,
-                        candidate_producer,
-                        package_hash: work.package_hash,
-                        canonical_work_package,
-                        bundle_ref: work.bundle_ref,
-                    })
-                })
-                .collect::<Vec<_>>();
-            tasks.sort_by_key(|task| (task.work_id, task.round, task.package_hash));
-            tasks
-        }
-
-        pub fn open_worker_verification_tasks() -> Vec<WorkerVerificationTaskV1> {
-            pallet_minijam_workers::Pallet::<T>::open_vote_tasks()
-                .into_iter()
-                .filter_map(|task| {
-                    let work = Works::<T>::get(task.work_id)?;
-                    if work.round != task.round || work.status != WorkStatus::Voting {
-                        return None;
-                    }
-                    let candidate = Candidates::<T>::get(task.work_id, task.round)?;
-                    Some(WorkerVerificationTaskV1 {
-                        work_id: task.work_id,
-                        round: task.round,
-                        assignment_epoch: task.assignment_epoch,
-                        candidate_report_hash: task.candidate_report_hash,
-                        candidate_report: candidate.envelope.canonical_report,
-                        deadline: task.deadline,
-                        assigned_workers: task.assigned_workers,
-                        submitted_votes: task.submitted_votes,
-                        package_hash: work.package_hash,
-                        canonical_work_package: work
-                            .canonical_work_package
-                            .to_vec()
-                            .try_into()
-                            .ok()?,
-                        bundle_ref: work.bundle_ref,
-                    })
-                })
-                .collect()
-        }
-
-        fn prepare_round(work_id: WorkId) -> DispatchResult {
-            let mut work = Works::<T>::get(work_id).ok_or(Error::<T>::WorkNotFound)?;
-            match pallet_minijam_workers::Pallet::<T>::assign_work(work_id, work.round) {
-                Ok(_) => {
-                    work.status = WorkStatus::AwaitingCandidate;
-                    work.candidate_deadline = frame_system::Pallet::<T>::block_number()
-                        .saturating_add(T::ReportSubmissionDeadline::get().saturated_into());
-                }
-                Err(_) => {
-                    work.status = WorkStatus::InsufficientWorkers;
-                }
-            }
-            let status = work.status;
-            let round = work.round;
-            Works::<T>::insert(work_id, work);
-            Self::deposit_event(Event::WorkRoundAdvanced {
-                work_id,
-                round,
-                status,
-            });
-            Ok(())
-        }
-
-        fn advance_or_fail(work_id: WorkId, rejected_candidate: bool) -> DispatchResult {
-            with_transaction(|| {
-                let result = Self::advance_or_fail_inner(work_id, rejected_candidate);
-                match result {
-                    Ok(()) => TransactionOutcome::Commit(Ok(())),
-                    Err(error) => TransactionOutcome::Rollback(Err(error)),
-                }
-            })
-        }
-
-        fn advance_or_fail_inner(work_id: WorkId, rejected_candidate: bool) -> DispatchResult {
-            let mut work = Works::<T>::get(work_id).ok_or(Error::<T>::WorkNotFound)?;
-            if rejected_candidate {
-                Self::settle_rejected_candidate(work_id, work.round)?;
-                Self::deposit_event(Event::CandidateRejected {
-                    work_id,
-                    round: work.round,
-                });
-            }
-            pallet_minijam_workers::Pallet::<T>::clear_assignment(work_id, work.round);
-            if work.round.saturating_add(1) >= T::MaxCandidateRounds::get() {
-                Self::fail_work(work_id, &mut work)?;
-                return Ok(());
-            }
-            work.round = work.round.saturating_add(1);
-            work.status = WorkStatus::InsufficientWorkers;
-            Works::<T>::insert(work_id, &work);
-            Self::prepare_round(work_id)
-        }
-
-        fn settle_rejected_candidate(work_id: WorkId, round: u8) -> DispatchResult {
-            let candidate =
-                Candidates::<T>::get(work_id, round).ok_or(Error::<T>::InconsistentState)?;
-            let reason = T::JamHoldReason::from(HoldReason::CandidateBond);
-            let slash = T::CandidateRejectionSlash::get().min(T::CandidateBond::get());
-            let (credit, remainder) =
-                <T as Config>::Currency::slash(&reason, &candidate.submitter, slash);
-            ensure!(remainder.is_zero(), Error::<T>::InconsistentState);
-            if <T as Config>::Currency::resolve(&<T as Config>::RewardPool::get(), credit).is_err()
-            {
-                return Err(Error::<T>::InconsistentState.into());
-            }
-            <T as Config>::Currency::release(
-                &reason,
-                &candidate.submitter,
-                T::CandidateBond::get() - slash,
-                Precision::Exact,
-            )?;
-            Ok(())
-        }
-
-        fn accept_candidate(work_id: WorkId) -> DispatchResult {
-            with_transaction(|| {
-                let result = Self::accept_candidate_inner(work_id);
-                match result {
-                    Ok(()) => TransactionOutcome::Commit(Ok(())),
-                    Err(error) => TransactionOutcome::Rollback(Err(error)),
-                }
-            })
-        }
-
-        fn accept_candidate_inner(work_id: WorkId) -> DispatchResult {
-            let mut work = Works::<T>::get(work_id).ok_or(Error::<T>::WorkNotFound)?;
-            let candidate =
-                Candidates::<T>::get(work_id, work.round).ok_or(Error::<T>::InconsistentState)?;
-            Self::validate_candidate_report(&work, &candidate.envelope)?;
-            let candidate_reason = T::JamHoldReason::from(HoldReason::CandidateBond);
-            <T as Config>::Currency::release(
-                &candidate_reason,
-                &candidate.submitter,
-                T::CandidateBond::get(),
-                Precision::Exact,
-            )?;
-            <T as Config>::Currency::transfer(
-                &<T as Config>::RewardPool::get(),
-                &candidate.submitter,
-                T::AcceptedSubmitterReward::get(),
-                Preservation::Preserve,
-            )?;
-            let work_reason = T::JamHoldReason::from(HoldReason::WorkDeposit);
-            <T as Config>::Currency::release(
-                &work_reason,
-                &work.owner,
-                T::WorkDeposit::get(),
-                Precision::Exact,
-            )?;
-            work.status = WorkStatus::Accepted;
-            Works::<T>::insert(work_id, &work);
-            let execute_at = frame_system::Pallet::<T>::block_number().saturating_add(One::one());
-            ExecutionQueue::<T>::try_mutate(|queue| {
-                queue
-                    .try_push(ExecutionItem::<T> {
-                        work_id,
-                        execute_at,
-                    })
-                    .map_err(|_| Error::<T>::ExecutionQueueFull)
-            })?;
-            Self::remove_pending(work_id);
-            pallet_minijam_workers::Pallet::<T>::clear_assignment(work_id, work.round);
-            Self::deposit_event(Event::CandidateAccepted {
-                work_id,
-                round: work.round,
-            });
-            Ok(())
-        }
-
-        fn fail_work(work_id: WorkId, work: &mut WorkRecord<T>) -> DispatchResult {
-            let reason = T::JamHoldReason::from(HoldReason::WorkDeposit);
-            let (credit, remainder) =
-                <T as Config>::Currency::slash(&reason, &work.owner, T::WorkDeposit::get());
-            ensure!(remainder.is_zero(), Error::<T>::InconsistentState);
-            if <T as Config>::Currency::resolve(&<T as Config>::RewardPool::get(), credit).is_err()
-            {
-                return Err(Error::<T>::InconsistentState.into());
-            }
-            work.status = WorkStatus::Failed;
-            Works::<T>::insert(work_id, &*work);
-            Self::remove_pending(work_id);
-            pallet_minijam_workers::Pallet::<T>::clear_assignment(work_id, work.round);
-            Self::deposit_event(Event::WorkFailed { work_id });
-            Ok(())
-        }
-
-        fn remove_pending(work_id: WorkId) {
-            PendingWorks::<T>::mutate(|pending| {
-                if let Some(index) = pending.iter().position(|id| *id == work_id) {
-                    pending.swap_remove(index);
-                }
-            });
-        }
-
         fn execute_block_stf(block: BlockNumberFor<T>) {
-            let mut queue = ExecutionQueue::<T>::get();
+            let mut pending = PendingReports::<T>::take().into_inner();
             let max_reports = T::MaxExecutionReports::get() as usize;
-            let reports_paused = ReportImportPaused::<T>::get();
-            let mut due: Vec<ExecutionItem<T>> = Vec::new();
-            let mut retained: Vec<ExecutionItem<T>> = Vec::new();
-
-            for item in queue.drain(..) {
-                if !reports_paused && item.execute_at <= block && due.len() < max_reports {
-                    due.push(item);
-                } else {
-                    retained.push(item);
-                }
-            }
-
-            due.sort_by_key(|item| {
-                let report_hash = Self::candidate_for_work(item.work_id)
-                    .map(|(_, candidate)| candidate.envelope.canonical_report_hash)
-                    .unwrap_or([0xff; 32]);
-                (item.work_id, report_hash)
-            });
-
-            let result = with_transaction(|| match Self::execute_block_stf_inner(block, &due) {
-                Ok(output) => {
-                    let bounded = BoundedVec::<ExecutionItem<T>, T::MaxPendingWorks>::try_from(
-                        retained.clone(),
-                    )
-                    .unwrap_or_else(|_| {
-                        panic!("retained execution queue exceeded its original bound")
-                    });
-                    ExecutionQueue::<T>::put(bounded);
-                    TransactionOutcome::Commit(Ok(output))
-                }
-                Err(error) => TransactionOutcome::Rollback(Err(error)),
-            });
-
+            let reports: Vec<_> = if ReportImportPaused::<T>::get() {
+                Vec::new()
+            } else {
+                pending.drain(..pending.len().min(max_reports)).collect()
+            };
+            let retained = pending;
+            let result =
+                with_transaction(|| match Self::execute_block_stf_inner(block, &reports) {
+                    Ok(summary) => {
+                        PendingReports::<T>::put(
+                            BoundedVec::try_from(retained.clone())
+                                .expect("pending report bound is preserved"),
+                        );
+                        TransactionOutcome::Commit(Ok(summary))
+                    }
+                    Err(error) => TransactionOutcome::Rollback(Err(error)),
+                });
             match result {
-                Ok(summary) => {
-                    Self::deposit_event(Event::BlockStfExecuted {
-                        slot: block.saturated_into(),
-                        report_count: summary.report_count,
-                        preimage_count: summary.preimage_count,
-                        system_op_count: summary.system_op_count,
-                        receipt_hash: summary.receipt_hash,
-                    });
+                Ok(summary) => Self::deposit_event(Event::BlockStfExecuted {
+                    slot: block.saturated_into(),
+                    report_count: summary.report_count,
+                    preimage_count: summary.preimage_count,
+                    system_op_count: summary.system_op_count,
+                    receipt_hash: summary.receipt_hash,
+                }),
+                Err(ExecutionFailure::ReportsFailed(code)) => {
+                    for report in reports {
+                        PackageStatuses::<T>::insert(report.package_hash, PackageStatus::Failed);
+                        PackageFailures::<T>::insert(report.package_hash, code);
+                        Self::deposit_event(Event::PackageFailed {
+                            package_hash: report.package_hash,
+                            error_code: code,
+                        });
+                    }
+                    PendingReports::<T>::put(
+                        BoundedVec::try_from(retained).expect("pending report bound is preserved"),
+                    );
                 }
-                Err(ExecutionFailure::Yielded(work_id, outcome)) => {
-                    Self::deposit_event(Event::ExecutionYielded { work_id, outcome });
+                Err(ExecutionFailure::PreimagesRejected(code)) => {
+                    Self::quarantine_pending_preimages(code)
                 }
                 Err(ExecutionFailure::SystemOpsYielded(outcome)) => {
-                    Self::quarantine_pending_system_ops(outcome);
-                }
-                Err(ExecutionFailure::PreimagesRejected(error_code)) => {
-                    Self::quarantine_pending_preimages(error_code);
+                    Self::quarantine_pending_system_ops(outcome)
                 }
                 Err(ExecutionFailure::Fatal) => {
-                    panic!("fatal MiniJam execution error");
+                    for report in reports {
+                        PackageStatuses::<T>::insert(report.package_hash, PackageStatus::Failed);
+                        PackageFailures::<T>::insert(
+                            report.package_hash,
+                            ExecutionErrorCode::InvalidOutput,
+                        );
+                        Self::deposit_event(Event::PackageFailed {
+                            package_hash: report.package_hash,
+                            error_code: ExecutionErrorCode::InvalidOutput,
+                        });
+                    }
+                    PendingReports::<T>::put(
+                        BoundedVec::try_from(retained).expect("pending report bound is preserved"),
+                    );
                 }
             }
         }
 
         fn execute_block_stf_inner(
             block: BlockNumberFor<T>,
-            due: &[ExecutionItem<T>],
+            pending_reports: &[PendingReport],
         ) -> Result<BlockStfSummary, ExecutionFailure> {
-            let mut reports = Vec::<CanonicalReportBytes>::new();
-            let mut work_ids = Vec::<WorkId>::new();
-            for item in due {
-                let Some((round, candidate)) = Self::candidate_for_work(item.work_id) else {
-                    return Err(ExecutionFailure::Fatal);
-                };
-                let Some(work) = Works::<T>::get(item.work_id) else {
-                    return Err(ExecutionFailure::Fatal);
-                };
-                if work.round != round || work.status != WorkStatus::Accepted {
-                    return Err(ExecutionFailure::Fatal);
-                }
-                reports.push(candidate.envelope.canonical_report.clone());
-                work_ids.push(item.work_id);
-            }
-
-            let reports: minijam_protocol::ReportBatch =
-                reports.try_into().map_err(|_| ExecutionFailure::Fatal)?;
+            let reports: ReportBatch = pending_reports
+                .iter()
+                .map(|report| report.canonical_report.clone())
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(|_| ExecutionFailure::Fatal)?;
             let preimages = if PreimageImportPaused::<T>::get() {
                 PreimageBatch::default()
             } else {
@@ -1673,9 +867,6 @@ pub mod pallet {
             } else {
                 Self::pending_system_ops_batch()?
             };
-            let report_count = reports.len() as u32;
-            let preimage_count = preimages.len() as u32;
-            let system_op_count = system_ops.len() as u32;
             let input = MiniJamExecutionInput {
                 protocol_version: PROTOCOL_VERSION_V1,
                 slot: block.saturated_into(),
@@ -1687,36 +878,33 @@ pub mod pallet {
                 system_ops,
                 max_gas: T::MaxExecutionGas::get(),
             };
-            let state = FrameProtocolState::<T>(Default::default());
-            let executor = T::JamCoreExecutor::default();
-            let output = match executor.execute(input.clone(), &state) {
+            let state = FrameProtocolState::<T>(core::marker::PhantomData);
+            let output = match T::JamCoreExecutor::default().execute(input.clone(), &state) {
                 Ok(output) => output,
-                Err(MiniJamError::Execution(outcome)) => {
-                    return if let Some(work_id) = work_ids.first().copied() {
-                        Err(ExecutionFailure::Yielded(work_id, outcome))
-                    } else if !input.system_ops.is_empty() {
-                        Err(ExecutionFailure::SystemOpsYielded(outcome))
-                    } else {
-                        Err(ExecutionFailure::Fatal)
-                    };
+                Err(MiniJamError::Execution(outcome)) if !input.reports.is_empty() => {
+                    return Err(ExecutionFailure::ReportsFailed(outcome.into()))
                 }
-                Err(MiniJamError::State(_)) | Err(MiniJamError::Invariant(_)) => {
-                    return Err(ExecutionFailure::Fatal);
+                Err(MiniJamError::Execution(outcome)) if !input.system_ops.is_empty() => {
+                    return Err(ExecutionFailure::SystemOpsYielded(outcome))
                 }
-                Err(MiniJamError::Input(_)) => {
-                    return if input.reports.is_empty()
-                        && !input.preimages.is_empty()
-                        && input.system_ops.is_empty()
-                    {
-                        Err(ExecutionFailure::PreimagesRejected(
-                            ExecutionErrorCode::InvalidInput,
-                        ))
-                    } else {
-                        Err(ExecutionFailure::Fatal)
-                    };
+                Err(MiniJamError::Execution(_)) => return Err(ExecutionFailure::Fatal),
+                Err(MiniJamError::Input(_))
+                    if !input.preimages.is_empty() && input.reports.is_empty() =>
+                {
+                    return Err(ExecutionFailure::PreimagesRejected(
+                        ExecutionErrorCode::InvalidInput,
+                    ))
                 }
+                Err(MiniJamError::Input(_)) if !input.reports.is_empty() => {
+                    return Err(ExecutionFailure::ReportsFailed(
+                        ExecutionErrorCode::InvalidInput,
+                    ))
+                }
+                Err(MiniJamError::State(_) | MiniJamError::Invariant(_)) => {
+                    return Err(ExecutionFailure::Fatal)
+                }
+                Err(MiniJamError::Input(_)) => return Err(ExecutionFailure::Fatal),
             };
-
             let delta = validate_execution_output(&input, &output, &state)
                 .map_err(|error| Self::map_validation_error(&input, error))?;
             let changes = delta.changes().to_vec();
@@ -1724,107 +912,86 @@ pub mod pallet {
             Self::consume_successful_allocations(&changes)?;
             Self::consume_preimages(&output.consumed_preimages);
             Self::consume_system_ops(&output.consumed_system_ops);
-
-            let consumed_reports: BTreeSet<Hash> =
-                output.consumed_reports.iter().copied().collect();
-            for work_id in work_ids {
-                let (_, candidate) =
-                    Self::candidate_for_work(work_id).ok_or(ExecutionFailure::Fatal)?;
-                if !consumed_reports.contains(&candidate.envelope.canonical_report_hash) {
-                    continue;
+            for report in pending_reports {
+                if output.consumed_reports.contains(&report.package_hash)
+                    || output
+                        .consumed_reports
+                        .contains(&blake2_256(&report.canonical_report))
+                {
+                    PackageStatuses::<T>::insert(report.package_hash, PackageStatus::Imported);
+                    ExecutionReceiptsByPackageHash::<T>::insert(
+                        report.package_hash,
+                        output.receipt_hash,
+                    );
+                    Self::deposit_event(Event::ReportImported {
+                        package_hash: report.package_hash,
+                        receipt_hash: output.receipt_hash,
+                    });
                 }
-                let mut work = Works::<T>::get(work_id).ok_or(ExecutionFailure::Fatal)?;
-                work.status = WorkStatus::Imported;
-                Works::<T>::insert(work_id, work);
-                ExecutionReceipts::<T>::insert(work_id, output.receipt_hash);
-                Self::deposit_event(Event::ReportImported {
-                    work_id,
-                    receipt_hash: output.receipt_hash,
-                });
             }
             LastExecutionReceipt::<T>::put(output.receipt_hash);
             Ok(BlockStfSummary {
-                report_count,
-                preimage_count,
-                system_op_count,
+                report_count: input.reports.len() as u32,
+                preimage_count: input.preimages.len() as u32,
+                system_op_count: input.system_ops.len() as u32,
                 receipt_hash: output.receipt_hash,
             })
         }
-
         fn map_validation_error(
             input: &MiniJamExecutionInput,
             error: ValidationError,
         ) -> ExecutionFailure {
-            if input.reports.is_empty()
-                && !input.preimages.is_empty()
-                && input.system_ops.is_empty()
-            {
-                let code = match error {
-                    ValidationError::GasExceeded => ExecutionErrorCode::GasExceeded,
-                    ValidationError::DeltaTooLarge => ExecutionErrorCode::DeltaTooLarge,
-                    ValidationError::State(_) | ValidationError::Invariant(_) => {
-                        ExecutionErrorCode::InvalidOutput
-                    }
-                };
-                return ExecutionFailure::PreimagesRejected(code);
-            }
-
-            match error {
+            let code = match error {
+                ValidationError::GasExceeded => ExecutionErrorCode::GasExceeded,
+                ValidationError::DeltaTooLarge => ExecutionErrorCode::DeltaTooLarge,
                 ValidationError::State(_) | ValidationError::Invariant(_) => {
-                    ExecutionFailure::Fatal
+                    ExecutionErrorCode::InvalidOutput
                 }
-                ValidationError::GasExceeded | ValidationError::DeltaTooLarge => {
-                    ExecutionFailure::Fatal
-                }
+            };
+            if !input.reports.is_empty() {
+                ExecutionFailure::ReportsFailed(code)
+            } else if !input.preimages.is_empty() {
+                ExecutionFailure::PreimagesRejected(code)
+            } else {
+                ExecutionFailure::Fatal
             }
         }
-
         fn apply_delta(delta: ValidatedDelta) -> Result<(), ExecutionFailure> {
             for change in delta.into_changes() {
                 Self::apply_change(change)?;
             }
             Ok(())
         }
-
         fn apply_change(change: ProtocolStateChange) -> Result<(), ExecutionFailure> {
             match change.operation {
-                StateOperation::Upsert | StateOperation::Update => {
-                    let value = change.value.ok_or(ExecutionFailure::Fatal)?;
-                    ProtocolState::<T>::insert(change.key, value);
-                }
-                StateOperation::Remove => {
-                    ProtocolState::<T>::remove(change.key);
-                }
+                StateOperation::Upsert | StateOperation::Update => ProtocolState::<T>::insert(
+                    change.key,
+                    change.value.ok_or(ExecutionFailure::Fatal)?,
+                ),
+                StateOperation::Remove => ProtocolState::<T>::remove(change.key),
             }
             Ok(())
         }
-
         fn pending_preimage_batch() -> Result<PreimageBatch, ExecutionFailure> {
             let mut pending = PendingPreimages::<T>::get().into_inner();
-            pending.sort_by_key(|preimage| {
+            pending.sort_by_key(|item| {
                 (
-                    preimage.metadata.requester,
-                    preimage.metadata.blob_hash,
-                    preimage.metadata.blob_len,
+                    item.metadata.requester,
+                    item.metadata.blob_hash,
+                    item.metadata.blob_len,
                 )
             });
-            let preimages: Vec<CanonicalPreimageBytes> = pending
+            pending
                 .into_iter()
-                .map(|preimage| preimage.canonical)
-                .collect();
-            preimages.try_into().map_err(|_| ExecutionFailure::Fatal)
+                .map(|item| item.canonical)
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(|_| ExecutionFailure::Fatal)
         }
-
         fn pending_system_ops_batch() -> Result<SystemOpBatch, ExecutionFailure> {
             let mut pending = PendingSystemOps::<T>::get().into_inner();
-            pending.sort_by_key(|pending| {
-                (
-                    pending.op.submitter,
-                    pending.op.nonce,
-                    pending.op.request_id,
-                )
-            });
-            let mut ops: Vec<SystemOpV2> = pending.into_iter().map(|pending| pending.op).collect();
+            pending.sort_by_key(|item| (item.op.submitter, item.op.nonce, item.op.request_id));
+            let mut ops: Vec<_> = pending.into_iter().map(|item| item.op).collect();
             for encoded in Self::pending_allocation_inputs() {
                 let mut raw = encoded.as_slice();
                 let allocation = AllocationV1::<BalanceOf<T>>::decode(&mut raw)
@@ -1836,23 +1003,126 @@ pub mod pallet {
             }
             ops.try_into().map_err(|_| ExecutionFailure::Fatal)
         }
-
+        fn consume_successful_allocations(
+            changes: &[ProtocolStateChange],
+        ) -> Result<(), ExecutionFailure> {
+            for pending in Self::get_pending_allocations() {
+                let id = pending.allocation.allocation_id;
+                if let Some(change) = changes
+                    .iter()
+                    .find(|change| change.key == Self::allocation_receipt_state_key(id))
+                {
+                    let value = change.value.as_ref().ok_or(ExecutionFailure::Fatal)?;
+                    if value.first() == Some(&0) {
+                        Self::consume_allocation_after_transition(id)?;
+                    }
+                }
+            }
+            Ok(())
+        }
+        fn consume_preimages(consumed: &[Hash]) {
+            let consumed: BTreeSet<_> = consumed.iter().copied().collect();
+            PendingPreimages::<T>::mutate(|pending| {
+                let mut i = 0;
+                while i < pending.len() {
+                    if consumed.contains(&blake2_256(&pending[i].canonical)) {
+                        PendingPreimageKeys::<T>::remove(PreimageKeyV1::from(pending[i].metadata));
+                        pending.swap_remove(i);
+                    } else {
+                        i += 1;
+                    }
+                }
+            });
+        }
+        fn consume_system_ops(consumed: &[Hash]) {
+            let consumed: BTreeSet<_> = consumed.iter().copied().collect();
+            PendingSystemOps::<T>::mutate(|pending| {
+                let mut i = 0;
+                while i < pending.len() {
+                    if consumed.contains(&pending[i].op.request_id) {
+                        let id = pending[i].op.request_id;
+                        PendingSystemOpKeys::<T>::remove(id);
+                        pending.swap_remove(i);
+                        Self::deposit_event(Event::SystemOpConsumed { request_id: id });
+                    } else {
+                        i += 1;
+                    }
+                }
+            });
+        }
+        fn quarantine_pending_preimages(error_code: ExecutionErrorCode) {
+            let pending = PendingPreimages::<T>::take();
+            let mut quarantined = QuarantinedPreimages::<T>::get();
+            for item in pending {
+                PendingPreimageKeys::<T>::remove(PreimageKeyV1::from(item.metadata));
+                Self::deposit_event(Event::PreimageFailed {
+                    requester: item.metadata.requester,
+                    blob_hash: item.metadata.blob_hash,
+                    blob_len: item.metadata.blob_len,
+                    error_code,
+                });
+                let _ = quarantined.try_push(QuarantinedPreimage {
+                    submitter: item.submitter,
+                    metadata: item.metadata,
+                    canonical_hash: blake2_256(&item.canonical),
+                    error_code,
+                    block_number: frame_system::Pallet::<T>::block_number(),
+                    retryable: false,
+                });
+            }
+            QuarantinedPreimages::<T>::put(quarantined);
+        }
+        fn quarantine_pending_system_ops(outcome: ExecutionOutcome) {
+            let pending = PendingSystemOps::<T>::take();
+            let mut quarantined = QuarantinedSystemOps::<T>::get();
+            for item in pending {
+                PendingSystemOpKeys::<T>::remove(item.op.request_id);
+                Self::deposit_event(Event::SystemOpFailed {
+                    request_id: item.op.request_id,
+                    outcome: outcome.clone(),
+                });
+                let _ = quarantined.try_push(QuarantinedSystemOp {
+                    submitter: item.submitter,
+                    canonical_hash: blake2_256(&item.op.encode()),
+                    op: item.op,
+                    error_code: outcome.clone().into(),
+                    block_number: frame_system::Pallet::<T>::block_number(),
+                    retryable: true,
+                });
+            }
+            QuarantinedSystemOps::<T>::put(quarantined);
+        }
+        fn validate_system_command(command: &SystemCommandV2) -> DispatchResult {
+            match command {
+                SystemCommandV2::CreateService {
+                    code_len,
+                    min_item_gas,
+                    min_memo_gas,
+                    ..
+                } => ensure!(
+                    *code_len > 0 && *min_item_gas > 0 && *min_memo_gas > 0,
+                    Error::<T>::InvalidSystemOp
+                ),
+                SystemCommandV2::ApplyAllocation {
+                    allocation_id,
+                    target_service,
+                    amount,
+                } => ensure!(
+                    *allocation_id > 0 && *target_service > 0 && *amount > 0,
+                    Error::<T>::InvalidSystemOp
+                ),
+            }
+            Ok(())
+        }
         fn allocation_system_op(
             allocation: &AllocationV1<BalanceOf<T>>,
         ) -> Result<SystemOpV2, ExecutionFailure> {
             let amount = allocation.amount.saturated_into::<u64>();
-            if amount.saturated_into::<BalanceOf<T>>() != allocation.amount {
+            if amount.saturated_into::<BalanceOf<T>>() != allocation.amount
+                || !Self::service_exists(allocation.target_service)
+            {
                 return Err(ExecutionFailure::Fatal);
             }
-            let service_info =
-                ProtocolState::<T>::get(Self::service_info_state_key(allocation.target_service))
-                    .ok_or(ExecutionFailure::Fatal)?;
-            let service_info = ServiceInfo::decode(&mut service_info.as_slice())
-                .map_err(|_| ExecutionFailure::Fatal)?;
-            if service_info.min_memo_gas == 0 {
-                return Err(ExecutionFailure::Fatal);
-            }
-
             Ok(SystemOpV2::new(
                 ALLOCATION_SYSTEM_SENDER,
                 allocation.allocation_id,
@@ -1863,469 +1133,35 @@ pub mod pallet {
                 },
             ))
         }
-
         fn allocation_receipt_state_key(allocation_id: u64) -> [u8; 31] {
-            let mut storage_key = Vec::with_capacity(ALLOCATION_RECEIPT_PREFIX.len() + 8);
-            storage_key.extend_from_slice(ALLOCATION_RECEIPT_PREFIX);
-            storage_key.extend_from_slice(&allocation_id.to_le_bytes());
-            StoreKey::new_service_storage_key(&SYSTEM_SERVICE_ID, &ByteSequence::from(storage_key))
-                .to_state_key()
-                .0
+            let mut key = ALLOCATION_RECEIPT_PREFIX.to_vec();
+            key.extend_from_slice(&allocation_id.to_le_bytes());
+            jp_core_primitives::state::StoreKey::new_service_storage_key(
+                &SYSTEM_SERVICE_ID,
+                &jp_core_primitives::simple::ByteSequence::from(key),
+            )
+            .to_state_key()
+            .0
         }
-
-        fn consume_successful_allocations(
-            changes: &[ProtocolStateChange],
-        ) -> Result<(), ExecutionFailure> {
-            for pending in Self::get_pending_allocations() {
-                let allocation_id = pending.allocation.allocation_id;
-                let key = Self::allocation_receipt_state_key(allocation_id);
-                let Some(change) = changes.iter().find(|change| change.key == key) else {
-                    continue;
-                };
-                let Some(value) = change.value.as_ref() else {
-                    return Err(ExecutionFailure::Fatal);
-                };
-                if value.len() < 5 {
-                    return Err(ExecutionFailure::Fatal);
-                }
-                if value[0] == 0 {
-                    Self::consume_allocation_after_transition(allocation_id)?;
-                }
-            }
-            Ok(())
-        }
-
-        fn consume_preimages(consumed_preimages: &[Hash]) {
-            if consumed_preimages.is_empty() {
-                return;
-            }
-            let consumed: BTreeSet<Hash> = consumed_preimages.iter().copied().collect();
-            PendingPreimages::<T>::mutate(|pending| {
-                let mut index = 0;
-                while index < pending.len() {
-                    let canonical_hash = blake2_256(&pending[index].canonical);
-                    if consumed.contains(&canonical_hash) {
-                        PendingPreimageKeys::<T>::remove(PreimageKeyV1::from(
-                            pending[index].metadata,
-                        ));
-                        pending.swap_remove(index);
-                    } else {
-                        index += 1;
-                    }
-                }
-            });
-        }
-
-        fn quarantine_pending_preimages(error_code: ExecutionErrorCode) {
-            let pending = PendingPreimages::<T>::take();
-            if pending.is_empty() {
-                return;
-            }
-
-            let mut quarantined = QuarantinedPreimages::<T>::get();
-            let mut overflowed = false;
-            for pending in pending {
-                PendingPreimageKeys::<T>::remove(PreimageKeyV1::from(pending.metadata));
-                Self::deposit_event(Event::PreimageFailed {
-                    requester: pending.metadata.requester,
-                    blob_hash: pending.metadata.blob_hash,
-                    blob_len: pending.metadata.blob_len,
-                    error_code,
-                });
-                let record = QuarantinedPreimage::<T> {
-                    submitter: pending.submitter,
-                    metadata: pending.metadata,
-                    canonical_hash: blake2_256(&pending.canonical),
-                    error_code,
-                    block_number: frame_system::Pallet::<T>::block_number(),
-                    retryable: false,
-                };
-                if quarantined.try_push(record).is_err() {
-                    overflowed = true;
-                }
-            }
-            QuarantinedPreimages::<T>::put(quarantined);
-            if overflowed {
-                PreimageImportPaused::<T>::put(true);
-            }
-        }
-
-        fn quarantine_pending_system_ops(outcome: ExecutionOutcome) {
-            let pending = PendingSystemOps::<T>::take();
-            if pending.is_empty() {
-                return;
-            }
-
-            let mut quarantined = QuarantinedSystemOps::<T>::get();
-            let mut overflowed = false;
-            for pending in pending {
-                PendingSystemOpKeys::<T>::remove(pending.op.request_id);
-                Self::deposit_event(Event::SystemOpFailed {
-                    request_id: pending.op.request_id,
-                    outcome: outcome.clone(),
-                });
-                let canonical_hash = blake2_256(&pending.op.encode());
-                let record = QuarantinedSystemOp::<T> {
-                    submitter: pending.submitter,
-                    op: pending.op,
-                    canonical_hash,
-                    error_code: outcome.clone().into(),
-                    block_number: frame_system::Pallet::<T>::block_number(),
-                    retryable: true,
-                };
-                if quarantined.try_push(record).is_err() {
-                    overflowed = true;
-                }
-            }
-            QuarantinedSystemOps::<T>::put(quarantined);
-            if overflowed {
-                SystemOpsPaused::<T>::put(true);
-            }
-        }
-
-        fn consume_system_ops(consumed_system_ops: &[Hash]) {
-            if consumed_system_ops.is_empty() {
-                return;
-            }
-            let consumed: BTreeSet<Hash> = consumed_system_ops.iter().copied().collect();
-            PendingSystemOps::<T>::mutate(|pending| {
-                let mut index = 0;
-                while index < pending.len() {
-                    let request_id = pending[index].op.request_id;
-                    if consumed.contains(&request_id) {
-                        PendingSystemOpKeys::<T>::remove(request_id);
-                        pending.swap_remove(index);
-                        Self::deposit_event(Event::SystemOpConsumed { request_id });
-                    } else {
-                        index += 1;
-                    }
-                }
-            });
-        }
-
-        fn validate_system_command(command: &SystemCommandV2) -> DispatchResult {
-            match command {
-                SystemCommandV2::CreateService {
-                    code_len,
-                    min_item_gas,
-                    min_memo_gas,
-                    ..
-                } => {
-                    ensure!(*code_len > 0, Error::<T>::InvalidSystemOp);
-                    ensure!(*min_item_gas > 0, Error::<T>::InvalidSystemOp);
-                    ensure!(*min_memo_gas > 0, Error::<T>::InvalidSystemOp);
-                }
-                SystemCommandV2::ApplyAllocation {
-                    allocation_id,
-                    target_service,
-                    amount,
-                } => {
-                    ensure!(*allocation_id > 0, Error::<T>::InvalidSystemOp);
-                    ensure!(*target_service > 0, Error::<T>::InvalidSystemOp);
-                    ensure!(*amount > 0, Error::<T>::InvalidSystemOp);
-                }
-            }
-            Ok(())
-        }
-
-        fn validate_content_ref(bundle_ref: &ContentRef) -> DispatchResult {
-            ensure!(!bundle_ref.cid_v1.is_empty(), Error::<T>::InvalidContentRef);
-            ensure!(bundle_ref.size > 0, Error::<T>::InvalidContentRef);
-            ensure!(
-                bundle_ref.size <= T::MaxBundleBytes::get(),
-                Error::<T>::InvalidContentRef
-            );
-            Ok(())
-        }
-
-        fn decode_work_package(bytes: &[u8]) -> Result<WorkPackage, DispatchError> {
-            let mut input = bytes;
-            let package =
-                WorkPackage::decode(&mut input).map_err(|_| Error::<T>::InvalidWorkPackage)?;
-            ensure!(input.is_empty(), Error::<T>::InvalidWorkPackage);
-            Ok(package)
-        }
-
-        fn validate_candidate_report(
-            work: &WorkRecord<T>,
-            envelope: &ReportEnvelopeV1,
-        ) -> DispatchResult {
-            let executor = T::JamCoreExecutor::default();
-            let projection = executor
-                .project_report(&envelope.canonical_report)
-                .map_err(|_| Error::<T>::InvalidReportProjection)?;
-            ensure!(
-                projection.package_hash == work.package_hash,
-                Error::<T>::InvalidReportProjection
-            );
-            ensure!(
-                envelope.projected_metadata.package_hash == projection.package_hash
-                    && envelope.projected_metadata.context_hash == projection.context_hash
-                    && envelope.projected_metadata.exports_root == projection.exports_root
-                    && envelope.projected_metadata.accumulate_gas
-                        == projection.total_accumulate_gas,
-                Error::<T>::InvalidReportProjection
-            );
-
-            let work_package = Self::decode_work_package(&work.canonical_work_package)?;
-            ensure!(
-                projection.result_count as usize == work_package.items.len()
-                    && projection.services.len() == work_package.items.len(),
-                Error::<T>::InvalidReportProjection
-            );
-            ensure!(
-                projection.context_hash
-                    == blake2_256(&jam_codec::Encode::encode(&work_package.context)),
-                Error::<T>::InvalidReportProjection
-            );
-            let total_report_gas = projection
-                .total_refine_gas
-                .checked_add(projection.total_accumulate_gas)
-                .ok_or(Error::<T>::InvalidReportProjection)?;
-            ensure!(
-                total_report_gas <= T::MaxExecutionGas::get(),
-                Error::<T>::InvalidReportProjection
-            );
-
-            for (item, result) in work_package.items.iter().zip(projection.services.iter()) {
-                ensure!(
-                    result.service_id == item.service
-                        && result.code_hash == item.code_hash.0
-                        && result.refine_gas_used <= item.refine_gas_limit
-                        && result.accumulate_gas <= item.accumulate_gas_limit,
-                    Error::<T>::InvalidReportProjection
-                );
-            }
-            Ok(())
-        }
-
-        // Retained for decoding legacy fuel reservations; Season 2 execution
-        // does not call the service-fuel charging path.
-        #[allow(dead_code)]
-        fn decode_work_report(bytes: &[u8]) -> Result<WorkReport, ExecutionFailure> {
-            let mut input = bytes;
-            let report = WorkReport::decode(&mut input).map_err(|_| ExecutionFailure::Fatal)?;
-            if !input.is_empty() {
-                return Err(ExecutionFailure::Fatal);
-            }
-            Ok(report)
-        }
-
-        #[allow(dead_code)]
-        fn reserve_work_fuel(
-            package: &WorkPackage,
-        ) -> Result<
-            BoundedVec<ServiceFuelReservation<BalanceOf<T>>, T::MaxServicesPerWork>,
-            DispatchError,
-        > {
-            let mut grouped = BTreeMap::<u32, (u64, u64)>::new();
-            for item in &package.items {
-                let entry = grouped.entry(item.service).or_insert((0, 0));
-                entry.0 = entry
-                    .0
-                    .checked_add(item.refine_gas_limit)
-                    .ok_or(Error::<T>::InvalidWorkPackage)?;
-                entry.1 = entry
-                    .1
-                    .checked_add(item.accumulate_gas_limit)
-                    .ok_or(Error::<T>::InvalidWorkPackage)?;
-            }
-
-            let mut reservations = Vec::new();
-            for (service_id, (refine_limit, accumulate_limit)) in grouped {
-                ensure!(Self::service_exists(service_id), Error::<T>::UnknownService);
-                let reserved = Self::fuel_cost(refine_limit, accumulate_limit);
-                if reserved.is_zero() {
-                    continue;
-                }
-                ServiceFuelAccounts::<T>::try_mutate(service_id, |account| {
-                    ensure!(
-                        account.available >= reserved,
-                        Error::<T>::InsufficientServiceFuel
-                    );
-                    account.available = account.available.saturating_sub(reserved);
-                    account.reserved = account.reserved.saturating_add(reserved);
-                    Ok::<(), DispatchError>(())
-                })?;
-                reservations.push(ServiceFuelReservation {
-                    service_id,
-                    refine_limit,
-                    accumulate_limit,
-                    reserved,
-                });
-            }
-
-            reservations
-                .try_into()
-                .map_err(|_| Error::<T>::TooManyServicesPerWork.into())
-        }
-
-        #[allow(dead_code)]
-        fn release_work_fuel(work_id: WorkId, work: &mut WorkRecord<T>) -> DispatchResult {
-            if work.fuel_reservation.is_empty() {
-                return Ok(());
-            }
-
-            let reservations = work.fuel_reservation.clone();
-            let mut total_released = BalanceOf::<T>::zero();
-            for reservation in &reservations {
-                ServiceFuelAccounts::<T>::try_mutate(reservation.service_id, |account| {
-                    ensure!(
-                        account.reserved >= reservation.reserved,
-                        Error::<T>::FuelSettlementInvariant
-                    );
-                    account.reserved = account.reserved.saturating_sub(reservation.reserved);
-                    account.available = account.available.saturating_add(reservation.reserved);
-                    Ok::<(), DispatchError>(())
-                })?;
-                total_released = total_released.saturating_add(reservation.reserved);
-            }
-
-            work.fuel_reservation = BoundedVec::default();
-            WorkFuelSettlements::<T>::insert(
-                work_id,
-                WorkFuelSettlement {
-                    charged: BalanceOf::<T>::zero(),
-                    refunded: total_released,
-                },
-            );
-            if !total_released.is_zero() {
-                Self::deposit_event(Event::WorkFuelReleased {
-                    work_id,
-                    total: total_released,
-                });
-            }
-            Ok(())
-        }
-
-        #[allow(dead_code)]
-        fn settle_imported_work_fuel(
-            work_id: WorkId,
-            work: &mut WorkRecord<T>,
-            canonical_report: &[u8],
-        ) -> Result<(), ExecutionFailure> {
-            if work.fuel_reservation.is_empty() {
-                return Ok(());
-            }
-
-            let report = Self::decode_work_report(canonical_report)?;
-            if report.package_spec.hash.0 != work.package_hash {
-                return Err(ExecutionFailure::Fatal);
-            }
-
-            let mut actual_by_service = BTreeMap::<u32, (u64, u64)>::new();
-            for result in &report.results {
-                let entry = actual_by_service.entry(result.service_id).or_insert((0, 0));
-                entry.0 = entry
-                    .0
-                    .checked_add(result.refine_load.gas_used)
-                    .ok_or(ExecutionFailure::Fatal)?;
-                entry.1 = entry
-                    .1
-                    .checked_add(result.accumulate_gas)
-                    .ok_or(ExecutionFailure::Fatal)?;
-            }
-
-            let reservations = work.fuel_reservation.clone();
-            let mut charged_total = BalanceOf::<T>::zero();
-            let mut refunded_total = BalanceOf::<T>::zero();
-            for reservation in &reservations {
-                let (refine_used, accumulate_used) = actual_by_service
-                    .remove(&reservation.service_id)
-                    .unwrap_or((0, 0));
-                if refine_used > reservation.refine_limit
-                    || accumulate_used > reservation.accumulate_limit
-                {
-                    return Err(ExecutionFailure::Fatal);
-                }
-
-                let charged = Self::fuel_cost(refine_used, accumulate_used);
-                if charged > reservation.reserved {
-                    return Err(ExecutionFailure::Fatal);
-                }
-                let refunded = reservation.reserved.saturating_sub(charged);
-
-                ServiceFuelAccounts::<T>::try_mutate(reservation.service_id, |account| {
-                    ensure!(
-                        account.reserved >= reservation.reserved,
-                        Error::<T>::FuelSettlementInvariant
-                    );
-                    account.reserved = account.reserved.saturating_sub(reservation.reserved);
-                    account.available = account.available.saturating_add(refunded);
-                    Ok::<(), DispatchError>(())
-                })
-                .map_err(|_| ExecutionFailure::Fatal)?;
-
-                charged_total = charged_total.saturating_add(charged);
-                refunded_total = refunded_total.saturating_add(refunded);
-            }
-
-            if !actual_by_service.is_empty() {
-                return Err(ExecutionFailure::Fatal);
-            }
-
-            if !charged_total.is_zero() {
-                let total_fuel = TotalServiceFuel::<T>::get();
-                if total_fuel < charged_total {
-                    return Err(ExecutionFailure::Fatal);
-                }
-                <T as Config>::Currency::transfer(
-                    &<T as Config>::FuelEscrowAccount::get(),
-                    &<T as Config>::RewardPool::get(),
-                    charged_total,
-                    Preservation::Expendable,
-                )
-                .map_err(|_| ExecutionFailure::Fatal)?;
-                TotalServiceFuel::<T>::put(total_fuel.saturating_sub(charged_total));
-            }
-
-            work.fuel_reservation = BoundedVec::default();
-            WorkFuelSettlements::<T>::insert(
-                work_id,
-                WorkFuelSettlement {
-                    charged: charged_total,
-                    refunded: refunded_total,
-                },
-            );
-            Self::deposit_event(Event::WorkFuelSettled {
-                work_id,
-                charged: charged_total,
-                refunded: refunded_total,
-            });
-            Ok(())
-        }
-
-        #[allow(dead_code)]
-        fn fuel_cost(refine_gas: u64, accumulate_gas: u64) -> BalanceOf<T> {
-            let refine_cost = refine_gas
-                .saturated_into::<BalanceOf<T>>()
-                .saturating_mul(T::RefineGasPrice::get());
-            let accumulate_cost = accumulate_gas
-                .saturated_into::<BalanceOf<T>>()
-                .saturating_mul(T::AccumulateGasPrice::get());
-            refine_cost.saturating_add(accumulate_cost)
-        }
-
-        fn system_op_sender(account: &T::AccountId) -> [u8; 32] {
+        fn system_op_sender(account: &T::AccountId) -> Hash {
             blake2_256(&account.encode())
         }
-
         fn service_exists(service_id: u32) -> bool {
             ProtocolState::<T>::contains_key(Self::service_info_state_key(service_id))
         }
-
         fn system_receipt_state_key(request_id: &Hash) -> [u8; 31] {
-            let mut storage_key = Vec::new();
-            storage_key.extend_from_slice(SYSTEM_STORAGE_RECEIPT_PREFIX);
-            storage_key.extend_from_slice(request_id);
-            StoreKey::new_service_storage_key(&SYSTEM_SERVICE_ID, &ByteSequence::from(storage_key))
-                .to_state_key()
-                .0
+            let mut key = SYSTEM_STORAGE_RECEIPT_PREFIX.to_vec();
+            key.extend_from_slice(request_id);
+            jp_core_primitives::state::StoreKey::new_service_storage_key(
+                &SYSTEM_SERVICE_ID,
+                &jp_core_primitives::simple::ByteSequence::from(key),
+            )
+            .to_state_key()
+            .0
         }
-
         fn service_info_state_key(service_id: u32) -> [u8; 31] {
             let service = service_id.to_le_bytes();
-            let mut key = [0u8; 31];
+            let mut key = [0; 31];
             key[0] = 0xff;
             key[1] = service[0];
             key[3] = service[1];
@@ -2333,42 +1169,30 @@ pub mod pallet {
             key[7] = service[3];
             key
         }
-
         fn host_parent_hash(block: BlockNumberFor<T>) -> Hash {
-            let parent_number = block.saturating_sub(One::one());
-            let parent_hash = frame_system::Pallet::<T>::block_hash(parent_number);
-            blake2_256(&parent_hash.encode())
+            let parent = frame_system::Pallet::<T>::block_hash(block.saturating_sub(One::one()));
+            blake2_256(&parent.encode())
         }
-
         fn host_parent_state_root(block: BlockNumberFor<T>) -> Hash {
             blake2_256(&(b"minijam/parent-state-root", Self::host_parent_hash(block)).encode())
         }
-
         fn host_entropy(block: BlockNumberFor<T>) -> Hash {
             blake2_256(&(b"minijam/host-entropy", block).encode())
-        }
-
-        fn candidate_for_work(work_id: WorkId) -> Option<(u8, CandidateRecord<T>)> {
-            let work = Works::<T>::get(work_id)?;
-            Candidates::<T>::get(work_id, work.round).map(|candidate| (work.round, candidate))
         }
     }
 
     pub struct FrameProtocolState<T: Config>(core::marker::PhantomData<T>);
-
     impl<T: Config> ProtocolStateReader for FrameProtocolState<T> {
         fn get(&self, key: &[u8; 31]) -> Result<Option<Vec<u8>>, StateError> {
             Ok(ProtocolState::<T>::get(key).map(|value| value.into_inner()))
         }
     }
-
     enum ExecutionFailure {
-        Yielded(WorkId, ExecutionOutcome),
+        ReportsFailed(ExecutionErrorCode),
         SystemOpsYielded(ExecutionOutcome),
         PreimagesRejected(ExecutionErrorCode),
         Fatal,
     }
-
     impl From<DispatchError> for ExecutionFailure {
         fn from(_: DispatchError) -> Self {
             Self::Fatal

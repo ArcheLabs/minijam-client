@@ -15,11 +15,10 @@ See [MiniJamSpec](docs/minijam-spec.md), the
 
 | Path | Responsibility |
 | --- | --- |
-| `crates/minijam-protocol` | Protocol constants, content references, reports, votes, and state changes |
+| `crates/minijam-protocol` | Protocol constants, content references, canonical reports, and state changes |
 | `crates/minijam-jamcore-api` | Versioned JamCore interface and execution types |
-| `crates/minijam-worker-engine` | Runtime-independent Worker algorithms |
 | `crates/minijam-worker` | Worker daemon and bundle fetching |
-| `crates/minijam-formal-rpc` | Application-neutral Work and bundle gateway |
+| `crates/minijam-formal-rpc` | Application-neutral transaction queue and bundle gateway |
 | `runtime` | FRAME Runtime and jambda Executive integration |
 | `node` | Node CLI, RPC, chain profiles, Aura, and GRANDPA |
 | `deploy/stage1` | Canonical Stage-1 Dockerfile and Compose profiles |
@@ -44,9 +43,10 @@ Generate `stage1.json` and `stage1-raw.json` from the exact node image with
 `scripts/export-stage1-chain-specs-image.sh`; generated specs must not be
 committed.
 
-Formal RPC owns the Work-ingress relayer and bundle store. The Worker owns its
-signing key. Node RPC, Worker health, metrics, and compiler endpoints remain
-private deployment concerns.
+Formal RPC owns the durable transaction queue and bundle store. The single
+Worker owns the configured WorkerAccount and submits canonical reports
+directly to the node. Node RPC and compiler endpoints remain private
+deployment concerns.
 
 ## Development
 
@@ -64,7 +64,6 @@ Core Wasm checks:
 
 ```bash
 cargo check -p minijam-protocol -p minijam-jamcore-api \
-  -p minijam-worker-engine --no-default-features \
   --target wasm32-unknown-unknown
 cargo check -p minijam-runtime --no-default-features --target wasm32v1-none
 ```
@@ -76,8 +75,8 @@ does not require a host-built web product or local release stack.
 
 MiniJAM uses an independent Polkadot SDK chain with a deliberately bounded
 JAM-compatible execution surface. Work reports, Worker votes, state changes,
-Service 0 execution, bridge effects, and bundle retrieval are application-
-neutral protocol concerns. See the documents under `docs/` for the execution,
+canonical reports, Service 0 execution, bridge effects, and bundle retrieval are
+application-neutral protocol concerns. See the documents under `docs/` for the execution,
 toolchain, and deployment boundaries.
 
 ## License
