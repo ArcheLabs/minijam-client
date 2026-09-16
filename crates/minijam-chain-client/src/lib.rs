@@ -262,13 +262,14 @@ impl MiniJamChainClient {
         // submit.
         let _submission = self.submit_lock.lock().await;
         let prepared = self.prepare_system_command_inner(command).await?;
-        match rpc::submit_and_watch_extrinsic(
-            &*self.rpc.lock().await,
-            &prepared.encoded_extrinsic,
-            self.request_timeout,
-        )
-        .await
-        {
+        // Release the RPC mutex before completion/recovery, both of which
+        // issue additional RPC calls through the same client.
+        let watched = {
+            let rpc = self.rpc.lock().await;
+            rpc::submit_and_watch_extrinsic(&*rpc, &prepared.encoded_extrinsic, self.request_timeout)
+                .await
+        };
+        match watched {
             Ok((extrinsic_hash, statuses)) => {
                 self.complete_prepared_submission(prepared, extrinsic_hash, statuses)
                     .await
