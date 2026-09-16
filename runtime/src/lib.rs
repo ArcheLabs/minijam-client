@@ -228,8 +228,8 @@ impl pallet_minijam_workers::Config for Runtime {
     type TopWorkers = ConstU32<8>;
     type AssignmentSeedDelay = ConstU32<10>;
     type WorkersPerWork = ConstU32<1>;
-    type MaxWorksPerRound = ConstU32<4>;
-    type MaxDutiesPerWorkerPerRound = ConstU32<2>;
+    type MaxWorksPerRound = ConstU32<64>;
+    type MaxDutiesPerWorkerPerRound = ConstU32<64>;
     type SupportThreshold = ConstU32<1>;
     type OpposeThreshold = ConstU32<1>;
     type MaxOpenVotes = ConstU32<64>;
@@ -376,6 +376,34 @@ mod stage0_economics_tests {
         assert!(
             <<Runtime as pallet_minijam::Config>::MaxExecutionGas as Get<u64>>::get()
                 >= MiniJamSpec::MAX_REFINE_GAS.saturating_mul(2)
+        );
+    }
+
+    #[test]
+    fn stage1_capacity_matches_single_worker_pending_work_bound() {
+        assert_eq!(
+            <<Runtime as pallet_minijam_workers::Config>::WorkersPerWork as Get<u32>>::get(),
+            1
+        );
+        assert_eq!(
+            <<Runtime as pallet_minijam_workers::Config>::MaxWorksPerRound as Get<u32>>::get(),
+            64
+        );
+        assert_eq!(
+            <<Runtime as pallet_minijam_workers::Config>::MaxDutiesPerWorkerPerRound as Get<u32>>::get(),
+            64
+        );
+        assert_eq!(
+            <<Runtime as pallet_minijam_workers::Config>::SupportThreshold as Get<u32>>::get(),
+            1
+        );
+        assert_eq!(
+            <<Runtime as pallet_minijam_workers::Config>::OpposeThreshold as Get<u32>>::get(),
+            1
+        );
+        assert_eq!(
+            <<Runtime as pallet_minijam::Config>::MaxPendingWorks as Get<u32>>::get(),
+            64
         );
     }
 
