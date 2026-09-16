@@ -21,7 +21,7 @@ use jp_core_primitives::{
     types::{Preimage, ServiceInfo},
 };
 use minijam_chain_client::{FinalizedContext, MiniJamChainClient};
-use minijam_protocol::{blake2_256, Hash, SystemReceiptV2};
+use minijam_protocol::{blake2_256, Hash, StateValue, SystemReceiptV2};
 use parity_scale_codec::Decode;
 use serde::{Deserialize, Serialize};
 use sp_core::{sr25519, Pair};
@@ -32,6 +32,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 const MAX_WORK_BYTES: usize = 1_048_576;
 const MAX_RPC_BODY_BYTES: usize = 8 * 1_048_576;
 const MAX_RPC_CONCURRENCY: usize = 32;
+const CHAIN_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct FormalRpc {
@@ -245,18 +246,24 @@ async fn wait_for_system_receipt(
     request_id: Hash,
 ) -> Result<SystemReceiptV2, RpcError> {
     for _ in 0..120 {
-        if let Some(receipt) = chain
-            .system_receipt::<SystemReceiptV2>(request_id)
+        if let Some(encoded) = chain
+            .system_receipt::<StateValue>(request_id)
             .await
             .map_err(chain_error)?
         {
-            return Ok(receipt);
+            return decode_system_receipt(encoded);
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
     Err(RpcError::Chain(
         "timed out waiting for finalized deployment receipt".into(),
     ))
+}
+
+fn decode_system_receipt(encoded: StateValue) -> Result<SystemReceiptV2, RpcError> {
+    let bytes = encoded.into_inner();
+    SystemReceiptV2::decode(&mut bytes.as_slice())
+        .map_err(|error| RpcError::Chain(error.to_string()))
 }
 
 async fn wait_for_service_code_hash(
@@ -680,9 +687,8 @@ pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error + Send + Syn
     };
     let signer =
         sr25519::Pair::from_string(&signer_uri, None).map_err(|error| error.to_string())?;
-    let chain = Arc::new(
-        MiniJamChainClient::connect(rpc_url, signer, std::time::Duration::from_secs(15)).await?,
-    );
+    let chain =
+        Arc::new(MiniJamChainClient::connect(rpc_url, signer, CHAIN_REQUEST_TIMEOUT).await?);
     let bundle_dir =
         PathBuf::from(std::env::var("MINIJAM_BUNDLE_DIR").unwrap_or_else(|_| "bundles".into()));
     let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -693,6 +699,14 @@ pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error + Send + Syn
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parity_scale_codec::Encode;
+
+    #[test]
+    fn system_receipt_unwraps_state_value_before_decoding() {
+        let receipt = SystemReceiptV2::ServiceCreated { service_id: 17 };
+        let encoded = StateValue::try_from(receipt.encode()).unwrap();
+        assert_eq!(decode_system_receipt(encoded).unwrap(), receipt);
+    }
 
     #[test]
     fn submit_work_params_reject_application_gas_fields() {

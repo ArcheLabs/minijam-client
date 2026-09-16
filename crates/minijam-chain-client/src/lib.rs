@@ -13,7 +13,9 @@ use std::time::Duration;
 use jam_codec::Decode as JamDecode;
 use jp_core_primitives::types::ServiceInfo;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
-use minijam_protocol::{CanonicalPreimageBytes, ContentRef, Hash, SystemCommandV2, WorkId};
+use minijam_protocol::{
+    CanonicalPreimageBytes, ContentRef, Hash, StateValue, SystemCommandV2, WorkId,
+};
 use minijam_runtime::RuntimeCall;
 use parity_scale_codec::{Decode, Encode};
 use sp_core::{
@@ -186,7 +188,9 @@ impl MiniJamChainClient {
         let Some(bytes) = self.service_info_at(block, service_id).await? else {
             return Ok(None);
         };
-        let info = ServiceInfo::decode(&mut bytes.as_slice())
+        let value = StateValue::decode(&mut bytes.as_slice())
+            .map_err(|error| ChainClientError::Decode(error.to_string()))?;
+        let info = ServiceInfo::decode(&mut value.into_inner().as_slice())
             .map_err(|error| ChainClientError::Decode(error.to_string()))?;
         Ok(Some(info.code_hash.0))
     }
@@ -266,8 +270,12 @@ impl MiniJamChainClient {
         // issue additional RPC calls through the same client.
         let watched = {
             let rpc = self.rpc.lock().await;
-            rpc::submit_and_watch_extrinsic(&*rpc, &prepared.encoded_extrinsic, self.request_timeout)
-                .await
+            rpc::submit_and_watch_extrinsic(
+                &*rpc,
+                &prepared.encoded_extrinsic,
+                self.request_timeout,
+            )
+            .await
         };
         match watched {
             Ok((extrinsic_hash, statuses)) => {
@@ -464,7 +472,7 @@ impl MiniJamChainClient {
         let canonical_work_package = canonical
             .try_into()
             .map_err(|_| ChainClientError::InputTooLarge)?;
-        self.submit_call(
+        self.submit_call_and_watch(
             RuntimeCall::MiniJam(pallet_minijam::Call::submit_work {
                 canonical_work_package,
                 bundle_ref,
@@ -510,6 +518,74 @@ impl MiniJamChainClient {
                 correlation,
                 lifecycle: None,
             }),
+            Err(error) => {
+                self.next_nonce.lock().await.invalidate();
+                if matches!(error, ChainClientError::Rpc(_)) {
+                    let _ = self.reconnect().await;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn submit_call_and_watch(
+        &self,
+        call: RuntimeCall,
+        correlation: Hash,
+    ) -> Result<Submission, ChainClientError> {
+        let _submission = self.submit_lock.lock().await;
+        let nonce = self.allocate_nonce().await?;
+        let genesis = rpc::genesis_hash(&*self.rpc.lock().await).await?;
+        let encoded = extrinsic::sign_call(&self.signer, nonce, genesis, call);
+        let watched = {
+            let rpc = self.rpc.lock().await;
+            rpc::submit_and_watch_extrinsic(&*rpc, &encoded, self.request_timeout).await
+        };
+        match watched {
+            Ok((extrinsic_hash, statuses)) => {
+                let included_block = statuses.iter().rev().find_map(|status| {
+                    let value = status.get("inBlock").or_else(|| status.get("finalized"))?;
+                    let value = value
+                        .as_str()?
+                        .strip_prefix("0x")
+                        .unwrap_or(value.as_str()?);
+                    if value.len() != 64 {
+                        return None;
+                    }
+                    let mut hash = [0; 32];
+                    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+                        hash[index] =
+                            u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
+                    }
+                    Some(hash)
+                });
+                let block = included_block.ok_or_else(|| {
+                    ChainClientError::Decode("finalized transaction has no included block".into())
+                })?;
+                self.next_nonce.lock().await.commit(nonce);
+                let (included_extrinsic_index, dispatch_outcome) =
+                    rpc::dispatch_outcome_at(&*self.rpc.lock().await, block, extrinsic_hash)
+                        .await?;
+                let dispatch_error = match &dispatch_outcome {
+                    DispatchOutcome::Success => None,
+                    DispatchOutcome::Failed(error) => Some(error.clone()),
+                };
+                if let DispatchOutcome::Failed(error) = &dispatch_outcome {
+                    return Err(ChainClientError::Dispatch(error.clone()));
+                }
+                Ok(Submission {
+                    extrinsic_hash,
+                    submitted_nonce: nonce,
+                    correlation,
+                    lifecycle: Some(TransactionLifecycle {
+                        statuses,
+                        included_block: Some(block),
+                        included_extrinsic_index: Some(included_extrinsic_index),
+                        dispatch_outcome: Some(dispatch_outcome),
+                        dispatch_error,
+                    }),
+                })
+            }
             Err(error) => {
                 self.next_nonce.lock().await.invalidate();
                 if matches!(error, ChainClientError::Rpc(_)) {
