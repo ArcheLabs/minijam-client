@@ -270,7 +270,7 @@ impl MiniJamChainClient {
         let canonical_report: CanonicalReportBytes = bytes
             .try_into()
             .map_err(|_| ChainClientError::InputTooLarge)?;
-        self.submit_call(
+        self.submit_call_and_watch(
             RuntimeCall::MiniJam(pallet_minijam::Call::submit_report { canonical_report }),
             package_hash,
         )

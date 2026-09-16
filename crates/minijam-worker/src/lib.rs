@@ -286,10 +286,23 @@ impl WorkerRunner {
         })
         .await
         .map_err(|error| WorkerError::Refine(error.to_string()))??;
-        self.chain
-            .submit_report(report, package_hash)
-            .await
-            .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        eprintln!(
+            "WORK_PACKAGE_HASH={} BUNDLE_BYTES={} REPORT_BYTES={}",
+            hex(&package_hash),
+            task.bundle_bytes.len(),
+            report.len()
+        );
+        let submission = match self.chain.submit_report(report, package_hash).await {
+            Ok(submission) => submission,
+            Err(error) => {
+                eprintln!("REPORT_FINALIZED=FAIL");
+                eprintln!("REPORT_ERROR={error}");
+                return Err(WorkerError::Chain(error.to_string()));
+            }
+        };
+        eprintln!("REPORT_FINALIZED=PASS");
+        eprintln!("REPORT_EXTRINSIC_HASH={}", hex(&submission.extrinsic_hash));
+        eprintln!("REPORT_NONCE={}", submission.submitted_nonce);
         if let Some(recovery) = &self.recovery {
             recovery.mark(package_hash)?;
         }

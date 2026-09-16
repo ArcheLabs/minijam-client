@@ -24,8 +24,14 @@ FORMAL_PORT="${MINIJAM_NATIVE_FORMAL_RPC_PORT:-8090}"
 NODE_P2P_PORT="${MINIJAM_NATIVE_NODE_P2P_PORT:-30333}"
 READY_TIMEOUT="${MINIJAM_NATIVE_LOCAL_READY_TIMEOUT_SECONDS:-180}"
 WORKER_KEY="${MINIJAM_NATIVE_WORKER_KEY:-//Alice}"
+FORMAL_SIGNER_KEY="${MINIJAM_NATIVE_FORMAL_SIGNER_KEY:-//Bob}"
 NODE_RPC="http://127.0.0.1:${NODE_PORT}"
 FORMAL_URL="http://127.0.0.1:${FORMAL_PORT}"
+
+[[ "${FORMAL_SIGNER_KEY}" != "${WORKER_KEY}" ]] || {
+  echo 'Formal RPC signer must differ from Worker signer' >&2
+  exit 1
+}
 
 for command in cargo curl jq openssl setsid; do
   command -v "${command}" >/dev/null 2>&1 || { echo "${command} is required" >&2; exit 127; }
@@ -89,7 +95,7 @@ printf '%s\n' "$!" >"${NODE_PID_FILE}"
 wait_for_node
 printf 'MINIJAM_LOCAL_NODE_RPC=PASS\n'
 
-MINIJAM_RPC_URL="ws://127.0.0.1:${NODE_PORT}" MINIJAM_FORMAL_RPC_BIND="127.0.0.1:${FORMAL_PORT}" MINIJAM_SIGNER_URI="${WORKER_KEY}" MINIJAM_BUNDLE_DIR="${BUNDLES}" setsid "${FORMAL_BIN}" >>"${FORMAL_LOG}" 2>&1 &
+MINIJAM_RPC_URL="ws://127.0.0.1:${NODE_PORT}" MINIJAM_FORMAL_RPC_BIND="127.0.0.1:${FORMAL_PORT}" MINIJAM_SIGNER_URI="${FORMAL_SIGNER_KEY}" MINIJAM_BUNDLE_DIR="${BUNDLES}" setsid "${FORMAL_BIN}" >>"${FORMAL_LOG}" 2>&1 &
 printf '%s\n' "$!" >"${FORMAL_PID_FILE}"
 wait_for_formal
 printf 'MINIJAM_LOCAL_FORMAL_RPC_READY=PASS\n'
