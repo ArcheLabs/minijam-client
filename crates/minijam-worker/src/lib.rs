@@ -24,6 +24,7 @@ use jp_core_primitives::{
     error::DataBaseError,
     state::{column, ColumnFamily, StateKey, StoreChange, StoreOp},
     traits::DataBase,
+    work::WorkExecResult,
 };
 use jp_vm_interp::InterpBackend;
 use minijam_chain_client::MiniJamChainClient;
@@ -31,6 +32,7 @@ use minijam_protocol::{stage0, Hash};
 use parity_scale_codec::Decode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sp_core::hashing::{blake2_256, sha2_256};
 use sp_core::{sr25519, Pair};
 use thiserror::Error;
 
@@ -292,6 +294,9 @@ impl WorkerRunner {
             task.bundle_bytes.len(),
             report.len()
         );
+        if std::env::var("MINIJAM_E2E_DIAGNOSTICS").as_deref() == Ok("1") {
+            emit_work_result_diagnostics(&report);
+        }
         let submission = match self.chain.submit_report(report, package_hash).await {
             Ok(submission) => submission,
             Err(error) => {
@@ -314,6 +319,48 @@ impl WorkerRunner {
         .await?;
         self.metrics.record_report();
         Ok(true)
+    }
+}
+
+fn emit_work_result_diagnostics(report: &[u8]) {
+    let mut input = report;
+    let Ok(decoded) = <jp_core_primitives::work::WorkReport as JamDecode>::decode(&mut input)
+    else {
+        eprintln!("WORK_RESULT_DECODE=FAIL");
+        return;
+    };
+    eprintln!("WORK_RESULT_DECODE=PASS");
+    eprintln!("WORK_RESULT_COUNT={}", decoded.results.len());
+    for (index, result) in decoded.results.iter().enumerate() {
+        let (kind, payload) = match &result.result {
+            WorkExecResult::Ok(payload) => ("OK", Some(payload.as_slice())),
+            WorkExecResult::OutOfGas => ("OUT_OF_GAS", None),
+            WorkExecResult::Panic => ("PANIC", None),
+            WorkExecResult::BadExports => ("BAD_EXPORTS", None),
+            WorkExecResult::OutputOversize => ("OUTPUT_OVERSIZE", None),
+            WorkExecResult::BadCode => ("BAD_CODE", None),
+            WorkExecResult::CodeOversize => ("CODE_OVERSIZE", None),
+        };
+        let payload_len = payload.map_or(0, <[u8]>::len);
+        let payload_hash = payload
+            .map(|bytes| hex(&sha2_256(bytes)))
+            .unwrap_or_else(|| "empty".into());
+        let payload_blake2 = payload
+            .map(|bytes| hex(&blake2_256(bytes)))
+            .unwrap_or_else(|| "empty".into());
+        eprintln!(
+            "WORK_RESULT_{}_SERVICE_ID={} WORK_RESULT_{}_KIND={} WORK_RESULT_{}_PAYLOAD_LEN={} WORK_RESULT_{}_PAYLOAD_SHA256={} WORK_RESULT_{}_PAYLOAD_BLAKE2={}",
+            index,
+            result.service_id,
+            index,
+            kind,
+            index,
+            payload_len,
+            index,
+            payload_hash,
+            index,
+            payload_blake2,
+        );
     }
 }
 
