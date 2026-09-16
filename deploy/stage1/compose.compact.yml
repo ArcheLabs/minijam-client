@@ -4,11 +4,16 @@ services:
     image: ${MINIJAM_NODE_IMAGE:-ghcr.io/archelabs/minijam-node:stage1}
     command: [--chain=/chain-specs/stage1.json, --validator, --force-authoring, --rpc-external, --rpc-methods=safe]
     ports: ["127.0.0.1:9944:9944"]
-    volumes: [node-data:/data, "${MINIJAM_STAGE1_CHAIN_SPEC_FILE:-./chain-specs/stage1.json}:/chain-specs/stage1.json:ro"]
+    volumes:
+      - node-data:/data
+      - type: bind
+        source: ${MINIJAM_STAGE1_CHAIN_SPEC_FILE:-./chain-specs/stage1.json}
+        target: /chain-specs/stage1.json
+        read_only: true
     networks: [chain]
   worker:
     image: ${MINIJAM_WORKER_IMAGE:-ghcr.io/archelabs/minijam-worker:stage1}
-    command: [--rpc-url=http://node:9944, --worker-id=0, --ipfs-gateway=http://formal-rpc:8080/ipfs, --health-bind=0.0.0.0:8082, --submit-candidates, --submit-support-votes]
+    command: [--rpc-url=http://node:9944, --worker-id=0, --ipfs-gateway=http://formal-rpc:8080, --health-bind=0.0.0.0:8082, --submit-candidates, --submit-support-votes]
     depends_on: [node]
     environment: {MINIJAM_WORKER_SEED_FILE: /run/secrets/worker_signing_key}
     secrets: [worker_signing_key]

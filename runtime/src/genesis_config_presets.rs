@@ -186,6 +186,10 @@ fn stage0_workers() -> Vec<(AccountId, [u8; 32], Balance)> {
         .collect()
 }
 
+fn stage1_workers() -> Vec<(AccountId, [u8; 32], Balance)> {
+    stage0_workers().into_iter().take(1).collect()
+}
+
 fn stage0_endowed_accounts() -> Vec<AccountId> {
     STAGE0_WORKER_ACCOUNTS
         .iter()
@@ -275,7 +279,7 @@ pub fn stage1_config_genesis(ingress_relayer: AccountId, allocation_relayer: Acc
         stage0_authorities(),
         stage0_endowed_accounts(),
         AccountId::new(STAGE0_SUDO_ACCOUNT),
-        stage0_workers(),
+        stage1_workers(),
         ingress_relayer,
         allocation_relayer,
     )
@@ -445,6 +449,24 @@ mod tests {
         let committed_state = serde_json::to_value(system_service_zero_protocol_state())
             .expect("committed Service 0 state must serialize");
         assert_eq!(protocol_state, committed_state.as_array().unwrap());
+    }
+
+    #[test]
+    fn stage1_genesis_registers_only_stage0_worker_zero() {
+        let workers = stage1_workers();
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].0, AccountId::new(STAGE0_WORKER_ACCOUNTS[0]));
+        assert_eq!(workers[0].1, STAGE0_WORKER_SESSION_KEYS[0]);
+
+        let patch = stage1_config_genesis(AccountId::new([0x11; 32]), AccountId::new([0x22; 32]));
+        let registered = field(
+            section(&patch, "mini_jam_workers", "miniJamWorkers"),
+            "workers",
+            "workers",
+        )
+        .as_array()
+        .expect("workers must be a JSON array");
+        assert_eq!(registered.len(), 1);
     }
 
     #[test]

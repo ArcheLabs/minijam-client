@@ -191,9 +191,12 @@ pub mod fetch {
 
     impl<C> IpfsGatewayFetcher<C> {
         pub fn new(client: C, gateway: impl Into<String>) -> Self {
+            let gateway = gateway.into();
+            let gateway = gateway.trim_end_matches('/');
+            let gateway = gateway.strip_suffix("/ipfs").unwrap_or(gateway);
             Self {
                 client,
-                gateway: gateway.into().trim_end_matches('/').into(),
+                gateway: gateway.to_owned(),
             }
         }
     }
@@ -738,34 +741,25 @@ mod tests {
             .parse()
             .unwrap();
         let reference = content_ref_with_location(&bytes, &cid.to_bytes());
-        let fetcher = IpfsGatewayFetcher::new(
-            TestHttpClient {
-                responses: BTreeMap::from([(
-                    format!("http://127.0.0.1:8080/ipfs/{cid}"),
-                    bytes.clone(),
-                )]),
-            },
-            "http://127.0.0.1:8080/ipfs/..",
-        );
-
-        assert_eq!(
-            block_on(fetch_verified_content(&fetcher, &reference, 32)),
-            Err(FetchError::NotFound)
-        );
-
-        let fetcher = IpfsGatewayFetcher::new(
-            TestHttpClient {
-                responses: BTreeMap::from([(
-                    format!("http://127.0.0.1:8080/ipfs/{cid}"),
-                    bytes.clone(),
-                )]),
-            },
+        for gateway in [
             "http://127.0.0.1:8080",
-        );
-        assert_eq!(
-            block_on(fetch_verified_content(&fetcher, &reference, 32)).unwrap(),
-            bytes
-        );
+            "http://127.0.0.1:8080/",
+            "http://127.0.0.1:8080/ipfs",
+        ] {
+            let fetcher = IpfsGatewayFetcher::new(
+                TestHttpClient {
+                    responses: BTreeMap::from([(
+                        format!("http://127.0.0.1:8080/ipfs/{cid}"),
+                        bytes.clone(),
+                    )]),
+                },
+                gateway,
+            );
+            assert_eq!(
+                block_on(fetch_verified_content(&fetcher, &reference, 32)).unwrap(),
+                bytes
+            );
+        }
     }
 
     #[test]
