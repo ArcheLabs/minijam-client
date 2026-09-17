@@ -7,7 +7,7 @@ on:
         description: Branch, tag, or commit to test
         required: true
         type: string
-        default: codex/stage1-full-local-work-e2e
+        default: main
       run_docker:
         description: Build local images and run the three-worker Docker Work E2E
         required: true

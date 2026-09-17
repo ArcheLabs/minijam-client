@@ -106,6 +106,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Check Stage-1 node compilation
+        run: cargo check --locked -p minijam-node
+
       - name: Run core fast gate
         run: |
           cargo test -p pallet-minijam

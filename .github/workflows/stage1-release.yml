@@ -131,6 +131,7 @@ jobs:
           ./scripts/check-production-image-boundary.sh
           ./scripts/check-release-secret-hygiene.sh
           cargo fmt --all -- --check
+          cargo check --locked -p minijam-node
           ./scripts/test-stage1-core.sh
           cargo check -p minijam-runtime --no-default-features --target wasm32v1-none
 
