@@ -54,6 +54,7 @@ jobs:
         run: ./scripts/test-service0-provenance.sh
 
       - name: Upload Service 0 provenance evidence
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: service0-provenance-${{ github.sha }}
@@ -123,9 +124,8 @@ jobs:
         run: ./scripts/test-counter-services.sh
 
       - name: Upload toolchain diagnostics
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: c-cpp-toolchain-${{ github.sha }}
-          path: |
-            target/minijam-compat-artifacts/manifest.tsv
-            target/minijam-compat-artifacts/toolchain-diagnostics.txt
+          path: target/minijam-compat-artifacts/
