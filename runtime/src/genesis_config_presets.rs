@@ -22,8 +22,8 @@ const SYSTEM_SERVICE_BLOB: &[u8] = include_bytes!("../../artifacts/system-servic
 pub const STAGE0_RUNTIME_PRESET: &str = "stage0";
 
 /// Known deterministic local-development identity derived from the seed `0x92` repeated 32 times.
-/// Never use as a public ingress Relayer.
-pub const LOCAL_INGRESS_RELAYER_ACCOUNT: [u8; 32] = [
+/// Never use as a public Stage 0 Relayer.
+pub const LOCAL_PLAYGROUND_RELAYER_ACCOUNT: [u8; 32] = [
     0x90, 0x15, 0x78, 0xa4, 0x17, 0x30, 0x0a, 0xa0, 0xae, 0x53, 0x3b, 0x5b, 0xd0, 0xe9, 0xaf, 0x48,
     0x9a, 0x4c, 0xc4, 0xa6, 0xf3, 0x89, 0x99, 0xb7, 0x62, 0x83, 0x86, 0x70, 0x87, 0x73, 0x82, 0x09,
 ];
@@ -73,7 +73,7 @@ fn testnet_genesis(
 ) -> Value {
     let reward_pool = AccountId::new([9; 32]);
     let fuel_escrow = AccountId::new([7; 32]);
-    let ingress_account = ingress_relayer;
+    let playground_relayer = ingress_relayer;
     if !endowed_accounts
         .iter()
         .any(|account| account == &reward_pool)
@@ -88,9 +88,9 @@ fn testnet_genesis(
     }
     if !endowed_accounts
         .iter()
-        .any(|account| account == &ingress_account)
+        .any(|account| account == &playground_relayer)
     {
-        endowed_accounts.push(ingress_account.clone());
+        endowed_accounts.push(playground_relayer.clone());
     }
     if !endowed_accounts
         .iter()
@@ -132,7 +132,7 @@ fn testnet_genesis(
         mini_jam: MiniJamConfig {
             protocol_state: system_service_zero_protocol_state(),
             service_fuel: Vec::new(),
-            ingress_relayer: Some(ingress_account.clone()),
+            ingress_relayer: Some(playground_relayer.clone()),
             allocation_relayer: Some(allocation_relayer),
             _phantom: Default::default(),
         },
@@ -186,6 +186,10 @@ fn stage0_workers() -> Vec<(AccountId, [u8; 32], Balance)> {
         .collect()
 }
 
+fn stage1_workers() -> Vec<(AccountId, [u8; 32], Balance)> {
+    stage0_workers().into_iter().take(1).collect()
+}
+
 fn stage0_endowed_accounts() -> Vec<AccountId> {
     STAGE0_WORKER_ACCOUNTS
         .iter()
@@ -193,16 +197,6 @@ fn stage0_endowed_accounts() -> Vec<AccountId> {
         .chain([STAGE0_SUDO_ACCOUNT, STAGE0_FAUCET_ACCOUNT])
         .map(AccountId::new)
         .collect()
-}
-
-fn stage1_work_e2e_endowed_accounts() -> Vec<AccountId> {
-    let mut accounts = stage0_endowed_accounts();
-    for (account, _, _) in development_workers() {
-        if !accounts.iter().any(|endowed| endowed == &account) {
-            accounts.push(account);
-        }
-    }
-    accounts
 }
 
 pub(crate) fn system_service_zero_protocol_state() -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -239,8 +233,8 @@ pub fn development_config_genesis() -> Value {
         ],
         Sr25519Keyring::Alice.to_account_id(),
         development_workers(),
-        AccountId::new(LOCAL_INGRESS_RELAYER_ACCOUNT),
-        AccountId::new(LOCAL_INGRESS_RELAYER_ACCOUNT),
+        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
+        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
     )
 }
 
@@ -262,8 +256,8 @@ pub fn local_config_genesis() -> Value {
             .collect::<Vec<_>>(),
         Sr25519Keyring::Alice.to_account_id(),
         development_workers(),
-        AccountId::new(LOCAL_INGRESS_RELAYER_ACCOUNT),
-        AccountId::new(LOCAL_INGRESS_RELAYER_ACCOUNT),
+        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
+        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
     )
 }
 
@@ -285,51 +279,18 @@ pub fn stage1_config_genesis(ingress_relayer: AccountId, allocation_relayer: Acc
         stage0_authorities(),
         stage0_endowed_accounts(),
         AccountId::new(STAGE0_SUDO_ACCOUNT),
-        stage0_workers(),
+        stage1_workers(),
         ingress_relayer,
         allocation_relayer,
     )
 }
 
-/// Local/CI-only Stage-1 genesis with development consensus keys.
-///
-/// This keeps the production Stage-1 protocol state intact while allowing an
-/// ephemeral node started with `--alice` to author and finalize blocks.
-pub fn stage1_e2e_config_genesis(
-    ingress_relayer: AccountId,
-    allocation_relayer: AccountId,
-) -> Value {
+pub fn season2_config_genesis(ingress_relayer: AccountId, allocation_relayer: AccountId) -> Value {
     testnet_genesis(
-        vec![(
-            Sr25519Keyring::Alice.public().into(),
-            sp_keyring::Ed25519Keyring::Alice.public().into(),
-        )],
+        stage0_authorities(),
         stage0_endowed_accounts(),
         AccountId::new(STAGE0_SUDO_ACCOUNT),
-        stage0_workers(),
-        ingress_relayer,
-        allocation_relayer,
-    )
-}
-
-/// Local/CI-only Stage-1 Work E2E genesis.
-///
-/// The production Stage-1 authorities, protocol state, and worker stake are
-/// unchanged. Only consensus uses Alice and the worker registry uses the
-/// deterministic Alice/Bob/Charlie development identities so all three local
-/// daemons can execute the real Work path without production credentials.
-pub fn stage1_work_e2e_config_genesis(
-    ingress_relayer: AccountId,
-    allocation_relayer: AccountId,
-) -> Value {
-    testnet_genesis(
-        vec![(
-            Sr25519Keyring::Alice.public().into(),
-            sp_keyring::Ed25519Keyring::Alice.public().into(),
-        )],
-        stage1_work_e2e_endowed_accounts(),
-        AccountId::new(STAGE0_SUDO_ACCOUNT),
-        development_workers(),
+        stage0_workers().into_iter().take(1).collect(),
         ingress_relayer,
         allocation_relayer,
     )
@@ -445,17 +406,6 @@ mod tests {
             }
     }
 
-    fn remove_consensus_authorities(patch: &mut Value) {
-        for section_name in ["aura", "grandpa"] {
-            patch
-                .get_mut(section_name)
-                .and_then(Value::as_object_mut)
-                .expect("consensus genesis section must be an object")
-                .remove("authorities")
-                .expect("consensus authority field must be present");
-        }
-    }
-
     #[test]
     fn development_genesis_seeds_stage0_service_and_workers() {
         let patch = development_config_genesis();
@@ -502,115 +452,21 @@ mod tests {
     }
 
     #[test]
-    fn stage1_e2e_changes_only_consensus_authorities() {
-        let ingress = AccountId::new([0x11; 32]);
-        let allocation = AccountId::new([0x22; 32]);
-        let mut production = stage1_config_genesis(ingress.clone(), allocation.clone());
-        let mut e2e = stage1_e2e_config_genesis(ingress, allocation);
+    fn stage1_genesis_registers_only_stage0_worker_zero() {
+        let workers = stage1_workers();
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].0, AccountId::new(STAGE0_WORKER_ACCOUNTS[0]));
+        assert_eq!(workers[0].1, STAGE0_WORKER_SESSION_KEYS[0]);
 
-        let production_aura = field(
-            section(&production, "aura", "aura"),
-            "authorities",
-            "authorities",
-        );
-        let production_grandpa = field(
-            section(&production, "grandpa", "grandpa"),
-            "authorities",
-            "authorities",
-        );
-        let expected_production_aura = serde_json::to_value(vec![AuraId::from(
-            sr25519::Public::from_raw(STAGE0_AURA_AUTHORITIES[0]),
-        )])
-        .unwrap();
-        let expected_production_grandpa = serde_json::to_value(vec![(
-            GrandpaId::from(ed25519::Public::from_raw(STAGE0_GRANDPA_AUTHORITIES[0])),
-            1,
-        )])
-        .unwrap();
-        assert_eq!(production_aura, &expected_production_aura);
-        assert_eq!(production_grandpa, &expected_production_grandpa);
-        println!("STAGE1_PRODUCTION_AUTHORITIES_UNCHANGED=PASS");
-
-        let e2e_aura = field(section(&e2e, "aura", "aura"), "authorities", "authorities");
-        let e2e_grandpa = field(
-            section(&e2e, "grandpa", "grandpa"),
-            "authorities",
-            "authorities",
-        );
-        let expected_e2e_aura =
-            serde_json::to_value(vec![AuraId::from(Sr25519Keyring::Alice.public())]).unwrap();
-        let expected_e2e_grandpa = serde_json::to_value(vec![(
-            GrandpaId::from(sp_keyring::Ed25519Keyring::Alice.public()),
-            1,
-        )])
-        .unwrap();
-        assert_eq!(e2e_aura, &expected_e2e_aura);
-        assert_eq!(e2e_grandpa, &expected_e2e_grandpa);
-        assert_ne!(e2e_aura, production_aura);
-        assert_ne!(e2e_grandpa, production_grandpa);
-        println!("STAGE1_E2E_ALICE_AUTHORITY=PASS");
-
-        remove_consensus_authorities(&mut production);
-        remove_consensus_authorities(&mut e2e);
-        assert_eq!(production, e2e);
-    }
-
-    #[test]
-    fn stage1_work_e2e_uses_real_protocol_state_and_development_workers() {
-        let ingress = AccountId::new([0x11; 32]);
-        let allocation = AccountId::new([0x22; 32]);
-        let production = stage1_config_genesis(ingress.clone(), allocation.clone());
-        let e2e = stage1_work_e2e_config_genesis(ingress, allocation);
-
-        assert_eq!(
-            field(
-                section(&e2e, "mini_jam", "miniJam"),
-                "protocol_state",
-                "protocolState"
-            ),
-            field(
-                section(&production, "mini_jam", "miniJam"),
-                "protocol_state",
-                "protocolState"
-            )
-        );
-        assert_eq!(
-            field(
-                section(&e2e, "mini_jam", "miniJam"),
-                "service_fuel",
-                "serviceFuel"
-            ),
-            &Value::Array(Vec::new())
-        );
-
-        let workers = field(
-            section(&e2e, "mini_jam_workers", "miniJamWorkers"),
+        let patch = stage1_config_genesis(AccountId::new([0x11; 32]), AccountId::new([0x22; 32]));
+        let registered = field(
+            section(&patch, "mini_jam_workers", "miniJamWorkers"),
             "workers",
             "workers",
-        );
-        let expected_workers =
-            serde_json::to_value(development_workers().into_iter().collect::<Vec<_>>())
-                .expect("development workers must serialize");
-        assert_eq!(workers, &expected_workers);
-
-        let balances = field(
-            section(&e2e, "balances", "balances"),
-            "balances",
-            "balances",
         )
         .as_array()
-        .expect("balances must be a JSON array");
-        for (account, _, _) in development_workers() {
-            let account = serde_json::to_value(account).expect("worker account must serialize");
-            assert!(
-                balances.iter().any(|entry| {
-                    entry
-                        .as_array()
-                        .is_some_and(|pair| pair.first() == Some(&account))
-                }),
-                "development worker must be explicitly endowed"
-            );
-        }
+        .expect("workers must be a JSON array");
+        assert_eq!(registered.len(), 1);
     }
 
     #[test]
@@ -854,7 +710,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "long-running Jambda cross-epoch integration; run explicitly outside the release gate"]
     fn empty_blocks_cross_epoch_through_real_jambda_executor() {
         let mut state = TestProtocolState::from_pairs(system_service_zero_protocol_state());
 
@@ -893,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "long-running Jambda cross-epoch integration; run explicitly outside the release gate"]
+    #[ignore = "long-running Jambda cross-epoch integration; executed by the release gate"]
     fn create_service_executes_after_epoch_transitions() {
         let mut state = TestProtocolState::from_pairs(system_service_zero_protocol_state());
         for slot in 1..=121 {
@@ -1004,7 +859,7 @@ mod tests {
 
     #[test]
     fn development_and_local_genesis_use_only_the_known_local_relayer() {
-        let local = serde_json::to_value(AccountId::new(LOCAL_INGRESS_RELAYER_ACCOUNT)).unwrap();
+        let local = serde_json::to_value(AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT)).unwrap();
         for patch in [development_config_genesis(), local_config_genesis()] {
             assert_eq!(
                 field(

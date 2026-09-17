@@ -25,7 +25,7 @@ services:
     networks: [chain]
   worker:
     image: ${MINIJAM_WORKER_IMAGE:-ghcr.io/archelabs/minijam-worker:stage1}
-    command: [--rpc-url=http://node:9944, --worker-id=0, --ipfs-gateway=http://formal-rpc:8080/ipfs, --submit-candidates, --submit-support-votes]
+    command: [--rpc-url=http://node:9944, --worker-id=0, --ipfs-gateway=http://formal-rpc:8080, --submit-candidates, --submit-support-votes]
     environment: {MINIJAM_WORKER_SEED_FILE: /run/secrets/worker_signing_key}
     secrets:
       - source: worker_signing_key

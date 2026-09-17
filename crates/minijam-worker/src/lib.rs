@@ -25,6 +25,7 @@ use jp_core_primitives::{
     error::DataBaseError,
     state::{column, ColumnFamily, StateKey, StoreChange, StoreOp},
     traits::DataBase,
+    work::{WorkExecResult, WorkReport},
 };
 use jp_vm_interp::InterpBackend;
 use minijam_protocol::{
@@ -38,6 +39,7 @@ use minijam_worker_engine::{
 use parity_scale_codec::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sp_core::hashing::{blake2_256 as sp_blake2_256, sha2_256};
 use sp_core::{sr25519, Pair};
 use std::sync::Mutex;
 
@@ -717,24 +719,49 @@ impl BlockingHttpWorkerChainSource {
     }
 
     pub async fn submit_raw_extrinsic(&self, extrinsic_hex: &str) -> Result<Hash, WorkerError> {
-        let response = http_post_json(
-            &self.rpc_url,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "author_submitExtrinsic",
-                "params": [extrinsic_hex],
-            })
-            .to_string(),
+        let websocket_url = websocket_rpc_url(&self.rpc_url)?;
+        let client = jsonrpsee::ws_client::WsClientBuilder::default()
+            .request_timeout(Duration::from_secs(60))
+            .build(&websocket_url)
+            .await
+            .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        let encoded = decode_hex(extrinsic_hex)?;
+        let (hash, statuses) = minijam_chain_client::submit_and_watch_extrinsic(
+            &client,
+            &encoded,
+            Duration::from_secs(60),
         )
+        .await
         .map_err(|error| WorkerError::Chain(error.to_string()))?;
-        let encoded = json_rpc_string_result(&response)?;
-        let bytes = decode_hex(&encoded)?;
-        let hash: [u8; 32] = bytes.try_into().map_err(|_| {
-            WorkerError::Chain("author_submitExtrinsic returned a non-32-byte hash".into())
-        })?;
-        Ok(hash)
+        let block =
+            minijam_chain_client::included_block_from_statuses(&statuses).ok_or_else(|| {
+                WorkerError::Chain("finalized extrinsic has no included block".into())
+            })?;
+        let (_, outcome) = minijam_chain_client::dispatch_outcome_at(&client, block, hash)
+            .await
+            .map_err(|error| WorkerError::Chain(error.to_string()))?;
+        match outcome {
+            minijam_chain_client::DispatchOutcome::Success => Ok(hash),
+            minijam_chain_client::DispatchOutcome::Failed(error) => Err(WorkerError::Chain(
+                format!("finalized extrinsic dispatch failed: {error}"),
+            )),
+        }
     }
+}
+
+fn websocket_rpc_url(url: &str) -> Result<String, WorkerError> {
+    if let Some(rest) = url.strip_prefix("http://") {
+        return Ok(format!("ws://{rest}"));
+    }
+    if let Some(rest) = url.strip_prefix("https://") {
+        return Ok(format!("wss://{rest}"));
+    }
+    if url.starts_with("ws://") || url.starts_with("wss://") {
+        return Ok(url.to_owned());
+    }
+    Err(WorkerError::Chain(
+        "worker transaction watching requires an http(s) or ws(s) RPC URL".into(),
+    ))
 }
 
 pub trait ProtocolStateSource {
@@ -756,6 +783,13 @@ pub trait WorkerSignedTxContext {
     fn account_nonce(&self, account: [u8; 32]) -> Result<minijam_runtime::Nonce, WorkerError>;
 
     fn genesis_hash(&self) -> Result<Hash, WorkerError>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkerEnvironmentV1 {
+    /// The network domain is resolved once from the connected chain and then
+    /// remains fixed for the lifetime of the worker execution host.
+    pub network_domain: Hash,
 }
 
 impl ProtocolStateSource for BlockingHttpWorkerChainSource {
@@ -1157,6 +1191,25 @@ pub fn prepare_refine_backed_vote<S>(
 where
     S: ProtocolStateSource,
 {
+    prepare_refine_backed_vote_with_network_domain(
+        state, worker_id, pair, chain_id, core_index, task, bundle, [0; 32],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_refine_backed_vote_with_network_domain<S>(
+    state: &S,
+    worker_id: WorkerId,
+    pair: &sr25519::Pair,
+    chain_id: Hash,
+    core_index: u16,
+    task: &VoteTask,
+    bundle: &[u8],
+    network_domain: Hash,
+) -> Result<Option<PreparedVoteSubmission>, WorkerError>
+where
+    S: ProtocolStateSource,
+{
     if !task.assigned_workers.contains(&worker_id) || task.submitted_votes.contains(&worker_id) {
         return Ok(None);
     }
@@ -1180,7 +1233,14 @@ where
         canonical_work_package: task.canonical_work_package.clone(),
         bundle_ref: task.bundle_ref.clone(),
     };
-    let local = prepare_candidate_envelope(state, chain_id, core_index, &work_task, bundle)?;
+    let local = prepare_candidate_envelope_with_network_domain(
+        state,
+        chain_id,
+        core_index,
+        &work_task,
+        bundle,
+        network_domain,
+    )?;
     let candidate_metadata =
         jambda_minijam_executive::MiniJamExecutive::project_report(&task.candidate_report)
             .map_err(|error| {
@@ -1237,6 +1297,27 @@ pub fn prepare_candidate_envelope<S>(
 where
     S: ProtocolStateSource,
 {
+    prepare_candidate_envelope_with_network_domain(
+        state,
+        chain_id,
+        core_index,
+        task,
+        bundle_bytes,
+        [0; 32],
+    )
+}
+
+pub fn prepare_candidate_envelope_with_network_domain<S>(
+    state: &S,
+    chain_id: Hash,
+    core_index: u16,
+    task: &WorkTask,
+    bundle_bytes: &[u8],
+    network_domain: Hash,
+) -> Result<PreparedCandidateSubmission, WorkerError>
+where
+    S: ProtocolStateSource,
+{
     let mut raw = bundle_bytes;
     let bundle = jambda_refine::MiniJamWorkBundleV1::decode(&mut raw)
         .map_err(|error| WorkerError::Refine(format!("invalid Jambda work bundle: {error}")))?;
@@ -1286,13 +1367,15 @@ where
     backend
         .load_from_db()
         .map_err(|error| WorkerError::Refine(format!("failed to load Jambda state: {error:?}")))?;
-    let output = jambda_refine::compute_work_report::<
+    let output = jambda_refine::compute_work_report_with_network_domain::<
         MiniJamSpec,
         ProtocolStateDb<'_, S>,
         StateBackend<MiniJamSpec, ProtocolStateDb<'_, S>>,
         InterpBackend,
         jp_vm_engine::InnerEngine<InterpBackend>,
-    >(&backend, input, InterpBackend)
+        jambda_refine::NoopAuthorizationRunner,
+        jambda_refine::report::SimpleAvailabilityBuilder,
+    >(&backend, input, InterpBackend, network_domain)
     .map_err(|error| WorkerError::Refine(format!("Jambda refine failed: {error:?}")))?;
     let canonical_report = output.report.encode();
     let projected_metadata =
@@ -1389,13 +1472,14 @@ fn json_rpc_optional_string_result(response: &str) -> Result<Option<String>, Wor
 
 fn http_post_json(url: &str, body: &str) -> Result<String, HttpError> {
     let endpoint = HttpEndpoint::parse(url)?;
+    let authority = format!("{}:{}", endpoint.host, endpoint.port);
     let mut stream = TcpStream::connect((endpoint.host.as_str(), endpoint.port))
         .map_err(|error| HttpError(error.to_string()))?;
     write!(
         stream,
         "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         endpoint.path,
-        endpoint.host,
+        authority,
         body.len(),
         body
     )
@@ -1406,12 +1490,13 @@ fn http_post_json(url: &str, body: &str) -> Result<String, HttpError> {
 
 fn http_get_bytes(url: &str) -> Result<Vec<u8>, HttpError> {
     let endpoint = HttpEndpoint::parse(url)?;
+    let authority = format!("{}:{}", endpoint.host, endpoint.port);
     let mut stream = TcpStream::connect((endpoint.host.as_str(), endpoint.port))
         .map_err(|error| HttpError(error.to_string()))?;
     write!(
         stream,
         "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-        endpoint.path, endpoint.host
+        endpoint.path, authority
     )
     .map_err(|error| HttpError(error.to_string()))?;
     read_http_body(stream)
@@ -1684,6 +1769,7 @@ pub struct WorkerRunner<C, F, D> {
     decoder: D,
     max_bundle_bytes: u64,
     statuses: BTreeMap<(WorkId, u8), WorkerTaskStatus>,
+    environment: Option<WorkerEnvironmentV1>,
 }
 
 pub type Stage0WorkerRunner<C, F> = WorkerRunner<C, F, MiniJamWorkBundleDecoder>;
@@ -1696,6 +1782,7 @@ impl<C, F, D> WorkerRunner<C, F, D> {
             decoder,
             max_bundle_bytes,
             statuses: BTreeMap::new(),
+            environment: None,
         }
     }
 
@@ -1712,7 +1799,13 @@ impl<C, F, D> WorkerRunner<C, F, D> {
             decoder,
             max_bundle_bytes,
             statuses,
+            environment: None,
         }
+    }
+
+    pub fn with_network_domain(mut self, network_domain: Hash) -> Self {
+        self.environment = Some(WorkerEnvironmentV1 { network_domain });
+        self
     }
 
     pub fn status(&self, work_id: WorkId, round: u8) -> Option<&WorkerTaskStatus> {
@@ -1823,7 +1916,18 @@ where
 
 impl<C, F, D> WorkerRunner<C, F, D>
 where
-    C: WorkerChainSource + WorkerTxSubmitter + ProtocolStateSource,
+    C: WorkerSignedTxContext,
+{
+    fn execution_network_domain(&self) -> Result<Hash, WorkerError> {
+        self.environment
+            .map(|environment| environment.network_domain)
+            .map_or_else(|| self.chain.genesis_hash(), Ok)
+    }
+}
+
+impl<C, F, D> WorkerRunner<C, F, D>
+where
+    C: WorkerChainSource + WorkerTxSubmitter + ProtocolStateSource + WorkerSignedTxContext,
     F: ContentFetcher,
     D: WorkBundleDecoder,
 {
@@ -1839,6 +1943,7 @@ where
         if let Some(metrics) = metrics {
             metrics.record_vote_tasks_seen(tasks.len());
         }
+        let network_domain = self.execution_network_domain()?;
         let mut tx_hashes = Vec::new();
         for task in tasks {
             if !task.assigned_workers.contains(&worker_id)
@@ -1858,7 +1963,7 @@ where
                 &self.decoder,
             )
             .map_err(WorkerError::Bundle)?;
-            let Some(submission) = prepare_refine_backed_vote(
+            let Some(submission) = prepare_refine_backed_vote_with_network_domain(
                 &self.chain,
                 worker_id,
                 pair,
@@ -1866,6 +1971,7 @@ where
                 core_index,
                 &task,
                 &bundle,
+                network_domain,
             )?
             else {
                 continue;
@@ -1921,7 +2027,7 @@ where
         }
         let tasks = self.chain.pending_work_tasks().await?;
         let mut nonce = self.chain.account_nonce(pair.public().0)?;
-        let genesis_hash = self.chain.genesis_hash()?;
+        let genesis_hash = self.execution_network_domain()?;
         let mut candidate_tasks = Vec::new();
         let mut bundles = std::collections::HashMap::new();
         for task in tasks {
@@ -1950,12 +2056,22 @@ where
             let bundle = bundles.get(&task.work_id).ok_or_else(|| {
                 WorkerError::Refine("candidate bundle missing from lane input".into())
             })?;
-            prepare_candidate_envelope(chain, chain_id, core_index, &task, bundle)
+            prepare_candidate_envelope_with_network_domain(
+                chain,
+                chain_id,
+                core_index,
+                &task,
+                bundle,
+                genesis_hash,
+            )
         });
         executions.sort_by_key(|execution| execution.work_id);
         let mut tx_hashes = Vec::new();
         for execution in executions {
             let candidate = execution.result?;
+            if std::env::var("MINIJAM_E2E_DIAGNOSTICS").as_deref() == Ok("1") {
+                emit_work_result_diagnostics(&candidate.envelope.canonical_report);
+            }
             let submission =
                 prepare_signed_candidate_submission(pair, nonce, genesis_hash, candidate.envelope);
             tx_hashes.push(
@@ -1969,6 +2085,38 @@ where
             nonce = nonce.saturating_add(1);
         }
         Ok(tx_hashes)
+    }
+}
+
+fn emit_work_result_diagnostics(report: &[u8]) {
+    let mut input = report;
+    let Ok(decoded) = <WorkReport as JamDecode>::decode(&mut input) else {
+        eprintln!("WORK_RESULT_DECODE=FAIL");
+        return;
+    };
+    eprintln!("WORK_RESULT_DECODE=PASS");
+    eprintln!("WORK_RESULT_COUNT={}", decoded.results.len());
+    for (index, result) in decoded.results.iter().enumerate() {
+        let (kind, payload) = match &result.result {
+            WorkExecResult::Ok(payload) => ("OK", Some(payload.as_slice())),
+            WorkExecResult::OutOfGas => ("OUT_OF_GAS", None),
+            WorkExecResult::Panic => ("PANIC", None),
+            WorkExecResult::BadExports => ("BAD_EXPORTS", None),
+            WorkExecResult::OutputOversize => ("OUTPUT_OVERSIZE", None),
+            WorkExecResult::BadCode => ("BAD_CODE", None),
+            WorkExecResult::CodeOversize => ("CODE_OVERSIZE", None),
+        };
+        let payload_len = payload.map_or(0, <[u8]>::len);
+        let payload_sha256 = payload
+            .map(|bytes| hex_encode(&sha2_256(bytes)))
+            .unwrap_or_else(|| "empty".into());
+        let payload_blake2 = payload
+            .map(|bytes| hex_encode(&sp_blake2_256(bytes)))
+            .unwrap_or_else(|| "empty".into());
+        eprintln!(
+            "WORK_RESULT_{index}_SERVICE_ID={} WORK_RESULT_{index}_KIND={kind} WORK_RESULT_{index}_PAYLOAD_LEN={payload_len} WORK_RESULT_{index}_PAYLOAD_SHA256={payload_sha256} WORK_RESULT_{index}_PAYLOAD_BLAKE2={payload_blake2}",
+            result.service_id,
+        );
     }
 }
 
@@ -2282,6 +2430,16 @@ mod tests {
             _key: [u8; 31],
         ) -> Result<Option<Vec<u8>>, WorkerError> {
             Ok(None)
+        }
+    }
+
+    impl WorkerSignedTxContext for TestVoteSubmitChainSource {
+        fn account_nonce(&self, _account: [u8; 32]) -> Result<minijam_runtime::Nonce, WorkerError> {
+            Ok(3)
+        }
+
+        fn genesis_hash(&self) -> Result<Hash, WorkerError> {
+            Ok([9u8; 32])
         }
     }
 

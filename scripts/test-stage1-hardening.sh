@@ -31,6 +31,8 @@ render_compose() {
 compact="$(render_compose compact)"
 split="$(render_compose split)"
 
+jq -e '.services.node.command | index("--base-path=/data") != null' <<<"${compact}" >/dev/null
+jq -e '.services.node.command | index("--node-key-file=/run/secrets/node_network_key") != null' <<<"${compact}" >/dev/null
 jq -e '.services.node.command | index("--unsafe-rpc-external") != null' <<<"${compact}" >/dev/null
 jq -e '.services.node.command | index("--rpc-methods=safe") != null' <<<"${compact}" >/dev/null
 jq -e '.services.node.command | index("--rpc-cors=all") != null' <<<"${compact}" >/dev/null
@@ -38,11 +40,24 @@ jq -e '.services.node.command | index("--rpc-methods=unsafe") == null' <<<"${com
 jq -e 'any(.services.node.ports[]?; (.published | tostring) == "9944" and .host_ip == "127.0.0.1")' <<<"${compact}" >/dev/null
 jq -e '.services.node.networks | has("chain") and has("node-edge")' <<<"${compact}" >/dev/null
 jq -e '.networks.chain.internal == true' <<<"${compact}" >/dev/null
+jq -e '.services.worker.command | index("--worker-id=0") != null' <<<"${compact}" >/dev/null
+jq -e '.services.worker.command | index("--ipfs-gateway=http://formal-rpc:8080") != null' <<<"${compact}" >/dev/null
+jq -e '.services["formal-rpc"].secrets | any(.[]; .source == "work_ingress_key")' <<<"${compact}" >/dev/null
+jq -e '.services.worker.secrets | any(.[]; .source == "worker_signing_key")' <<<"${compact}" >/dev/null
 
+jq -e '.services.node.command | index("--base-path=/data") != null' <<<"${split}" >/dev/null
+jq -e '.services.node.command | index("--node-key-file=/run/secrets/node_network_key") != null' <<<"${split}" >/dev/null
 jq -e '.services.node.command | index("--rpc-cors=all") != null' <<<"${split}" >/dev/null
 jq -e '.services.node.command | index("--rpc-methods=safe") != null' <<<"${split}" >/dev/null
 jq -e '.services.node.command | index("--rpc-methods=unsafe") == null' <<<"${split}" >/dev/null
 jq -e '(.services.node.ports // []) | length == 0' <<<"${split}" >/dev/null
 jq -e '.networks.chain.external == true' <<<"${split}" >/dev/null
+jq -e '.services.worker.command | index("--worker-id=0") != null' <<<"${split}" >/dev/null
+jq -e '.services.worker.command | index("--ipfs-gateway=http://formal-rpc:8080") != null' <<<"${split}" >/dev/null
+
+if grep -RniE --exclude='README.md' --exclude='.env.example' 'mnemonic|seed phrase|//Alice|//Bob' "${ROOT}/deploy/stage1"; then
+  echo 'Stage-1 deployment contains secret-like material' >&2
+  exit 1
+fi
 
 printf 'STAGE1_HARDENING=PASS\n'

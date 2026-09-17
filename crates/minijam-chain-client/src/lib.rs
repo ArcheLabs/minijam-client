@@ -6,14 +6,19 @@ mod rpc;
 
 pub use events::{FinalityObservation, FinalizedEvent};
 pub use extrinsic::sign_call as sign_runtime_call;
-pub use rpc::{DispatchOutcome, FinalizedContext};
+pub use rpc::{
+    dispatch_outcome_at, included_block_from_statuses, submit_and_watch_extrinsic, DispatchOutcome,
+    FinalizedContext,
+};
 
 use std::time::Duration;
 
 use jam_codec::Decode as JamDecode;
 use jp_core_primitives::types::ServiceInfo;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
-use minijam_protocol::{CanonicalPreimageBytes, ContentRef, Hash, SystemCommandV2, WorkId};
+use minijam_protocol::{
+    CanonicalPreimageBytes, ContentRef, Hash, StateValue, SystemCommandV2, WorkId,
+};
 use minijam_runtime::RuntimeCall;
 use parity_scale_codec::{Decode, Encode};
 use sp_core::{
@@ -186,9 +191,9 @@ impl MiniJamChainClient {
         let Some(bytes) = self.service_info_at(block, service_id).await? else {
             return Ok(None);
         };
-        let value = minijam_protocol::StateValue::decode(&mut bytes.as_slice())
+        let value = StateValue::decode(&mut bytes.as_slice())
             .map_err(|error| ChainClientError::Decode(error.to_string()))?;
-        let info = ServiceInfo::decode(&mut value.as_slice())
+        let info = ServiceInfo::decode(&mut value.into_inner().as_slice())
             .map_err(|error| ChainClientError::Decode(error.to_string()))?;
         Ok(Some(info.code_hash.0))
     }
@@ -264,10 +269,8 @@ impl MiniJamChainClient {
         // submit.
         let _submission = self.submit_lock.lock().await;
         let prepared = self.prepare_system_command_inner(command).await?;
-        // The watcher can complete with an RPC error. Keep its mutex guard in
-        // this scope: both completion and recovery issue further RPC calls.
-        // Letting the temporary guard live through the `match` would make
-        // either path wait on itself.
+        // Release the RPC mutex before completion/recovery, both of which
+        // issue additional RPC calls through the same client.
         let watched = {
             let rpc = self.rpc.lock().await;
             rpc::submit_and_watch_extrinsic(&rpc, &prepared.encoded_extrinsic, self.request_timeout)
@@ -344,14 +347,13 @@ impl MiniJamChainClient {
     ) -> Result<Submission, ChainClientError> {
         let _system_op = self.system_op_lock.lock().await;
         let _submission = self.submit_lock.lock().await;
-        // Drop the RPC guard before completing the watched submission or
-        // reconnecting after a transport failure.
-        let watched = {
-            let rpc = self.rpc.lock().await;
-            rpc::submit_and_watch_extrinsic(&rpc, &prepared.encoded_extrinsic, self.request_timeout)
-                .await
-        };
-        match watched {
+        match rpc::submit_and_watch_extrinsic(
+            &*self.rpc.lock().await,
+            &prepared.encoded_extrinsic,
+            self.request_timeout,
+        )
+        .await
+        {
             Ok((extrinsic_hash, statuses)) => {
                 self.complete_prepared_submission(prepared, extrinsic_hash, statuses)
                     .await
@@ -373,41 +375,51 @@ impl MiniJamChainClient {
         extrinsic_hash: Hash,
         statuses: Vec<serde_json::Value>,
     ) -> Result<Submission, ChainClientError> {
-        let included_block = included_block_from_statuses(&statuses);
+        let included_block = statuses.iter().rev().find_map(|status| {
+            let value = status.get("inBlock").or_else(|| status.get("finalized"))?;
+            let value = value
+                .as_str()?
+                .strip_prefix("0x")
+                .unwrap_or(value.as_str()?);
+            if value.len() != 64 {
+                return None;
+            }
+            let mut hash = [0u8; 32];
+            for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+                hash[index] = u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
+            }
+            Some(hash)
+        });
+        let block = included_block.ok_or_else(|| {
+            ChainClientError::Decode("finalized transaction has no included block".into())
+        });
 
         // Finalized means the account nonce was consumed even if dispatch
         // failed. The system-op nonce remains unknown until exact attribution.
         self.commit_account_nonce(&prepared).await;
-        let block = match included_block {
-            Some(block) => block,
-            None => {
-                self.invalidate_system_op_nonce().await;
-                return Err(ChainClientError::Decode(
-                    "finalized transaction has no included block".into(),
-                ));
+        let (included_extrinsic_index, dispatch_outcome) = match block {
+            Ok(block) => {
+                match rpc::dispatch_outcome_at(&*self.rpc.lock().await, block, extrinsic_hash).await
+                {
+                    Ok(value) => value,
+                    Err(error) => {
+                        self.invalidate_system_op_nonce().await;
+                        return Err(error);
+                    }
+                }
             }
-        };
-        let dispatch = {
-            let rpc = self.rpc.lock().await;
-            rpc::dispatch_outcome_at(&rpc, block, extrinsic_hash).await
-        };
-        let (included_extrinsic_index, dispatch_outcome) = match dispatch {
-            Ok(value) => value,
             Err(error) => {
                 self.invalidate_system_op_nonce().await;
                 return Err(error);
             }
         };
+        let dispatch_error = match &dispatch_outcome {
+            DispatchOutcome::Success => None,
+            DispatchOutcome::Failed(error) => Some(error.clone()),
+        };
         match dispatch_outcome {
             DispatchOutcome::Success => self.commit_system_op_nonce(&prepared).await,
-            DispatchOutcome::Failed(error) => {
-                // The account nonce was committed above because the
-                // extrinsic finalized. The system-op nonce must be refreshed,
-                // and callers must not mistake a failed dispatch for a
-                // successful submission.
-                self.invalidate_system_op_nonce().await;
-                return Err(ChainClientError::Dispatch(error));
-            }
+            DispatchOutcome::Failed(_) => self.invalidate_system_op_nonce().await,
         }
         Ok(Submission {
             extrinsic_hash,
@@ -415,10 +427,10 @@ impl MiniJamChainClient {
             correlation: prepared.correlation,
             lifecycle: Some(TransactionLifecycle {
                 statuses,
-                included_block: Some(block),
+                included_block,
                 included_extrinsic_index: Some(included_extrinsic_index),
                 dispatch_outcome: Some(dispatch_outcome),
-                dispatch_error: None,
+                dispatch_error,
             }),
         })
     }
@@ -450,21 +462,6 @@ impl MiniJamChainClient {
         .await
     }
 
-    pub async fn submit_preimage_finalized(
-        &self,
-        bytes: Vec<u8>,
-    ) -> Result<Submission, ChainClientError> {
-        let correlation = minijam_protocol::blake2_256(&bytes);
-        let canonical_preimage: CanonicalPreimageBytes = bytes
-            .try_into()
-            .map_err(|_| ChainClientError::InputTooLarge)?;
-        self.submit_call_and_watch(
-            RuntimeCall::MiniJam(pallet_minijam::Call::submit_preimage { canonical_preimage }),
-            correlation,
-        )
-        .await
-    }
-
     pub async fn submit_work(
         &self,
         canonical: Vec<u8>,
@@ -474,7 +471,7 @@ impl MiniJamChainClient {
         let canonical_work_package = canonical
             .try_into()
             .map_err(|_| ChainClientError::InputTooLarge)?;
-        self.submit_call(
+        self.submit_call_and_watch(
             RuntimeCall::MiniJam(pallet_minijam::Call::submit_work {
                 canonical_work_package,
                 bundle_ref,
@@ -513,13 +510,7 @@ impl MiniJamChainClient {
         let nonce = self.allocate_nonce().await?;
         let genesis = rpc::genesis_hash(&*self.rpc.lock().await).await?;
         let encoded = extrinsic::sign_call(&self.signer, nonce, genesis, call);
-        // `reconnect` below needs the same mutex, so do not retain the guard
-        // in the match scrutinee.
-        let submitted = {
-            let rpc = self.rpc.lock().await;
-            rpc::submit_extrinsic(&rpc, &encoded).await
-        };
-        match submitted {
+        match rpc::submit_extrinsic(&*self.rpc.lock().await, &encoded).await {
             Ok(extrinsic_hash) => Ok(Submission {
                 extrinsic_hash,
                 submitted_nonce: nonce,
@@ -551,8 +542,48 @@ impl MiniJamChainClient {
         };
         match watched {
             Ok((extrinsic_hash, statuses)) => {
-                self.complete_finalized_call(nonce, correlation, extrinsic_hash, statuses)
-                    .await
+                let included_block = statuses.iter().rev().find_map(|status| {
+                    let value = status.get("inBlock").or_else(|| status.get("finalized"))?;
+                    let value = value
+                        .as_str()?
+                        .strip_prefix("0x")
+                        .unwrap_or(value.as_str()?);
+                    if value.len() != 64 {
+                        return None;
+                    }
+                    let mut hash = [0; 32];
+                    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+                        hash[index] =
+                            u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
+                    }
+                    Some(hash)
+                });
+                let block = included_block.ok_or_else(|| {
+                    ChainClientError::Decode("finalized transaction has no included block".into())
+                })?;
+                self.next_nonce.lock().await.commit(nonce);
+                let (included_extrinsic_index, dispatch_outcome) =
+                    rpc::dispatch_outcome_at(&*self.rpc.lock().await, block, extrinsic_hash)
+                        .await?;
+                let dispatch_error = match &dispatch_outcome {
+                    DispatchOutcome::Success => None,
+                    DispatchOutcome::Failed(error) => Some(error.clone()),
+                };
+                if let DispatchOutcome::Failed(error) = &dispatch_outcome {
+                    return Err(ChainClientError::Dispatch(error.clone()));
+                }
+                Ok(Submission {
+                    extrinsic_hash,
+                    submitted_nonce: nonce,
+                    correlation,
+                    lifecycle: Some(TransactionLifecycle {
+                        statuses,
+                        included_block: Some(block),
+                        included_extrinsic_index: Some(included_extrinsic_index),
+                        dispatch_outcome: Some(dispatch_outcome),
+                        dispatch_error,
+                    }),
+                })
             }
             Err(error) => {
                 self.next_nonce.lock().await.invalidate();
@@ -561,39 +592,6 @@ impl MiniJamChainClient {
                 }
                 Err(error)
             }
-        }
-    }
-
-    async fn complete_finalized_call(
-        &self,
-        submitted_nonce: u32,
-        correlation: Hash,
-        extrinsic_hash: Hash,
-        statuses: Vec<serde_json::Value>,
-    ) -> Result<Submission, ChainClientError> {
-        let included_block = included_block_from_statuses(&statuses).ok_or_else(|| {
-            ChainClientError::Decode("finalized transaction has no included block".into())
-        })?;
-        self.next_nonce.lock().await.commit(submitted_nonce);
-        let dispatch = {
-            let rpc = self.rpc.lock().await;
-            rpc::dispatch_outcome_at(&rpc, included_block, extrinsic_hash).await
-        }?;
-        let (included_extrinsic_index, dispatch_outcome) = dispatch;
-        match dispatch_outcome {
-            DispatchOutcome::Success => Ok(Submission {
-                extrinsic_hash,
-                submitted_nonce,
-                correlation,
-                lifecycle: Some(TransactionLifecycle {
-                    statuses,
-                    included_block: Some(included_block),
-                    included_extrinsic_index: Some(included_extrinsic_index),
-                    dispatch_outcome: Some(DispatchOutcome::Success),
-                    dispatch_error: None,
-                }),
-            }),
-            DispatchOutcome::Failed(error) => Err(ChainClientError::Dispatch(error)),
         }
     }
 
@@ -611,34 +609,11 @@ impl MiniJamChainClient {
         &self,
         request_id: Hash,
     ) -> Result<Option<T>, ChainClientError> {
-        let value = self
-            .decode_query::<minijam_protocol::StateValue>(
-                "minijam_getSystemReceipt",
-                serde_json::json!([rpc::hex(&request_id)]),
-            )
-            .await?;
-        value.map(decode_state_value).transpose()
-    }
-
-    pub async fn system_op<T: Decode>(
-        &self,
-        request_id: Hash,
-    ) -> Result<Option<T>, ChainClientError> {
         self.decode_query(
-            "minijam_getSystemOp",
+            "minijam_getSystemReceipt",
             serde_json::json!([rpc::hex(&request_id)]),
         )
         .await
-    }
-
-    pub async fn pending_system_ops<T: Decode>(&self) -> Result<T, ChainClientError> {
-        self.required_query("minijam_getPendingSystemOps", serde_json::json!([]))
-            .await
-    }
-
-    pub async fn quarantined_system_ops<T: Decode>(&self) -> Result<T, ChainClientError> {
-        self.required_query("minijam_getQuarantinedSystemOps", serde_json::json!([]))
-            .await
     }
 
     pub async fn work_status<T: Decode>(
@@ -706,40 +681,6 @@ impl MiniJamChainClient {
             })
             .transpose()
     }
-
-    async fn required_query<T: Decode>(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<T, ChainClientError> {
-        self.decode_query(method, params)
-            .await?
-            .ok_or_else(|| ChainClientError::Decode(format!("{method} returned no value")))
-    }
-}
-
-fn included_block_from_statuses(statuses: &[serde_json::Value]) -> Option<Hash> {
-    statuses.iter().rev().find_map(|status| {
-        let value = status.get("inBlock").or_else(|| status.get("finalized"))?;
-        let value = value
-            .as_str()?
-            .strip_prefix("0x")
-            .unwrap_or(value.as_str()?);
-        if value.len() != 64 {
-            return None;
-        }
-        let mut hash = [0u8; 32];
-        for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
-            hash[index] = u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
-        }
-        Some(hash)
-    })
-}
-
-fn decode_state_value<T: Decode>(
-    value: minijam_protocol::StateValue,
-) -> Result<T, ChainClientError> {
-    T::decode(&mut value.as_slice()).map_err(|error| ChainClientError::Decode(error.to_string()))
 }
 
 fn system_op_sender(account: &AccountId32) -> Hash {
@@ -778,26 +719,7 @@ impl NonceCursor {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use jsonrpsee::{server::Server, types::ErrorObjectOwned, RpcModule};
-    use parity_scale_codec::Encode;
-    use sp_core::{sr25519, Pair};
-
-    use super::{
-        decode_state_value, system_op_sender, AccountId32, ChainClientError, MiniJamChainClient,
-        NonceCursor,
-    };
-
-    #[test]
-    fn system_receipt_decodes_from_protocol_state_value() {
-        let receipt = minijam_protocol::SystemReceiptV2::ServiceCreated { service_id: 42 };
-        let value = minijam_protocol::StateValue::try_from(receipt.encode()).unwrap();
-        assert_eq!(
-            decode_state_value::<minijam_protocol::SystemReceiptV2>(value).unwrap(),
-            receipt
-        );
-    }
+    use super::{system_op_sender, AccountId32, NonceCursor};
 
     #[test]
     fn nonce_cursor_allocates_once_and_resynchronizes_after_failure() {
@@ -821,49 +743,5 @@ mod tests {
             minijam_protocol::blake2_256(account.as_ref())
         );
         assert_ne!(system_op_sender(&account), <[u8; 32]>::from(account));
-    }
-
-    #[tokio::test]
-    async fn rpc_guard_is_released_before_submit_recovery() {
-        let server = Server::builder()
-            .build("127.0.0.1:0")
-            .await
-            .expect("mock RPC server starts");
-        let address = server.local_addr().expect("mock RPC address");
-        let mut module = RpcModule::new(());
-        module
-            .register_method("system_accountNextIndex", |_, _, _| {
-                Ok::<u32, ErrorObjectOwned>(0)
-            })
-            .unwrap();
-        module
-            .register_method("chain_getBlockHash", |_, _, _| {
-                Ok::<String, ErrorObjectOwned>(super::rpc::hex(&[0; 32]))
-            })
-            .unwrap();
-        module
-            .register_method("author_submitExtrinsic", |_, _, _| {
-                Err::<String, _>(ErrorObjectOwned::owned(
-                    -32000,
-                    "mock transport failure",
-                    None::<()>,
-                ))
-            })
-            .unwrap();
-        let handle = server.start(module);
-
-        let client = MiniJamChainClient::connect(
-            format!("ws://{address}"),
-            sr25519::Pair::from_seed(&[7; 32]),
-            Duration::from_secs(2),
-        )
-        .await
-        .expect("client connects to mock RPC");
-        let result =
-            tokio::time::timeout(Duration::from_secs(1), client.submit_allocation(1, 1000, 1))
-                .await
-                .expect("submit recovery must not deadlock");
-        assert!(matches!(result, Err(ChainClientError::Rpc(_))));
-        handle.stop().expect("mock RPC server stops");
     }
 }

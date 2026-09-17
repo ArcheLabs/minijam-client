@@ -228,8 +228,8 @@ impl pallet_minijam_workers::Config for Runtime {
     type TopWorkers = ConstU32<8>;
     type AssignmentSeedDelay = ConstU32<10>;
     type WorkersPerWork = ConstU32<1>;
-    type MaxWorksPerRound = ConstU32<4>;
-    type MaxDutiesPerWorkerPerRound = ConstU32<2>;
+    type MaxWorksPerRound = ConstU32<64>;
+    type MaxDutiesPerWorkerPerRound = ConstU32<64>;
     type SupportThreshold = ConstU32<1>;
     type OpposeThreshold = ConstU32<1>;
     type MaxOpenVotes = ConstU32<64>;
@@ -327,7 +327,7 @@ mod stage0_economics_tests {
         let mut ext: sp_io::TestExternalities = storage.into();
         ext.execute_with(|| {
             pallet_minijam::IngressRelayer::<Runtime>::put(AccountId::new(
-                crate::genesis_config_presets::LOCAL_INGRESS_RELAYER_ACCOUNT,
+                crate::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT,
             ));
         });
         ext
@@ -346,7 +346,7 @@ mod stage0_economics_tests {
             }
             assert_ok!(MiniJam::submit_system_op(
                 RuntimeOrigin::signed(AccountId::new(
-                    crate::genesis_config_presets::LOCAL_INGRESS_RELAYER_ACCOUNT,
+                    crate::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT,
                 )),
                 Box::new(SystemCommandV2::CreateService {
                     code_hash: [0x9b; 32],
@@ -380,10 +380,38 @@ mod stage0_economics_tests {
     }
 
     #[test]
-    fn runtime_ext_configures_only_local_ingress_relayer() {
+    fn stage1_capacity_matches_single_worker_pending_work_bound() {
+        assert_eq!(
+            <<Runtime as pallet_minijam_workers::Config>::WorkersPerWork as Get<u32>>::get(),
+            1
+        );
+        assert_eq!(
+            <<Runtime as pallet_minijam_workers::Config>::MaxWorksPerRound as Get<u32>>::get(),
+            64
+        );
+        assert_eq!(
+            <<Runtime as pallet_minijam_workers::Config>::MaxDutiesPerWorkerPerRound as Get<u32>>::get(),
+            64
+        );
+        assert_eq!(
+            <<Runtime as pallet_minijam_workers::Config>::SupportThreshold as Get<u32>>::get(),
+            1
+        );
+        assert_eq!(
+            <<Runtime as pallet_minijam_workers::Config>::OpposeThreshold as Get<u32>>::get(),
+            1
+        );
+        assert_eq!(
+            <<Runtime as pallet_minijam::Config>::MaxPendingWorks as Get<u32>>::get(),
+            64
+        );
+    }
+
+    #[test]
+    fn runtime_ext_configures_only_local_playground_relayer() {
         runtime_ext().execute_with(|| {
             let relayer =
-                AccountId::new(crate::genesis_config_presets::LOCAL_INGRESS_RELAYER_ACCOUNT);
+                AccountId::new(crate::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT);
             let direct_user = AccountId::new([0x93; 32]);
 
             assert_eq!(
@@ -401,7 +429,7 @@ mod stage0_economics_tests {
     fn runtime_dispatch_enforces_system_and_preimage_ingress() {
         runtime_ext().execute_with(|| {
             let relayer =
-                AccountId::new(crate::genesis_config_presets::LOCAL_INGRESS_RELAYER_ACCOUNT);
+                AccountId::new(crate::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT);
             let direct_user = AccountId::new([0x93; 32]);
             let command = SystemCommandV2::CreateService {
                 code_hash: [0x55; 32],

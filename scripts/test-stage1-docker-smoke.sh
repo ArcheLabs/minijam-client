@@ -19,6 +19,7 @@ command -v jq >/dev/null 2>&1 || { echo 'jq is required for Stage-1 smoke' >&2; 
 docker info >/dev/null
 
 CHAIN_SPEC="$(realpath "${CHAIN_SPEC}")"
+COMPOSE_FILE="$(realpath "${COMPOSE_FILE}")"
 compose=(docker compose --project-name "${PROJECT}" -f "${COMPOSE_FILE}")
 if [[ -n "${COMPOSE_OVERRIDE_FILE}" ]]; then
   compose+=( -f "${COMPOSE_OVERRIDE_FILE}" )
@@ -63,11 +64,24 @@ assert_node_host_port_published() {
 
 wait_for_node() {
   local deadline=$((SECONDS + ${MINIJAM_STAGE1_READY_TIMEOUT_SECONDS:-180}))
-  until curl -fsS --max-time 3 \
-      -H 'content-type: application/json' \
-      --data '{"id":1,"jsonrpc":"2.0","method":"system_health","params":[]}' \
-      http://127.0.0.1:9944 | jq -e '.result != null' >/dev/null; do
-    (( SECONDS < deadline )) || { echo 'Stage-1 node JSON-RPC did not become functional' >&2; return 1; }
+  local node_container
+  node_container="$("${compose[@]}" ps -q node 2>/dev/null || true)"
+  test -n "${node_container}" || { echo 'Stage-1 node container was not created' >&2; return 1; }
+  while :; do
+    if [[ "$(docker inspect --format '{{.State.Running}}' "${node_container}" 2>/dev/null || true)" != true ]]; then
+      echo 'Stage-1 node exited before JSON-RPC became functional' >&2
+      return 1
+    fi
+    if curl -fsS --max-time 3 \
+        -H 'content-type: application/json' \
+        --data '{"id":1,"jsonrpc":"2.0","method":"system_health","params":[]}' \
+        http://127.0.0.1:9944 | jq -e '.result != null' >/dev/null; then
+      return 0
+    fi
+    (( SECONDS < deadline )) || {
+      echo 'Stage-1 node JSON-RPC did not become functional' >&2
+      return 1
+    }
     sleep 2
   done
 }
@@ -100,11 +114,22 @@ wait_for_secret_readable() {
   local path="$2"
   local label="$3"
   local deadline=$((SECONDS + ${MINIJAM_STAGE1_READY_TIMEOUT_SECONDS:-180}))
-  until "${compose[@]}" exec -T "${service}" sh -c 'test -r "$1"' sh "${path}" >/dev/null 2>&1; do
-    (( SECONDS < deadline )) || { echo "${label} is not readable by the container user" >&2; return 1; }
+  while :; do
+    if ! assert_running "${service}"; then
+      echo "${service} exited before ${label} readability could be verified" >&2
+      "${compose[@]}" logs --no-color "${service}" >&2 || true
+      return 1
+    fi
+    if "${compose[@]}" exec -T "${service}" sh -c 'test -r "$1"' sh "${path}" >/dev/null 2>&1; then
+      printf '%s PASS\n' "${label} readable"
+      return 0
+    fi
+    (( SECONDS < deadline )) || {
+      echo "${label} is not readable by the container user" >&2
+      return 1
+    }
     sleep 2
   done
-  printf '%s PASS\n' "${label} readable"
 }
 
 assert_running() {
@@ -152,9 +177,8 @@ wait_for_worker_node_rpc() {
 "${compose[@]}" up --detach --no-build --pull never
 assert_node_host_port_published
 wait_for_node
-printf 'node started PASS\n'
+printf 'NODE_JSON_RPC=PASS\n'
 wait_for_node_network_identity
-printf 'node network identity available PASS\n'
 printf 'NODE_NETWORK_IDENTITY=PASS\n'
 wait_for_secret_readable node /run/secrets/node_network_key 'node secret'
 wait_for_secret_readable worker /run/secrets/worker_signing_key 'worker secret'
@@ -163,14 +187,9 @@ wait_for_formal_rpc
 assert_running node
 assert_running worker
 assert_running formal-rpc
-printf 'worker running PASS\n'
-printf 'WORKER_RUNNING=PASS\n'
-printf 'formal-rpc readiness PASS\n'
-printf 'FORMAL_RPC_READY=PASS\n'
+printf 'WORKER_RUNNING=PASS\nFORMAL_RPC_READY=PASS\n'
 worker_successes_before_cold_start="$(worker_success_count)"
 wait_for_worker_node_rpc "${worker_successes_before_cold_start}"
-printf 'node JSON-RPC PASS\n'
-printf 'NODE_JSON_RPC=PASS\n'
 
 "${compose[@]}" stop node
 "${compose[@]}" up --detach --no-deps --force-recreate formal-rpc
@@ -195,8 +214,6 @@ wait_for_worker_node_rpc "${worker_successes_before_restart}"
 assert_running node
 assert_running worker
 assert_running formal-rpc
-printf 'NODE_RESTART_IDENTITY=PASS\n'
-printf 'node restart PASS\n'
-printf 'POST_RESTART_RECOVERY=PASS\n'
+printf 'NODE_RESTART_IDENTITY=PASS\nPOST_RESTART_RECOVERY=PASS\n'
 
 printf 'STAGE1_DOCKER_SMOKE=PASS\n'

@@ -35,21 +35,21 @@ Stage-1 service-to-service RPC uses Docker/private DNS names such as
 private hostname boundary while `--rpc-methods=safe` remains mandatory; CORS
 configuration does not enable unsafe RPC methods.
 
-Formal RPC performs bounded startup retries while waiting for the node RPC to
-become available. A node container may therefore be started before its RPC
-listener is ready without requiring an external sleep-based startup sequence.
-
-Compose reads `MINIJAM_NODE_NETWORK_KEY`, `MINIJAM_WORKER_SEED`, and
-`MINIJAM_FORMAL_RPC_RELAYER_URI` from the operator environment and mounts them
-as `0400` `/run/secrets/*` files owned by UID/GID `10001`. The node uses
-`--base-path=/data` and the explicit node key file so its libp2p identity and
-chain database survive restarts. Do not replace these secret mounts with
-world-readable files or run the images as root.
+Compose reads the node network key, worker seed, and Formal RPC relayer URI
+from operator-controlled secret sources and mounts them as `/run/secrets/*`.
+Do not replace these mounts with world-readable files or run the images as
+root.
 
 Generate fresh chain specifications with
 `scripts/export-stage1-chain-specs-image.sh` from the exact node image used by
-the deployment. Generated specs belong to the release artifact and are not
-committed to the repository.
+the deployment. The older host-binary script remains useful for local
+development, but is not the release path.
 Public account IDs are deployment inputs; private keys never belong here.
 SS58 prefix remains 42. Faucet funding is an ordinary endowed account in
 genesis and the external faucet signs normal Balances transfers.
+
+Stage-1 registers and runs one Worker (worker 0). The `/ipfs/<CID>` endpoint
+is a temporary local content-addressed bundle transport served directly by
+Formal RPC; no IPFS daemon or IPFS network is required. Formal RPC stores the
+bundle bytes locally before Work submission, and the Worker fetches them from
+the Formal RPC origin through that route.

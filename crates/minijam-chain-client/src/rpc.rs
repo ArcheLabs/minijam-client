@@ -113,6 +113,24 @@ pub async fn dispatch_outcome_at(
     Ok((index, dispatch_outcome_from_records(&records, index)?))
 }
 
+pub fn included_block_from_statuses(statuses: &[serde_json::Value]) -> Option<Hash> {
+    statuses.iter().rev().find_map(|status| {
+        let value = status.get("inBlock").or_else(|| status.get("finalized"))?;
+        let value = value
+            .as_str()?
+            .strip_prefix("0x")
+            .unwrap_or(value.as_str()?);
+        if value.len() != 64 {
+            return None;
+        }
+        let mut hash = [0; 32];
+        for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+            hash[index] = u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
+        }
+        Some(hash)
+    })
+}
+
 fn dispatch_outcome_from_records(
     records: &[EventRecord],
     index: u32,
@@ -362,6 +380,16 @@ mod tests {
         ] {
             assert_eq!(classify_watch_status(&status), WatchStatus::Failed);
         }
+    }
+
+    #[test]
+    fn included_block_from_statuses_prefers_the_latest_block_status() {
+        let statuses = vec![
+            serde_json::json!({"inBlock": hex(&[1; 32])}),
+            serde_json::json!({"finalized": hex(&[2; 32])}),
+        ];
+
+        assert_eq!(included_block_from_statuses(&statuses), Some([2; 32]));
     }
 
     #[test]

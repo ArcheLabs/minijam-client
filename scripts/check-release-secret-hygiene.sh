@@ -18,3 +18,5 @@ for forbidden in MINIJAM_RELEASE_NODE_KEYSTORE_B64 'MINIJAM_RELEASE_RELAYER_URI=
     exit 1
   fi
 done
+
+printf 'SECRET_HYGIENE=PASS\n'
