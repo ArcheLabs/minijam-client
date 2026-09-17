@@ -4,6 +4,11 @@ WORKDIR /src
 ENV RUSTUP_MAX_RETRIES=10 \
     CARGO_TARGET_DIR=/cargo-target
 
+ENV TMPDIR=/build-tmp \
+    WASM_BUILD_WORKSPACE_HINT=/src
+
+RUN mkdir -p /build-tmp
+
 RUN apt-get -o Acquire::Retries=5 update \
     && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
       clang \
