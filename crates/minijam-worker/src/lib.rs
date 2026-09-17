@@ -1196,6 +1196,7 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_refine_backed_vote_with_network_domain<S>(
     state: &S,
     worker_id: WorkerId,

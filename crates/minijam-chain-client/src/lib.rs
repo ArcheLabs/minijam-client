@@ -273,12 +273,8 @@ impl MiniJamChainClient {
         // issue additional RPC calls through the same client.
         let watched = {
             let rpc = self.rpc.lock().await;
-            rpc::submit_and_watch_extrinsic(
-                &*rpc,
-                &prepared.encoded_extrinsic,
-                self.request_timeout,
-            )
-            .await
+            rpc::submit_and_watch_extrinsic(&rpc, &prepared.encoded_extrinsic, self.request_timeout)
+                .await
         };
         match watched {
             Ok((extrinsic_hash, statuses)) => {
@@ -542,7 +538,7 @@ impl MiniJamChainClient {
         let encoded = extrinsic::sign_call(&self.signer, nonce, genesis, call);
         let watched = {
             let rpc = self.rpc.lock().await;
-            rpc::submit_and_watch_extrinsic(&*rpc, &encoded, self.request_timeout).await
+            rpc::submit_and_watch_extrinsic(&rpc, &encoded, self.request_timeout).await
         };
         match watched {
             Ok((extrinsic_hash, statuses)) => {
