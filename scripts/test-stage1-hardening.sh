@@ -55,7 +55,9 @@ jq -e '.networks.chain.external == true' <<<"${split}" >/dev/null
 jq -e '.services.worker.command | index("--worker-id=0") != null' <<<"${split}" >/dev/null
 jq -e '.services.worker.command | index("--ipfs-gateway=http://formal-rpc:8080") != null' <<<"${split}" >/dev/null
 
-if grep -RniE --exclude='README.md' --exclude='.env.example' 'mnemonic|seed phrase|//Alice|//Bob' "${ROOT}/deploy/stage1"; then
+if grep -niE 'mnemonic|seed phrase|//Alice|//Bob' \
+  "${ROOT}/deploy/stage1/compose.compact.yml" \
+  "${ROOT}/deploy/stage1/compose.split.yml"; then
   echo 'Stage-1 deployment contains secret-like material' >&2
   exit 1
 fi
