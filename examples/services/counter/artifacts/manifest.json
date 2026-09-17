@@ -7,15 +7,15 @@
       "source": "examples/services/counter/service.c",
       "blob": "counter-c.blob",
       "polkavm": "counter-c.polkavm",
-      "byte_len": 1328,
-      "sha256": "230d50315c643faec0a62282ff2317ddb14ab1d87138cedd5ff95ece46517c45"
+      "byte_len": 1339,
+      "sha256": "6391b16dc525dab321e295a623c58668fb7bce4e22110f5d6739973aa61451e6"
     },
     "cpp": {
       "source": "examples/services/counter/service.cpp",
       "blob": "counter-cpp.blob",
       "polkavm": "counter-cpp.polkavm",
-      "byte_len": 1328,
-      "sha256": "230d50315c643faec0a62282ff2317ddb14ab1d87138cedd5ff95ece46517c45"
+      "byte_len": 1339,
+      "sha256": "6391b16dc525dab321e295a623c58668fb7bce4e22110f5d6739973aa61451e6"
     }
   }
 }
