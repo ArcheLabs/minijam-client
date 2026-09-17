@@ -6,7 +6,10 @@ mod rpc;
 
 pub use events::{FinalityObservation, FinalizedEvent};
 pub use extrinsic::sign_call as sign_runtime_call;
-pub use rpc::{DispatchOutcome, FinalizedContext};
+pub use rpc::{
+    dispatch_outcome_at, included_block_from_statuses, submit_and_watch_extrinsic, DispatchOutcome,
+    FinalizedContext,
+};
 
 use std::time::Duration;
 

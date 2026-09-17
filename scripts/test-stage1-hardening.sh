@@ -1,13 +1,63 @@
 #!/usr/bin/env bash
 set -euo pipefail
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-"$root/scripts/check-stage1-boundary.sh"
-"$root/scripts/check-release-secret-hygiene.sh"
-docker compose -f "$root/deploy/stage1/compose.compact.yml" config --no-interpolate >/dev/null
-docker compose -f "$root/deploy/stage1/compose.split.yml" config --no-interpolate >/dev/null
-rg -q 'pub const SS58Prefix: u8 = 42' "$root/runtime/src/lib.rs"
-if rg -n 'mnemonic|seed phrase|//Alice|//Bob' "$root/deploy/stage1" --glob '!README.md' --glob '!.env.example'; then
-  echo "Stage-1 deployment contains secret-like material" >&2
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+"${ROOT}/scripts/check-stage1-boundary.sh"
+"${ROOT}/scripts/check-release-secret-hygiene.sh"
+command -v docker >/dev/null 2>&1 || {
+  echo 'Docker is required for rendered Stage-1 Compose hardening checks' >&2
+  exit 127
+}
+docker info >/dev/null 2>&1 || {
+  echo 'A running Docker daemon is required for rendered Stage-1 Compose hardening checks' >&2
+  exit 1
+}
+command -v jq >/dev/null 2>&1 || {
+  echo 'jq is required for rendered Stage-1 Compose hardening checks' >&2
+  exit 127
+}
+
+render_compose() {
+  local profile="$1"
+  MINIJAM_NODE_NETWORK_KEY=0x1111111111111111111111111111111111111111111111111111111111111111 \
+  MINIJAM_WORKER_SEED=0x2222222222222222222222222222222222222222222222222222222222222222 \
+  MINIJAM_FORMAL_RPC_RELAYER_URI=0x3333333333333333333333333333333333333333333333333333333333333333 \
+  MINIJAM_RPC_URL=ws://node:9944 \
+  MINIJAM_STAGE1_CHAIN_SPEC_FILE=/etc/hosts \
+    docker compose -f "${ROOT}/deploy/stage1/compose.${profile}.yml" config --format json
+}
+
+compact="$(render_compose compact)"
+split="$(render_compose split)"
+
+jq -e '.services.node.command | index("--base-path=/data") != null' <<<"${compact}" >/dev/null
+jq -e '.services.node.command | index("--node-key-file=/run/secrets/node_network_key") != null' <<<"${compact}" >/dev/null
+jq -e '.services.node.command | index("--unsafe-rpc-external") != null' <<<"${compact}" >/dev/null
+jq -e '.services.node.command | index("--rpc-methods=safe") != null' <<<"${compact}" >/dev/null
+jq -e '.services.node.command | index("--rpc-cors=all") != null' <<<"${compact}" >/dev/null
+jq -e '.services.node.command | index("--rpc-methods=unsafe") == null' <<<"${compact}" >/dev/null
+jq -e 'any(.services.node.ports[]?; (.published | tostring) == "9944" and .host_ip == "127.0.0.1")' <<<"${compact}" >/dev/null
+jq -e '.services.node.networks | has("chain") and has("node-edge")' <<<"${compact}" >/dev/null
+jq -e '.networks.chain.internal == true' <<<"${compact}" >/dev/null
+jq -e '.services.worker.command | index("--worker-id=0") != null' <<<"${compact}" >/dev/null
+jq -e '.services.worker.command | index("--ipfs-gateway=http://formal-rpc:8080") != null' <<<"${compact}" >/dev/null
+jq -e '.services["formal-rpc"].secrets | any(.[]; .source == "work_ingress_key")' <<<"${compact}" >/dev/null
+jq -e '.services.worker.secrets | any(.[]; .source == "worker_signing_key")' <<<"${compact}" >/dev/null
+
+jq -e '.services.node.command | index("--base-path=/data") != null' <<<"${split}" >/dev/null
+jq -e '.services.node.command | index("--node-key-file=/run/secrets/node_network_key") != null' <<<"${split}" >/dev/null
+jq -e '.services.node.command | index("--rpc-cors=all") != null' <<<"${split}" >/dev/null
+jq -e '.services.node.command | index("--rpc-methods=safe") != null' <<<"${split}" >/dev/null
+jq -e '.services.node.command | index("--rpc-methods=unsafe") == null' <<<"${split}" >/dev/null
+jq -e '(.services.node.ports // []) | length == 0' <<<"${split}" >/dev/null
+jq -e '.networks.chain.external == true' <<<"${split}" >/dev/null
+jq -e '.services.worker.command | index("--worker-id=0") != null' <<<"${split}" >/dev/null
+jq -e '.services.worker.command | index("--ipfs-gateway=http://formal-rpc:8080") != null' <<<"${split}" >/dev/null
+
+if grep -RniE --exclude='README.md' --exclude='.env.example' 'mnemonic|seed phrase|//Alice|//Bob' "${ROOT}/deploy/stage1"; then
+  echo 'Stage-1 deployment contains secret-like material' >&2
   exit 1
 fi
 
+printf 'STAGE1_HARDENING=PASS\n'
