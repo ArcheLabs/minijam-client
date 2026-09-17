@@ -7,6 +7,7 @@ use std::{path::PathBuf, sync::Arc, thread, time::Duration};
 
 use clap::Parser;
 use futures::executor::block_on;
+use minijam_protocol::Hash;
 use minijam_worker::{
     check_bundle_gateway_ready, spawn_prometheus_metrics_server, spawn_worker_health_server,
     sr25519_pair_from_uri, BlockingHttpBytesClient, BlockingHttpWorkerChainSource, WorkerConfig,
@@ -14,6 +15,8 @@ use minijam_worker::{
 };
 use minijam_worker_engine::{fetch::IpfsGatewayFetcher, MiniJamWorkBundleDecoder};
 use sp_core::Pair;
+
+const NETWORK_DOMAIN_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Parser)]
 #[command(name = "minijam-worker")]
@@ -244,23 +247,12 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let network_domain = match chain.genesis_hash() {
-        Ok(domain)
-            if config
-                .expected_genesis_hash
-                .is_none_or(|expected| expected == domain) =>
-        {
-            domain
-        }
-        Ok(_) => {
-            eprintln!("worker network domain does not match the configured genesis hash");
-            std::process::exit(2);
-        }
-        Err(error) => {
-            eprintln!("worker network environment is unavailable: {error:?}");
-            std::process::exit(2);
-        }
-    };
+    let network_domain = wait_for_network_domain(
+        &chain,
+        config.expected_genesis_hash,
+        &health,
+        NETWORK_DOMAIN_RETRY_INTERVAL,
+    );
     let network_domain_hex = network_domain
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -304,6 +296,31 @@ fn main() {
             health.set_ready(false);
         } else {
             refresh_health(&health, &config, signing_pair.as_ref());
+        }
+    }
+}
+
+fn wait_for_network_domain(
+    chain: &BlockingHttpWorkerChainSource,
+    expected_genesis_hash: Option<Hash>,
+    health: &WorkerHealth,
+    retry_interval: Duration,
+) -> Hash {
+    health.set_ready(false);
+    loop {
+        match chain.genesis_hash() {
+            Ok(domain) if expected_genesis_hash.is_none_or(|expected| expected == domain) => {
+                return domain;
+            }
+            Ok(_) => {
+                eprintln!("worker network domain does not match the configured genesis hash");
+                std::process::exit(2);
+            }
+            Err(error) => {
+                health.set_ready(false);
+                eprintln!("worker waiting for network environment: {error:?}");
+                thread::sleep(retry_interval);
+            }
         }
     }
 }

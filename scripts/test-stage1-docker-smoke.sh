@@ -114,11 +114,22 @@ wait_for_secret_readable() {
   local path="$2"
   local label="$3"
   local deadline=$((SECONDS + ${MINIJAM_STAGE1_READY_TIMEOUT_SECONDS:-180}))
-  until "${compose[@]}" exec -T "${service}" sh -c 'test -r "$1"' sh "${path}" >/dev/null 2>&1; do
-    (( SECONDS < deadline )) || { echo "${label} is not readable by the container user" >&2; return 1; }
+  while :; do
+    if ! assert_running "${service}"; then
+      echo "${service} exited before ${label} readability could be verified" >&2
+      "${compose[@]}" logs --no-color "${service}" >&2 || true
+      return 1
+    fi
+    if "${compose[@]}" exec -T "${service}" sh -c 'test -r "$1"' sh "${path}" >/dev/null 2>&1; then
+      printf '%s PASS\n' "${label} readable"
+      return 0
+    fi
+    (( SECONDS < deadline )) || {
+      echo "${label} is not readable by the container user" >&2
+      return 1
+    }
     sleep 2
   done
-  printf '%s PASS\n' "${label} readable"
 }
 
 assert_running() {
