@@ -24,6 +24,9 @@ pub trait Host {
     fn storage_write(&mut self, key: Vec<u8>, value: Vec<u8>);
     fn storage_delete(&mut self, key: &[u8]);
     fn yield_value(&mut self, value: Vec<u8>);
+    fn network_domain(&self) -> [u8; 32] {
+        [0; 32]
+    }
     fn log(&mut self, _message: &[u8]) {}
 }
 
@@ -171,6 +174,24 @@ impl<H: Host> HostCallTrait<InterpRegister, InnerInterpMemory> for HostBridge<'_
                 self.0.yield_value(value);
                 set_result(state, 0);
             }
+            MiniJamHostCall::NetworkDomain => {
+                let output = arg(7) as u32;
+                let capacity = arg(8) as usize;
+                let output_size = arg(9) as u32;
+                if capacity < 32 {
+                    set_result(state, 1);
+                } else {
+                    state
+                        .memory
+                        .write_bytes(output, &self.0.network_domain())
+                        .map_err(|_| VmError::Panic)?;
+                    state
+                        .memory
+                        .write_bytes(output_size, &(32u64).to_le_bytes())
+                        .map_err(|_| VmError::Panic)?;
+                    set_result(state, 0);
+                }
+            }
             MiniJamHostCall::Log => {
                 let ptr = arg(7) as u32;
                 let len = arg(8) as usize;
@@ -191,6 +212,27 @@ impl<H: Host> HostCallTrait<InterpRegister, InnerInterpMemory> for HostBridge<'_
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jp_vm_primitives::{
+        host::HostCallTrait,
+        state::{InnerMemory, PagePerm, VmMemory, VmRegister, VmState},
+    };
+
+    struct DomainHost;
+
+    impl Host for DomainHost {
+        fn fetch(&self, _mode: u64, _index: usize) -> Option<&[u8]> {
+            None
+        }
+        fn storage_read(&self, _key: &[u8]) -> Option<&[u8]> {
+            None
+        }
+        fn storage_write(&mut self, _key: Vec<u8>, _value: Vec<u8>) {}
+        fn storage_delete(&mut self, _key: &[u8]) {}
+        fn yield_value(&mut self, _value: Vec<u8>) {}
+        fn network_domain(&self) -> [u8; 32] {
+            [0xaa; 32]
+        }
+    }
 
     #[test]
     fn fnencode_is_available_without_jambda_types() {
@@ -216,5 +258,37 @@ mod tests {
             MiniJamHostCall::try_from(20),
             Ok(MiniJamHostCall::Transfer)
         ));
+    }
+
+    #[test]
+    fn network_domain_hostcall_returns_authoritative_domain_and_size() {
+        let mut host = DomainHost;
+        let mut bridge = HostBridge(&mut host);
+        let mut state = VmState::<InterpRegister, InnerInterpMemory>::empty();
+        assert!(state.memory.set_perm(0x10, 0x20, PagePerm::Write));
+        state.registers.set(7, 0x1_1000);
+        state.registers.set(8, 32);
+        state.registers.set(9, 0x1_2000);
+        let mut gas = 1_000;
+
+        let result = bridge.ecalli(27, &mut state, &mut gas).unwrap();
+
+        assert_eq!(result, ExitKind::Continue);
+        assert_eq!(state.registers.get_a0(), 0);
+        assert!(state.memory.check_write(0x1_1000, 32));
+        assert!(state.memory.check_write(0x1_2000, 8));
+    }
+
+    #[test]
+    fn network_domain_hostcall_rejects_short_capacity() {
+        let mut host = DomainHost;
+        let mut bridge = HostBridge(&mut host);
+        let mut state = VmState::<InterpRegister, InnerInterpMemory>::empty();
+        state.registers.set(8, 31);
+        let mut gas = 1_000;
+
+        bridge.ecalli(27, &mut state, &mut gas).unwrap();
+
+        assert_eq!(state.registers.get_a0(), 1);
     }
 }

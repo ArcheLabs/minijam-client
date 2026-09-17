@@ -244,6 +244,28 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let network_domain = match chain.genesis_hash() {
+        Ok(domain)
+            if config
+                .expected_genesis_hash
+                .is_none_or(|expected| expected == domain) =>
+        {
+            domain
+        }
+        Ok(_) => {
+            eprintln!("worker network domain does not match the configured genesis hash");
+            std::process::exit(2);
+        }
+        Err(error) => {
+            eprintln!("worker network environment is unavailable: {error:?}");
+            std::process::exit(2);
+        }
+    };
+    let network_domain_hex = network_domain
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    eprintln!("minijam worker network_domain=0x{network_domain_hex}");
     refresh_health(&health, &config, signing_pair.as_ref());
     let fetcher = IpfsGatewayFetcher::new(BlockingHttpBytesClient, config.ipfs_gateway.clone());
     let mut runner = WorkerRunner::with_statuses(
@@ -252,7 +274,8 @@ fn main() {
         MiniJamWorkBundleDecoder,
         config.max_bundle_bytes,
         statuses,
-    );
+    )
+    .with_network_domain(network_domain);
 
     if once {
         if let Err(error) = poll_and_persist(

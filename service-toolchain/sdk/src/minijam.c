@@ -163,6 +163,14 @@ void minijam_yield(const void *value, size_t size) {
                            0, 0, 0);
 }
 
+minijam_status minijam_network_domain(uint8_t *output, size_t capacity,
+                                      size_t *output_size) {
+  uint64_t result = minijam_host_call6(
+      MINIJAM_HOST_NETWORK_DOMAIN, (uintptr_t)output, capacity,
+      (uintptr_t)output_size, 0, 0, 0);
+  return result == 0 ? MINIJAM_OK : MINIJAM_HOST_ERROR;
+}
+
 minijam_refine_output minijam_refine_ok(const void *value, size_t size) {
   minijam_refine_output output = {value, size};
   return output;
