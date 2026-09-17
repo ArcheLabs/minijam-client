@@ -64,11 +64,24 @@ assert_node_host_port_published() {
 
 wait_for_node() {
   local deadline=$((SECONDS + ${MINIJAM_STAGE1_READY_TIMEOUT_SECONDS:-180}))
-  until curl -fsS --max-time 3 \
-      -H 'content-type: application/json' \
-      --data '{"id":1,"jsonrpc":"2.0","method":"system_health","params":[]}' \
-      http://127.0.0.1:9944 | jq -e '.result != null' >/dev/null; do
-    (( SECONDS < deadline )) || { echo 'Stage-1 node JSON-RPC did not become functional' >&2; return 1; }
+  local node_container
+  node_container="$("${compose[@]}" ps -q node 2>/dev/null || true)"
+  test -n "${node_container}" || { echo 'Stage-1 node container was not created' >&2; return 1; }
+  while :; do
+    if [[ "$(docker inspect --format '{{.State.Running}}' "${node_container}" 2>/dev/null || true)" != true ]]; then
+      echo 'Stage-1 node exited before JSON-RPC became functional' >&2
+      return 1
+    fi
+    if curl -fsS --max-time 3 \
+        -H 'content-type: application/json' \
+        --data '{"id":1,"jsonrpc":"2.0","method":"system_health","params":[]}' \
+        http://127.0.0.1:9944 | jq -e '.result != null' >/dev/null; then
+      return 0
+    fi
+    (( SECONDS < deadline )) || {
+      echo 'Stage-1 node JSON-RPC did not become functional' >&2
+      return 1
+    }
     sleep 2
   done
 }
