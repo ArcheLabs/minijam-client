@@ -199,6 +199,16 @@ fn stage0_endowed_accounts() -> Vec<AccountId> {
         .collect()
 }
 
+fn stage1_work_e2e_endowed_accounts() -> Vec<AccountId> {
+    let mut accounts = stage0_endowed_accounts();
+    for (account, _, _) in development_workers() {
+        if !accounts.iter().any(|endowed| endowed == &account) {
+            accounts.push(account);
+        }
+    }
+    accounts
+}
+
 pub(crate) fn system_service_zero_protocol_state() -> Vec<(Vec<u8>, Vec<u8>)> {
     system_service_genesis_state(SystemServiceGenesisConfig {
         code_blob: SYSTEM_SERVICE_BLOB.to_vec(),
@@ -280,6 +290,42 @@ pub fn stage1_config_genesis(ingress_relayer: AccountId, allocation_relayer: Acc
         stage0_endowed_accounts(),
         AccountId::new(STAGE0_SUDO_ACCOUNT),
         stage1_workers(),
+        ingress_relayer,
+        allocation_relayer,
+    )
+}
+
+/// Local/CI-only Stage-1 genesis with development consensus keys.
+pub fn stage1_e2e_config_genesis(
+    ingress_relayer: AccountId,
+    allocation_relayer: AccountId,
+) -> Value {
+    testnet_genesis(
+        vec![(
+            Sr25519Keyring::Alice.public().into(),
+            sp_keyring::Ed25519Keyring::Alice.public().into(),
+        )],
+        stage0_endowed_accounts(),
+        AccountId::new(STAGE0_SUDO_ACCOUNT),
+        stage0_workers(),
+        ingress_relayer,
+        allocation_relayer,
+    )
+}
+
+/// Local/CI-only Stage-1 Work E2E genesis.
+pub fn stage1_work_e2e_config_genesis(
+    ingress_relayer: AccountId,
+    allocation_relayer: AccountId,
+) -> Value {
+    testnet_genesis(
+        vec![(
+            Sr25519Keyring::Alice.public().into(),
+            sp_keyring::Ed25519Keyring::Alice.public().into(),
+        )],
+        stage1_work_e2e_endowed_accounts(),
+        AccountId::new(STAGE0_SUDO_ACCOUNT),
+        development_workers(),
         ingress_relayer,
         allocation_relayer,
     )
