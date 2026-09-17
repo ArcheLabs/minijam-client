@@ -210,8 +210,9 @@ mod tests {
     fn stage0_plain_and_raw_specs_are_isolated_by_relayer() {
         let stage0_relayer = AccountId::new([0x42; 32]);
         let other_relayer = AccountId::new([0x43; 32]);
-        let local_relayer =
-            AccountId::new(minijam_runtime::genesis_config_presets::LOCAL_INGRESS_RELAYER_ACCOUNT);
+        let local_relayer = AccountId::new(
+            minijam_runtime::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT,
+        );
 
         let patch = stage0_config_genesis(stage0_relayer.clone());
         let expected = serde_json::to_value(stage0_relayer.clone()).unwrap();
