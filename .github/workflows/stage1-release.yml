@@ -122,6 +122,9 @@ jobs:
             echo "publish=${publish}"
           } >> "${GITHUB_OUTPUT}"
 
+      - name: Prepare native build dependencies
+        run: bash ./scripts/install-native-build-dependencies.sh
+
       - name: Check Stage-1 source gates
         run: |
           ./scripts/check-stage1-core-boundary.sh

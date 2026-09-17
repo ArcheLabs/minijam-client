@@ -106,9 +106,6 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Check Stage-1 node compilation
-        run: cargo check --locked -p minijam-node
-
       - name: Run core fast gate
         run: |
           cargo test -p pallet-minijam
@@ -194,6 +191,12 @@ jobs:
         run: |
           ./scripts/check-stage1-boundary.sh
           ./scripts/check-release-secret-hygiene.sh
+
+      - name: Prepare native build dependencies
+        run: bash ./scripts/install-native-build-dependencies.sh
+
+      - name: Check Stage-1 node compilation
+        run: cargo check --locked -p minijam-node
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
