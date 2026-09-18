@@ -34,12 +34,9 @@ impl SubstrateCli for Cli {
 
     fn load_spec(&self, id: &str) -> Result<Box<dyn sc_service::ChainSpec>, String> {
         Ok(match id {
-            "dev" => Box::new(chain_spec::development_chain_spec()?),
-            "" | "local" => Box::new(chain_spec::local_chain_spec()?),
-            "stage0" => Box::new(chain_spec::stage0_chain_spec()?),
-            "stage1" => Box::new(chain_spec::stage1_chain_spec()?),
-            "stage1-e2e" => Box::new(chain_spec::stage1_e2e_chain_spec()?),
-            "stage1-work-e2e" => Box::new(chain_spec::stage1_work_e2e_chain_spec()?),
+            "dev" | "" | "local" => Box::new(chain_spec::local_chain_spec()?),
+            "testnet" => Box::new(chain_spec::testnet_chain_spec()?),
+            "mainnet" => return Err("MiniJAM mainnet is not published".into()),
             path => Box::new(chain_spec::ChainSpec::from_json_file(
                 std::path::PathBuf::from(path),
             )?),

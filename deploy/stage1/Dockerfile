@@ -31,9 +31,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       -p minijam-node \
       -p minijam-worker \
       -p minijam-formal-rpc \
+      -p minijam-launcher \
     && install -D /cargo-target/release/minijam-node /out/minijam-node \
     && install -D /cargo-target/release/minijam-worker /out/minijam-worker \
-    && install -D /cargo-target/release/minijam-formal-rpc /out/minijam-formal-rpc
+    && install -D /cargo-target/release/minijam-formal-rpc /out/minijam-formal-rpc \
+    && install -D /cargo-target/release/minijam /out/minijam
 
 FROM builder AS tests
 
@@ -44,7 +46,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo test --locked --release \
       -p minijam-node \
       -p minijam-worker \
-      -p minijam-formal-rpc
+      -p minijam-formal-rpc \
+      -p minijam-launcher
 
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS runtime
 
@@ -77,3 +80,12 @@ COPY --from=builder /out/minijam-formal-rpc /usr/local/bin/minijam-formal-rpc
 RUN install -d -o minijam -g minijam /bundles
 USER minijam
 ENTRYPOINT ["minijam-formal-rpc"]
+
+FROM runtime AS minijam
+COPY --from=builder /out/minijam /usr/local/bin/minijam
+COPY --from=builder /out/minijam-node /usr/local/bin/minijam-node
+COPY --from=builder /out/minijam-worker /usr/local/bin/minijam-worker
+COPY --from=builder /out/minijam-formal-rpc /usr/local/bin/minijam-formal-rpc
+RUN install -d -o minijam -g minijam /data/node /data/worker /data/bundles
+USER minijam
+ENTRYPOINT ["minijam"]

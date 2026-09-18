@@ -2,7 +2,7 @@
 
 Generated chain specifications are release artifacts, not source files.
 
-The Stage-1 release workflow generates `stage1.json` and `stage1-raw.json`
+The Stage-1 release workflow generates `testnet.json` and `testnet-raw.json`
 from the exact candidate node image, records their SHA-256 values in the
 release manifest, and uploads them with the release metadata. Deployments must
 use the generated artifact that matches the node image digest.

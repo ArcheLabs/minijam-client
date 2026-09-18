@@ -19,51 +19,65 @@ use crate::{
 const DEV_BALANCE: Balance = 1_000_000 * UNIT;
 const REWARD_POOL_BALANCE: Balance = 1_000_000 * UNIT;
 const SYSTEM_SERVICE_BLOB: &[u8] = include_bytes!("../../artifacts/system-service.blob");
-pub const STAGE0_RUNTIME_PRESET: &str = "stage0";
-
-/// Known deterministic local-development identity derived from the seed `0x92` repeated 32 times.
-/// Never use as a public Stage 0 Relayer.
-pub const LOCAL_PLAYGROUND_RELAYER_ACCOUNT: [u8; 32] = [
+/// Deterministic local relayer identity derived from the seed `0x92` repeated
+/// 32 times. The private seed is not part of the repository.
+pub const LOCAL_INGRESS_RELAYER_ACCOUNT: [u8; 32] = [
     0x90, 0x15, 0x78, 0xa4, 0x17, 0x30, 0x0a, 0xa0, 0xae, 0x53, 0x3b, 0x5b, 0xd0, 0xe9, 0xaf, 0x48,
     0x9a, 0x4c, 0xc4, 0xa6, 0xf3, 0x89, 0x99, 0xb7, 0x62, 0x83, 0x86, 0x70, 0x87, 0x73, 0x82, 0x09,
 ];
 
-const STAGE0_AURA_AUTHORITIES: [[u8; 32]; 1] = [[
+pub const LOCAL_ALLOCATION_RELAYER_ACCOUNT: [u8; 32] = LOCAL_INGRESS_RELAYER_ACCOUNT;
+
+/// The public relayer identity used by the currently deployed testnet. The
+/// corresponding operator seed is intentionally kept outside the repository.
+pub const TESTNET_INGRESS_RELAYER_ACCOUNT: [u8; 32] = LOCAL_INGRESS_RELAYER_ACCOUNT;
+pub const TESTNET_ALLOCATION_RELAYER_ACCOUNT: [u8; 32] = LOCAL_ALLOCATION_RELAYER_ACCOUNT;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityIdentity {
+    pub aura: [u8; 32],
+    pub grandpa: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkerIdentity {
+    pub account: [u8; 32],
+    pub session_key: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Stage1GenesisConfig {
+    pub authority: AuthorityIdentity,
+    pub worker: WorkerIdentity,
+    pub ingress_relayer: [u8; 32],
+    pub allocation_relayer: [u8; 32],
+    pub sudo: [u8; 32],
+    pub faucet: [u8; 32],
+}
+
+const TESTNET_AUTHORITY_AURA: [[u8; 32]; 1] = [[
     0x66, 0xd0, 0x9c, 0xb4, 0xdf, 0xf3, 0x44, 0xd5, 0xa6, 0xb0, 0x7c, 0xa9, 0x90, 0x9d, 0xc0, 0x5f,
     0x46, 0xcc, 0xda, 0x66, 0x87, 0xc5, 0x2d, 0x7d, 0xad, 0x99, 0x83, 0xc7, 0xfe, 0x89, 0x16, 0x19,
 ]];
-const STAGE0_GRANDPA_AUTHORITIES: [[u8; 32]; 1] = [[
+const TESTNET_AUTHORITY_GRANDPA: [[u8; 32]; 1] = [[
     0x4e, 0x0c, 0xa8, 0x04, 0x2d, 0x49, 0xc5, 0x95, 0xcf, 0x51, 0x10, 0x3a, 0x96, 0x31, 0x3b, 0xcf,
     0x72, 0xb3, 0x7c, 0xc1, 0x78, 0xb7, 0x61, 0x53, 0x82, 0xe9, 0x35, 0x8f, 0xd9, 0x5b, 0xee, 0x0d,
 ]];
-const STAGE0_WORKER_ACCOUNTS: [[u8; 32]; 3] = [
-    [
-        0x32, 0x6c, 0x5d, 0x73, 0x92, 0x0e, 0x92, 0x46, 0x43, 0x86, 0xba, 0x7a, 0x3a, 0xc1, 0x95,
-        0x22, 0xb8, 0x55, 0xed, 0xc9, 0x50, 0x88, 0xb2, 0x93, 0x3f, 0xa5, 0x47, 0x0f, 0xca, 0x94,
-        0x1a, 0x0f,
-    ],
-    [
-        0xdc, 0xf2, 0x8e, 0x11, 0x5d, 0x43, 0x96, 0x63, 0xa1, 0x2e, 0x8c, 0xba, 0x10, 0xe7, 0x6b,
-        0xc6, 0xe9, 0x50, 0x34, 0x69, 0xad, 0x27, 0xab, 0x03, 0xe1, 0x14, 0x0d, 0xda, 0xc9, 0x31,
-        0xcc, 0x53,
-    ],
-    [
-        0xce, 0x5c, 0x3f, 0x32, 0x90, 0xa1, 0xac, 0x97, 0xf3, 0x14, 0x5d, 0x96, 0xc7, 0xa4, 0x9d,
-        0x14, 0xa8, 0xb6, 0x70, 0xf4, 0x65, 0xa1, 0xde, 0x88, 0xd7, 0xc5, 0x20, 0xcb, 0x6d, 0x11,
-        0x27, 0x3d,
-    ],
+const TESTNET_WORKER_ACCOUNT: [u8; 32] = [
+    0x32, 0x6c, 0x5d, 0x73, 0x92, 0x0e, 0x92, 0x46, 0x43, 0x86, 0xba, 0x7a, 0x3a, 0xc1, 0x95, 0x22,
+    0xb8, 0x55, 0xed, 0xc9, 0x50, 0x88, 0xb2, 0x93, 0x3f, 0xa5, 0x47, 0x0f, 0xca, 0x94, 0x1a, 0x0f,
 ];
-const STAGE0_WORKER_SESSION_KEYS: [[u8; 32]; 3] = STAGE0_WORKER_ACCOUNTS;
-pub(crate) const STAGE0_FAUCET_ACCOUNT: [u8; 32] = [
+const TESTNET_WORKER_SESSION_KEY: [u8; 32] = TESTNET_WORKER_ACCOUNT;
+pub(crate) const TESTNET_FAUCET_ACCOUNT: [u8; 32] = [
     0x1a, 0x69, 0x04, 0x44, 0xd1, 0x60, 0xa1, 0xf6, 0x32, 0x81, 0x20, 0x3e, 0xde, 0x44, 0x9b, 0xa9,
     0x96, 0xc5, 0x60, 0xb7, 0x98, 0x0e, 0x40, 0x43, 0x75, 0x76, 0x5f, 0x2a, 0xea, 0xcd, 0x88, 0x6a,
 ];
-const STAGE0_SUDO_ACCOUNT: [u8; 32] = [
+const TESTNET_SUDO_ACCOUNT: [u8; 32] = [
     0x64, 0xda, 0x53, 0x90, 0x20, 0xcd, 0x74, 0x3f, 0xed, 0x81, 0xed, 0x5d, 0xe9, 0x22, 0xf0, 0xb3,
     0xe7, 0x76, 0x9b, 0xf3, 0xb7, 0x7a, 0x95, 0x3a, 0xf3, 0xc0, 0x77, 0x9e, 0xce, 0xfd, 0x7f, 0x23,
 ];
 
-fn testnet_genesis(
+fn build_genesis(
     initial_authorities: Vec<(AuraId, GrandpaId)>,
     mut endowed_accounts: Vec<AccountId>,
     root: AccountId,
@@ -73,7 +87,6 @@ fn testnet_genesis(
 ) -> Value {
     let reward_pool = AccountId::new([9; 32]);
     let fuel_escrow = AccountId::new([7; 32]);
-    let playground_relayer = ingress_relayer;
     if !endowed_accounts
         .iter()
         .any(|account| account == &reward_pool)
@@ -88,9 +101,9 @@ fn testnet_genesis(
     }
     if !endowed_accounts
         .iter()
-        .any(|account| account == &playground_relayer)
+        .any(|account| account == &ingress_relayer)
     {
-        endowed_accounts.push(playground_relayer.clone());
+        endowed_accounts.push(ingress_relayer.clone());
     }
     if !endowed_accounts
         .iter()
@@ -132,7 +145,7 @@ fn testnet_genesis(
         mini_jam: MiniJamConfig {
             protocol_state: system_service_zero_protocol_state(),
             service_fuel: Vec::new(),
-            ingress_relayer: Some(playground_relayer.clone()),
+            ingress_relayer: Some(ingress_relayer.clone()),
             allocation_relayer: Some(allocation_relayer),
             _phantom: Default::default(),
         },
@@ -141,72 +154,6 @@ fn testnet_genesis(
             _phantom: Default::default(),
         },
     })
-}
-
-fn development_workers() -> Vec<(AccountId, [u8; 32], Balance)> {
-    vec![
-        (
-            Sr25519Keyring::Alice.to_account_id(),
-            Sr25519Keyring::Alice.public().0,
-            1_000 * UNIT,
-        ),
-        (
-            Sr25519Keyring::Bob.to_account_id(),
-            Sr25519Keyring::Bob.public().0,
-            1_000 * UNIT,
-        ),
-        (
-            Sr25519Keyring::Charlie.to_account_id(),
-            Sr25519Keyring::Charlie.public().0,
-            1_000 * UNIT,
-        ),
-    ]
-}
-
-fn stage0_authorities() -> Vec<(AuraId, GrandpaId)> {
-    STAGE0_AURA_AUTHORITIES
-        .iter()
-        .copied()
-        .zip(STAGE0_GRANDPA_AUTHORITIES.iter().copied())
-        .map(|(aura, grandpa)| {
-            (
-                AuraId::from(sr25519::Public::from_raw(aura)),
-                GrandpaId::from(ed25519::Public::from_raw(grandpa)),
-            )
-        })
-        .collect()
-}
-
-fn stage0_workers() -> Vec<(AccountId, [u8; 32], Balance)> {
-    STAGE0_WORKER_ACCOUNTS
-        .iter()
-        .copied()
-        .zip(STAGE0_WORKER_SESSION_KEYS.iter().copied())
-        .map(|(account, session_key)| (AccountId::new(account), session_key, 1_000 * UNIT))
-        .collect()
-}
-
-fn stage1_workers() -> Vec<(AccountId, [u8; 32], Balance)> {
-    stage0_workers().into_iter().take(1).collect()
-}
-
-fn stage0_endowed_accounts() -> Vec<AccountId> {
-    STAGE0_WORKER_ACCOUNTS
-        .iter()
-        .copied()
-        .chain([STAGE0_SUDO_ACCOUNT, STAGE0_FAUCET_ACCOUNT])
-        .map(AccountId::new)
-        .collect()
-}
-
-fn stage1_work_e2e_endowed_accounts() -> Vec<AccountId> {
-    let mut accounts = stage0_endowed_accounts();
-    for (account, _, _) in development_workers() {
-        if !accounts.iter().any(|endowed| endowed == &account) {
-            accounts.push(account);
-        }
-    }
-    accounts
 }
 
 pub(crate) fn system_service_zero_protocol_state() -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -225,130 +172,88 @@ pub(crate) fn system_service_zero_protocol_state() -> Vec<(Vec<u8>, Vec<u8>)> {
     .collect()
 }
 
-pub fn development_config_genesis() -> Value {
-    testnet_genesis(
-        vec![(
-            Sr25519Keyring::Alice.public().into(),
-            sp_keyring::Ed25519Keyring::Alice.public().into(),
-        )],
-        vec![
-            Sr25519Keyring::Alice.to_account_id(),
-            Sr25519Keyring::Bob.to_account_id(),
-            Sr25519Keyring::Charlie.to_account_id(),
-            Sr25519Keyring::Dave.to_account_id(),
-            Sr25519Keyring::Eve.to_account_id(),
-            Sr25519Keyring::Ferdie.to_account_id(),
-            Sr25519Keyring::AliceStash.to_account_id(),
-            Sr25519Keyring::BobStash.to_account_id(),
-        ],
-        Sr25519Keyring::Alice.to_account_id(),
-        development_workers(),
-        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
-        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
-    )
+pub fn local_stage1_config() -> Stage1GenesisConfig {
+    Stage1GenesisConfig {
+        authority: AuthorityIdentity {
+            aura: Sr25519Keyring::Alice.public().0,
+            grandpa: sp_keyring::Ed25519Keyring::Alice.public().0,
+        },
+        worker: WorkerIdentity {
+            account: Sr25519Keyring::Bob.public().0,
+            session_key: Sr25519Keyring::Bob.public().0,
+        },
+        ingress_relayer: LOCAL_INGRESS_RELAYER_ACCOUNT,
+        allocation_relayer: LOCAL_ALLOCATION_RELAYER_ACCOUNT,
+        sudo: Sr25519Keyring::Charlie.public().0,
+        faucet: Sr25519Keyring::Dave.public().0,
+    }
 }
 
-pub fn local_config_genesis() -> Value {
-    testnet_genesis(
-        vec![
-            (
-                Sr25519Keyring::Alice.public().into(),
-                sp_keyring::Ed25519Keyring::Alice.public().into(),
-            ),
-            (
-                Sr25519Keyring::Bob.public().into(),
-                sp_keyring::Ed25519Keyring::Bob.public().into(),
-            ),
-        ],
-        Sr25519Keyring::iter()
-            .filter(|key| key != &Sr25519Keyring::One && key != &Sr25519Keyring::Two)
-            .map(|key| key.to_account_id())
-            .collect::<Vec<_>>(),
-        Sr25519Keyring::Alice.to_account_id(),
-        development_workers(),
-        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
-        AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT),
-    )
+pub fn testnet_stage1_config() -> Stage1GenesisConfig {
+    Stage1GenesisConfig {
+        authority: AuthorityIdentity {
+            aura: TESTNET_AUTHORITY_AURA[0],
+            grandpa: TESTNET_AUTHORITY_GRANDPA[0],
+        },
+        worker: WorkerIdentity {
+            account: TESTNET_WORKER_ACCOUNT,
+            session_key: TESTNET_WORKER_SESSION_KEY,
+        },
+        ingress_relayer: TESTNET_INGRESS_RELAYER_ACCOUNT,
+        allocation_relayer: TESTNET_ALLOCATION_RELAYER_ACCOUNT,
+        sudo: TESTNET_SUDO_ACCOUNT,
+        faucet: TESTNET_FAUCET_ACCOUNT,
+    }
 }
 
-pub fn stage0_config_genesis(ingress_relayer: AccountId) -> Value {
-    testnet_genesis(
-        stage0_authorities(),
-        stage0_endowed_accounts(),
-        AccountId::new(STAGE0_SUDO_ACCOUNT),
-        stage0_workers(),
+/// The sole Stage-1 genesis builder. Network-specific differences are limited
+/// to the identities supplied in `Stage1GenesisConfig`.
+pub fn stage1_genesis(config: Stage1GenesisConfig) -> Value {
+    let authority = AccountId::new(config.authority.aura);
+    let worker = AccountId::new(config.worker.account);
+    let sudo = AccountId::new(config.sudo);
+    let faucet = AccountId::new(config.faucet);
+    let ingress_relayer = AccountId::new(config.ingress_relayer);
+    let allocation_relayer = AccountId::new(config.allocation_relayer);
+    let mut endowed_accounts = Vec::new();
+    for account in [
+        authority.clone(),
+        worker.clone(),
+        sudo.clone(),
+        faucet.clone(),
         ingress_relayer.clone(),
-        ingress_relayer,
-    )
-}
+        allocation_relayer.clone(),
+    ] {
+        if !endowed_accounts.iter().any(|existing| existing == &account) {
+            endowed_accounts.push(account);
+        }
+    }
 
-/// Fresh Stage-1 genesis. The historically documented public funding account
-/// is merely endowed through Balances; no runtime faucet semantics exist.
-pub fn stage1_config_genesis(ingress_relayer: AccountId, allocation_relayer: AccountId) -> Value {
-    testnet_genesis(
-        stage0_authorities(),
-        stage0_endowed_accounts(),
-        AccountId::new(STAGE0_SUDO_ACCOUNT),
-        stage1_workers(),
-        ingress_relayer,
-        allocation_relayer,
-    )
-}
-
-/// Local/CI-only Stage-1 genesis with development consensus keys.
-pub fn stage1_e2e_config_genesis(
-    ingress_relayer: AccountId,
-    allocation_relayer: AccountId,
-) -> Value {
-    testnet_genesis(
+    build_genesis(
         vec![(
-            Sr25519Keyring::Alice.public().into(),
-            sp_keyring::Ed25519Keyring::Alice.public().into(),
+            AuraId::from(sr25519::Public::from_raw(config.authority.aura)),
+            GrandpaId::from(ed25519::Public::from_raw(config.authority.grandpa)),
         )],
-        stage0_endowed_accounts(),
-        AccountId::new(STAGE0_SUDO_ACCOUNT),
-        stage0_workers(),
+        endowed_accounts,
+        AccountId::new(config.sudo),
+        vec![(worker, config.worker.session_key, 1_000 * UNIT)],
         ingress_relayer,
         allocation_relayer,
     )
 }
 
-/// Local/CI-only Stage-1 Work E2E genesis.
-pub fn stage1_work_e2e_config_genesis(
-    ingress_relayer: AccountId,
-    allocation_relayer: AccountId,
-) -> Value {
-    testnet_genesis(
-        vec![(
-            Sr25519Keyring::Alice.public().into(),
-            sp_keyring::Ed25519Keyring::Alice.public().into(),
-        )],
-        stage1_work_e2e_endowed_accounts(),
-        AccountId::new(STAGE0_SUDO_ACCOUNT),
-        development_workers(),
-        ingress_relayer,
-        allocation_relayer,
-    )
+pub fn local_genesis() -> Value {
+    stage1_genesis(local_stage1_config())
 }
 
-pub fn season2_config_genesis(ingress_relayer: AccountId, allocation_relayer: AccountId) -> Value {
-    testnet_genesis(
-        stage0_authorities(),
-        stage0_endowed_accounts(),
-        AccountId::new(STAGE0_SUDO_ACCOUNT),
-        stage0_workers().into_iter().take(1).collect(),
-        ingress_relayer,
-        allocation_relayer,
-    )
+pub fn testnet_genesis() -> Value {
+    stage1_genesis(testnet_stage1_config())
 }
 
 pub fn get_preset(id: &PresetId) -> Option<Vec<u8>> {
     let patch = match id.as_ref() {
-        sp_genesis_builder::DEV_RUNTIME_PRESET => development_config_genesis(),
-        sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET => local_config_genesis(),
-        // Stage 0 must be constructed by the node with an explicit public Relayer key.
-        // A runtime preset has no safe channel for that required input.
-        STAGE0_RUNTIME_PRESET => return None,
+        sp_genesis_builder::DEV_RUNTIME_PRESET
+        | sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET => local_genesis(),
         _ => return None,
     };
 
@@ -453,8 +358,8 @@ mod tests {
     }
 
     #[test]
-    fn development_genesis_seeds_stage0_service_and_workers() {
-        let patch = development_config_genesis();
+    fn local_genesis_seeds_stage1_service_and_one_worker() {
+        let patch = local_genesis();
         let mini_jam = section(&patch, "mini_jam", "miniJam");
         let mini_jam_workers = section(&patch, "mini_jam_workers", "miniJamWorkers");
 
@@ -471,13 +376,13 @@ mod tests {
             .expect("service fuel must be a JSON array");
         assert!(
             service_fuel.is_empty(),
-            "Season 2 does not seed Service Fuel"
+            "Stage-1 genesis does not seed Service Fuel"
         );
 
         let workers = field(mini_jam_workers, "workers", "workers")
             .as_array()
             .expect("workers must be a JSON array");
-        assert_eq!(workers.len(), 3);
+        assert_eq!(workers.len(), 1);
         assert!(workers.iter().all(|entry| {
             entry.as_array().is_some_and(|worker| {
                 worker.len() == 3 && worker.get(2) == Some(&Value::from(1_000 * UNIT))
@@ -487,7 +392,7 @@ mod tests {
 
     #[test]
     fn stage1_genesis_uses_committed_service0_protocol_state() {
-        let patch = stage1_config_genesis(AccountId::new([0x11; 32]), AccountId::new([0x22; 32]));
+        let patch = testnet_genesis();
         let mini_jam = section(&patch, "mini_jam", "miniJam");
         let protocol_state = field(mini_jam, "protocol_state", "protocolState")
             .as_array()
@@ -498,13 +403,12 @@ mod tests {
     }
 
     #[test]
-    fn stage1_genesis_registers_only_stage0_worker_zero() {
-        let workers = stage1_workers();
-        assert_eq!(workers.len(), 1);
-        assert_eq!(workers[0].0, AccountId::new(STAGE0_WORKER_ACCOUNTS[0]));
-        assert_eq!(workers[0].1, STAGE0_WORKER_SESSION_KEYS[0]);
+    fn stage1_genesis_registers_only_one_testnet_worker() {
+        let config = testnet_stage1_config();
+        assert_eq!(config.worker.account, TESTNET_WORKER_ACCOUNT);
+        assert_eq!(config.worker.session_key, TESTNET_WORKER_SESSION_KEY);
 
-        let patch = stage1_config_genesis(AccountId::new([0x11; 32]), AccountId::new([0x22; 32]));
+        let patch = testnet_genesis();
         let registered = field(
             section(&patch, "mini_jam_workers", "miniJamWorkers"),
             "workers",
@@ -516,8 +420,8 @@ mod tests {
     }
 
     #[test]
-    fn development_genesis_endows_reward_pool_and_fuel_escrow() {
-        let patch = development_config_genesis();
+    fn local_genesis_endows_reward_pool_and_fuel_escrow() {
+        let patch = local_genesis();
         let balances = field(
             section(&patch, "balances", "balances"),
             "balances",
@@ -842,8 +746,8 @@ mod tests {
     }
 
     #[test]
-    fn stage0_genesis_uses_release_network_identities() {
-        let patch = stage0_config_genesis(AccountId::new([0x99; 32]));
+    fn testnet_genesis_uses_fixed_network_identities() {
+        let patch = testnet_genesis();
         let aura = field(
             section(&patch, "aura", "aura"),
             "authorities",
@@ -868,8 +772,8 @@ mod tests {
 
         assert_eq!(aura.len(), 1);
         assert_eq!(grandpa.len(), 1);
-        assert_eq!(workers.len(), 3);
-        assert_eq!(STAGE0_WORKER_ACCOUNTS, STAGE0_WORKER_SESSION_KEYS);
+        assert_eq!(workers.len(), 1);
+        assert_eq!(TESTNET_WORKER_ACCOUNT, TESTNET_WORKER_SESSION_KEY);
 
         let development_accounts = [
             Sr25519Keyring::Alice.to_account_id(),
@@ -887,7 +791,7 @@ mod tests {
                 .expect("worker account must be present");
             assert!(
                 !development_accounts.contains(account),
-                "stage0 worker accounts must not use development keyring accounts"
+                "testnet worker accounts must not use development keyring accounts"
             );
         }
 
@@ -904,9 +808,9 @@ mod tests {
     }
 
     #[test]
-    fn development_and_local_genesis_use_only_the_known_local_relayer() {
-        let local = serde_json::to_value(AccountId::new(LOCAL_PLAYGROUND_RELAYER_ACCOUNT)).unwrap();
-        for patch in [development_config_genesis(), local_config_genesis()] {
+    fn local_and_testnet_genesis_use_fixed_relayer_identities() {
+        let local = serde_json::to_value(AccountId::new(LOCAL_INGRESS_RELAYER_ACCOUNT)).unwrap();
+        for patch in [local_genesis(), testnet_genesis()] {
             assert_eq!(
                 field(
                     section(&patch, "mini_jam", "miniJam"),
@@ -917,19 +821,14 @@ mod tests {
             );
         }
 
-        let stage0 = stage0_config_genesis(AccountId::new([0x42; 32]));
-        assert_ne!(
-            field(
-                section(&stage0, "mini_jam", "miniJam"),
-                "ingress_relayer",
-                "ingressRelayer"
-            ),
-            &local
+        assert_eq!(
+            testnet_stage1_config().ingress_relayer,
+            TESTNET_INGRESS_RELAYER_ACCOUNT
         );
     }
 
     #[test]
-    fn stage0_genesis_uses_release_faucet_and_sudo_accounts() {
+    fn testnet_genesis_uses_fixed_faucet_and_sudo_accounts() {
         const EXPECTED_FAUCET: [u8; 32] = [
             0x1a, 0x69, 0x04, 0x44, 0xd1, 0x60, 0xa1, 0xf6, 0x32, 0x81, 0x20, 0x3e, 0xde, 0x44,
             0x9b, 0xa9, 0x96, 0xc5, 0x60, 0xb7, 0x98, 0x0e, 0x40, 0x43, 0x75, 0x76, 0x5f, 0x2a,
@@ -941,9 +840,9 @@ mod tests {
             0xce, 0xfd, 0x7f, 0x23,
         ];
 
-        assert_eq!(STAGE0_FAUCET_ACCOUNT, EXPECTED_FAUCET);
-        assert_eq!(STAGE0_SUDO_ACCOUNT, EXPECTED_SUDO);
-        let patch = stage0_config_genesis(AccountId::new([0x99; 32]));
+        assert_eq!(TESTNET_FAUCET_ACCOUNT, EXPECTED_FAUCET);
+        assert_eq!(TESTNET_SUDO_ACCOUNT, EXPECTED_SUDO);
+        let patch = testnet_genesis();
         let sudo = section(&patch, "sudo", "sudo");
         assert_eq!(
             field(sudo, "key", "key"),
@@ -976,10 +875,15 @@ mod tests {
     }
 
     #[test]
-    fn stage0_requires_node_supplied_relayer_and_is_not_runtime_preset() {
-        assert!(!preset_names()
+    fn local_is_the_only_runtime_genesis_for_dev_and_local_presets() {
+        assert!(preset_names()
             .iter()
-            .any(|preset| preset.as_str() == STAGE0_RUNTIME_PRESET));
-        assert!(get_preset(&PresetId::from(STAGE0_RUNTIME_PRESET)).is_none());
+            .any(|preset| preset.as_str() == sp_genesis_builder::DEV_RUNTIME_PRESET));
+        assert_eq!(
+            get_preset(&PresetId::from(sp_genesis_builder::DEV_RUNTIME_PRESET)),
+            get_preset(&PresetId::from(
+                sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET
+            ))
+        );
     }
 }

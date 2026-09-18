@@ -20,7 +20,7 @@ const NETWORK_DOMAIN_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Parser)]
 #[command(name = "minijam-worker")]
-#[command(about = "MiniJAM stage-0 worker daemon")]
+#[command(about = "MiniJAM Stage-1 worker daemon")]
 struct Cli {
     #[arg(long)]
     config: Option<PathBuf>,

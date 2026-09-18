@@ -24,7 +24,6 @@ render_compose() {
   MINIJAM_WORKER_SEED=0x2222222222222222222222222222222222222222222222222222222222222222 \
   MINIJAM_FORMAL_RPC_RELAYER_URI=0x3333333333333333333333333333333333333333333333333333333333333333 \
   MINIJAM_RPC_URL=ws://node:9944 \
-  MINIJAM_STAGE1_CHAIN_SPEC_FILE=/etc/hosts \
     docker compose -f "${ROOT}/deploy/stage1/compose.${profile}.yml" config --format json
 }
 
@@ -36,6 +35,7 @@ jq -e '.services.node.command | index("--node-key-file=/run/secrets/node_network
 jq -e '.services.node.command | index("--unsafe-rpc-external") != null' <<<"${compact}" >/dev/null
 jq -e '.services.node.command | index("--rpc-methods=safe") != null' <<<"${compact}" >/dev/null
 jq -e '.services.node.command | index("--rpc-cors=all") != null' <<<"${compact}" >/dev/null
+jq -e '.services.node.command | index("--chain=testnet") != null' <<<"${compact}" >/dev/null
 jq -e '.services.node.command | index("--rpc-methods=unsafe") == null' <<<"${compact}" >/dev/null
 jq -e 'any(.services.node.ports[]?; (.published | tostring) == "9944" and .host_ip == "127.0.0.1")' <<<"${compact}" >/dev/null
 jq -e '.services.node.networks | has("chain") and has("node-edge")' <<<"${compact}" >/dev/null
@@ -49,6 +49,7 @@ jq -e '.services.node.command | index("--base-path=/data") != null' <<<"${split}
 jq -e '.services.node.command | index("--node-key-file=/run/secrets/node_network_key") != null' <<<"${split}" >/dev/null
 jq -e '.services.node.command | index("--rpc-cors=all") != null' <<<"${split}" >/dev/null
 jq -e '.services.node.command | index("--rpc-methods=safe") != null' <<<"${split}" >/dev/null
+jq -e '.services.node.command | index("--chain=testnet") != null' <<<"${split}" >/dev/null
 jq -e '.services.node.command | index("--rpc-methods=unsafe") == null' <<<"${split}" >/dev/null
 jq -e '(.services.node.ports // []) | length == 0' <<<"${split}" >/dev/null
 jq -e '.networks.chain.external == true' <<<"${split}" >/dev/null

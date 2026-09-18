@@ -17,7 +17,7 @@ extract_stage() {
   ' "${dockerfile}"
 }
 
-for stage in node worker formal-rpc; do
+for stage in node worker formal-rpc minijam; do
   if extract_stage "${STAGE1_DOCKERFILE}" "${stage}" | grep -Eni "${toolchain}"; then
     echo "Stage-1 production target ${stage} contains compiler-toolchain material" >&2
     exit 1
@@ -36,10 +36,12 @@ grep -Eq '^[[:space:]]*FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338
 grep -Fq 'COPY --from=builder /out/minijam-node /usr/local/bin/minijam-node' "${STAGE1_DOCKERFILE}"
 grep -Fq 'COPY --from=builder /out/minijam-worker /usr/local/bin/minijam-worker' "${STAGE1_DOCKERFILE}"
 grep -Fq 'COPY --from=builder /out/minijam-formal-rpc /usr/local/bin/minijam-formal-rpc' "${STAGE1_DOCKERFILE}"
+grep -Fq 'COPY --from=builder /out/minijam /usr/local/bin/minijam' "${STAGE1_DOCKERFILE}"
 grep -Fq 'cargo build --locked --release' "${STAGE1_DOCKERFILE}"
 grep -Fq -- '-p minijam-node' "${STAGE1_DOCKERFILE}"
 grep -Fq -- '-p minijam-worker' "${STAGE1_DOCKERFILE}"
 grep -Fq -- '-p minijam-formal-rpc' "${STAGE1_DOCKERFILE}"
+grep -Fq -- '-p minijam-launcher' "${STAGE1_DOCKERFILE}"
 if grep -Eni 'compiler-api|jam.?computer|minicells|faucet' "${STAGE1_DOCKERFILE}"; then
   echo 'Stage-1 Dockerfile contains a forbidden product role' >&2
   exit 1
@@ -47,6 +49,7 @@ fi
 grep -Fq 'ENTRYPOINT ["minijam-node"]' "${STAGE1_DOCKERFILE}"
 grep -Fq 'ENTRYPOINT ["minijam-worker"]' "${STAGE1_DOCKERFILE}"
 grep -Fq 'ENTRYPOINT ["minijam-formal-rpc"]' "${STAGE1_DOCKERFILE}"
+grep -Fq 'ENTRYPOINT ["minijam"]' "${STAGE1_DOCKERFILE}"
 grep -Fq 'USER minijam' "${STAGE1_DOCKERFILE}"
 
 printf 'STAGE1_PRODUCTION_IMAGE_BOUNDARY=PASS\n'
