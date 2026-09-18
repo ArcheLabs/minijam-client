@@ -1,9 +1,6 @@
 name: Stage-1 release
 
 on:
-  push:
-    tags:
-      - 'stage1-v*'
   workflow_dispatch:
     inputs:
       publish:
@@ -42,7 +39,7 @@ jobs:
       - name: Checkout exact Stage-1 source
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'push' && github.ref || inputs.source_ref }}
+          ref: ${{ inputs.source_ref }}
           fetch-depth: 0
           submodules: false
           persist-credentials: false
@@ -90,14 +87,8 @@ jobs:
         run: |
           git_sha="$(git rev-parse HEAD)"
           short_sha="${git_sha:0:7}"
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            release_tag="${GITHUB_REF_NAME}"
-            publish=true
-            test "$(git describe --exact-match --tags HEAD)" = "${release_tag}"
-          else
-            release_tag="${REQUESTED_RELEASE_TAG:-stage1-dry-${short_sha}}"
-            publish="${REQUESTED_PUBLISH:-false}"
-          fi
+          release_tag="${REQUESTED_RELEASE_TAG:-stage1-dry-${short_sha}}"
+          publish="${REQUESTED_PUBLISH:-false}"
           if [[ "${publish}" == true && ! "${release_tag}" =~ ^stage1-v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
             echo "::error::Invalid Stage-1 release tag: ${release_tag}"
             exit 1
