@@ -5264,6 +5264,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "minijam-launcher"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "libc",
+ "tokio",
+]
+
+[[package]]
 name = "minijam-node"
 version = "0.1.0"
 dependencies = [

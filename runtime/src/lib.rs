@@ -309,7 +309,7 @@ mod runtime {
 }
 
 #[cfg(test)]
-mod stage0_economics_tests {
+mod stage1_economics_tests {
     use super::*;
     use frame_support::{
         assert_noop, assert_ok,
@@ -327,7 +327,7 @@ mod stage0_economics_tests {
         let mut ext: sp_io::TestExternalities = storage.into();
         ext.execute_with(|| {
             pallet_minijam::IngressRelayer::<Runtime>::put(AccountId::new(
-                crate::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT,
+                crate::genesis_config_presets::LOCAL_INGRESS_RELAYER_ACCOUNT,
             ));
         });
         ext
@@ -346,7 +346,7 @@ mod stage0_economics_tests {
             }
             assert_ok!(MiniJam::submit_system_op(
                 RuntimeOrigin::signed(AccountId::new(
-                    crate::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT,
+                    crate::genesis_config_presets::LOCAL_INGRESS_RELAYER_ACCOUNT,
                 )),
                 Box::new(SystemCommandV2::CreateService {
                     code_hash: [0x9b; 32],
@@ -372,7 +372,7 @@ mod stage0_economics_tests {
     }
 
     #[test]
-    fn stage0_execution_gas_covers_refine_and_accumulate_limits() {
+    fn stage1_execution_gas_covers_refine_and_accumulate_limits() {
         assert!(
             <<Runtime as pallet_minijam::Config>::MaxExecutionGas as Get<u64>>::get()
                 >= MiniJamSpec::MAX_REFINE_GAS.saturating_mul(2)
@@ -408,10 +408,10 @@ mod stage0_economics_tests {
     }
 
     #[test]
-    fn runtime_ext_configures_only_local_playground_relayer() {
+    fn runtime_ext_configures_only_local_ingress_relayer() {
         runtime_ext().execute_with(|| {
             let relayer =
-                AccountId::new(crate::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT);
+                AccountId::new(crate::genesis_config_presets::LOCAL_INGRESS_RELAYER_ACCOUNT);
             let direct_user = AccountId::new([0x93; 32]);
 
             assert_eq!(
@@ -429,7 +429,7 @@ mod stage0_economics_tests {
     fn runtime_dispatch_enforces_system_and_preimage_ingress() {
         runtime_ext().execute_with(|| {
             let relayer =
-                AccountId::new(crate::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT);
+                AccountId::new(crate::genesis_config_presets::LOCAL_INGRESS_RELAYER_ACCOUNT);
             let direct_user = AccountId::new([0x93; 32]);
             let command = SystemCommandV2::CreateService {
                 code_hash: [0x55; 32],

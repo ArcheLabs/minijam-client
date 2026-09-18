@@ -1,38 +1,47 @@
 # Stage-1 Docker deployment
 
 Stage-1 is the supported MiniJAM deployment. The release unit is a set of
-immutable image digests plus the chain specification generated from the exact
-node image. The repository does not contain a separate local, Stage-0, or web
-deployment stack.
+immutable image digests plus the deterministic `testnet` chain specification
+generated from the exact node image. Local development uses the aggregate
+`minijam --dev` image and does not require Compose.
 
 ## Components
 
-The compact and split profiles contain the same three roles:
+The compact and split testnet profiles contain the same three roles:
 
 - `node`: validator and safe JSON-RPC endpoint;
 - `worker`: Worker daemon with its own signing key and state volume;
 - `formal-rpc`: application-neutral Work and bundle gateway with the Work-ingress
   relayer key and bundle volume.
 
+The aggregate local image additionally contains the launcher, node, worker, and
+Formal RPC. It starts exactly one Worker:
+
+```bash
+docker run --rm \
+  -p 9944:9944 -p 8080:8080 \
+  ghcr.io/archelabs/minijam@sha256:<digest> --dev
+```
+
 The optional Service compiler is a separate image from `deploy/compiler` and is
 not part of the Stage-1 runtime network.
 
 ## Prepare release artifacts
 
-Obtain the three image digests from the Stage-1 release artifact. Generate the
-matching chain specs from the exact node image:
+Obtain the three component image digests from the Stage-1 release artifact.
+Generate the matching testnet specs from the exact node image:
 
 ```bash
 MINIJAM_NODE_IMAGE=ghcr.io/archelabs/minijam-node@sha256:<digest> \
-MINIJAM_STAGE1_CHAIN_SPEC_DIR=./chain-specs \
-./scripts/export-stage1-chain-specs-image.sh
+MINIJAM_TESTNET_CHAIN_SPEC_DIR=./chain-specs \
+./scripts/export-testnet-chain-specs-image.sh
 ```
 
 The generated files are:
 
 ```text
-chain-specs/stage1.json
-chain-specs/stage1-raw.json
+chain-specs/testnet.json
+chain-specs/testnet-raw.json
 ```
 
 They must match the release manifest hashes and must not be mixed with another
@@ -40,8 +49,9 @@ node image.
 
 ## Compact deployment
 
-Set the image references, generated chain spec, and secret values, then
-validate and start the stack. Compose exposes these environment-backed values
+Set the image references and secret values, then validate and start the stack.
+The built-in `testnet` chain spec is selected by the node; no generated chain
+spec is mounted. Compose exposes these environment-backed values
 to each non-root container as `0400` `/run/secrets/*` files; they are not
 injected into the application environment:
 
@@ -49,7 +59,6 @@ injected into the application environment:
 export MINIJAM_NODE_IMAGE=ghcr.io/archelabs/minijam-node@sha256:<digest>
 export MINIJAM_WORKER_IMAGE=ghcr.io/archelabs/minijam-worker@sha256:<digest>
 export MINIJAM_FORMAL_RPC_IMAGE=ghcr.io/archelabs/minijam-formal-rpc@sha256:<digest>
-export MINIJAM_STAGE1_CHAIN_SPEC_FILE=./chain-specs/stage1.json
 export MINIJAM_NODE_NETWORK_KEY=0x<64-hex-bytes>
 export MINIJAM_WORKER_SEED=0x<64-hex-bytes>
 export MINIJAM_FORMAL_RPC_RELAYER_URI=0x<64-hex-bytes>
@@ -66,7 +75,7 @@ endpoints publicly.
 ## Split deployment
 
 Create one shared external `chain` network on the participating hosts. Use the
-same image digests, generated chain spec, and secret conventions in
+same image digests and secret conventions in
 `deploy/stage1/compose.split.yml`; set `MINIJAM_RPC_URL` to the private Node
 RPC address visible from the Formal RPC host.
 

@@ -209,8 +209,14 @@ jobs:
           docker build --target node -f deploy/stage1/Dockerfile -t minijam-node:stage1-ci .
           docker build --target worker -f deploy/stage1/Dockerfile -t minijam-worker:stage1-ci .
           docker build --target formal-rpc -f deploy/stage1/Dockerfile -t minijam-formal-rpc:stage1-ci .
+          docker build --target minijam -f deploy/stage1/Dockerfile -t minijam:stage1-ci .
 
       - name: Check Stage-1 Compose profiles
         run: |
           docker compose -f deploy/stage1/compose.compact.yml config --no-interpolate >/dev/null
           docker compose -f deploy/stage1/compose.split.yml config --no-interpolate >/dev/null
+
+      - name: Run canonical local aggregate E2E
+        env:
+          MINIJAM_IMAGE: minijam:stage1-ci
+        run: ./scripts/test-minijam-local-e2e.sh

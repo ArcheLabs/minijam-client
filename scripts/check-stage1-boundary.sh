@@ -36,6 +36,7 @@ for compose in "${root}/deploy/stage1/compose.compact.yml" "${root}/deploy/stage
     echo "Stage-1 compose must define exactly one worker service: ${compose}" >&2
     exit 1
   fi
+  grep -Eq -- '--chain=testnet' "${compose}"
   grep -Eq -- '--worker-id=0([,[:space:]]|$)' "${compose}"
   grep -Fq -- '--ipfs-gateway=http://formal-rpc:8080' "${compose}"
   if grep -Eq -- '--ipfs-gateway=[^,[:space:]]*/ipfs([,[:space:]]|$)' "${compose}"; then
@@ -62,18 +63,8 @@ if grep -Eq '0\.0\.0\.0:9944' "${root}/deploy/stage1/compose.split.yml"; then
   exit 1
 fi
 
-release_spec_export="${root}/scripts/export-stage1-chain-specs-image.sh"
-grep -Fq 'build-spec --chain stage1 >' "${release_spec_export}"
-for production_file in \
-  "${root}/deploy/stage1/compose.compact.yml" \
-  "${root}/deploy/stage1/compose.split.yml" \
-  "${root}/deploy/stage1/Dockerfile" \
-  "${root}/.github/workflows/stage1-release.yml"; do
-  if grep -Fq 'stage1-work-e2e' "${production_file}"; then
-    echo "production path references the local-only stage1-work-e2e profile: ${production_file}" >&2
-    exit 1
-  fi
-done
+release_spec_export="${root}/scripts/export-testnet-chain-specs-image.sh"
+grep -Fq 'build-spec --chain testnet >' "${release_spec_export}"
 
 printf 'STAGE1_WORKER_SERVICE_COUNT=1\n'
 printf 'STAGE1_WORKER_ID=0\n'

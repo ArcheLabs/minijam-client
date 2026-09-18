@@ -20,6 +20,7 @@ See [MiniJamSpec](docs/minijam-spec.md), the
 | `crates/minijam-worker-engine` | Runtime-independent Worker algorithms |
 | `crates/minijam-worker` | Worker daemon and bundle fetching |
 | `crates/minijam-formal-rpc` | Application-neutral Work and bundle gateway |
+| `crates/minijam-launcher` | Aggregate `minijam --dev` local-network supervisor |
 | `runtime` | FRAME Runtime and jambda Executive integration |
 | `node` | Node CLI, RPC, chain profiles, Aura, and GRANDPA |
 | `deploy/stage1` | Canonical Stage-1 Dockerfile and Compose profiles |
@@ -29,19 +30,27 @@ See [MiniJamSpec](docs/minijam-spec.md), the
 
 ## Stage-1 deployment
 
-The production unit is the exact image digest and the matching generated chain
-specification. The canonical images are:
+The production unit is the exact image digest and the matching generated
+`testnet` specification. The canonical images are:
 
 ```text
 ghcr.io/archelabs/minijam-node
 ghcr.io/archelabs/minijam-worker
 ghcr.io/archelabs/minijam-formal-rpc
+ghcr.io/archelabs/minijam
 ```
 
-Use `deploy/stage1/compose.compact.yml` for one-host deployment and
+Run the aggregate image for a deterministic local network:
+
+```bash
+docker run --rm -p 9944:9944 -p 8080:8080 \
+  ghcr.io/archelabs/minijam@sha256:<digest> --dev
+```
+
+Use `deploy/stage1/compose.compact.yml` for one-host testnet deployment and
 `deploy/stage1/compose.split.yml` when the private chain network spans hosts.
-Generate `stage1.json` and `stage1-raw.json` from the exact node image with
-`scripts/export-stage1-chain-specs-image.sh`; generated specs must not be
+Generate `testnet.json` and `testnet-raw.json` from the exact node image with
+`scripts/export-testnet-chain-specs-image.sh`; generated specs must not be
 committed.
 
 Formal RPC owns the Work-ingress relayer and bundle store. The Worker owns its

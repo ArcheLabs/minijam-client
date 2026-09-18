@@ -1,9 +1,6 @@
 use minijam_runtime::{
-    genesis_config_presets::{
-        stage0_config_genesis, stage1_config_genesis, stage1_e2e_config_genesis,
-        stage1_work_e2e_config_genesis,
-    },
-    AccountId, WASM_BINARY,
+    genesis_config_presets::{local_genesis, testnet_genesis},
+    WASM_BINARY,
 };
 use sc_service::{ChainType, Properties};
 
@@ -17,254 +14,203 @@ fn chain_properties() -> Properties {
     properties
 }
 
-pub fn development_chain_spec() -> Result<ChainSpec, String> {
-    Ok(ChainSpec::builder(
-        WASM_BINARY.ok_or_else(|| "Development wasm not available".to_string())?,
-        None,
-    )
-    .with_name("Development")
-    .with_id("dev")
-    .with_chain_type(ChainType::Development)
-    .with_genesis_config_preset_name(sp_genesis_builder::DEV_RUNTIME_PRESET)
-    .build())
-}
-
+/// Canonical Stage-1 local network. `--dev` resolves to this exact spec.
 pub fn local_chain_spec() -> Result<ChainSpec, String> {
     Ok(ChainSpec::builder(
-        WASM_BINARY.ok_or_else(|| "Development wasm not available".to_string())?,
+        WASM_BINARY.ok_or_else(|| "Local Stage-1 wasm not available".to_string())?,
         None,
     )
-    .with_name("Local Testnet")
-    .with_id("local_testnet")
+    .with_name("MiniJAM Local")
+    .with_id("minijam_local")
     .with_chain_type(ChainType::Local)
-    .with_genesis_config_preset_name(sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET)
+    .with_genesis_config_patch(local_genesis())
     .with_properties(chain_properties())
     .build())
 }
 
-pub fn stage0_chain_spec() -> Result<ChainSpec, String> {
-    let value = std::env::var("MINIJAM_STAGE0_RELAYER_PUBLIC_KEY").map_err(|_| {
-        "MINIJAM_STAGE0_RELAYER_PUBLIC_KEY is required when exporting the Stage 0 chain spec"
-            .to_string()
-    })?;
-    stage0_chain_spec_with_relayer(parse_relayer_public_key(&value)?)
-}
-
-pub fn stage0_chain_spec_with_relayer(relayer: AccountId) -> Result<ChainSpec, String> {
+/// Canonical Stage-1 testnet network.
+pub fn testnet_chain_spec() -> Result<ChainSpec, String> {
     Ok(ChainSpec::builder(
-        WASM_BINARY.ok_or_else(|| "Stage-0 wasm not available".to_string())?,
+        WASM_BINARY.ok_or_else(|| "Stage-1 testnet wasm not available".to_string())?,
         None,
     )
-    .with_name("MiniJAM Stage-0")
-    .with_id("minijam_stage0")
+    .with_name("MiniJAM Testnet")
+    .with_id("minijam_testnet")
     .with_chain_type(ChainType::Live)
-    .with_genesis_config_patch(stage0_config_genesis(relayer))
+    .with_genesis_config_patch(testnet_genesis())
     .with_properties(chain_properties())
     .build())
-}
-
-pub fn stage1_chain_spec() -> Result<ChainSpec, String> {
-    let (ingress_relayer, allocation_relayer) = stage1_relayers_from_env()?;
-    stage1_chain_spec_with_relayers(ingress_relayer, allocation_relayer)
-}
-
-pub fn stage1_e2e_chain_spec() -> Result<ChainSpec, String> {
-    let (ingress_relayer, allocation_relayer) = stage1_relayers_from_env()?;
-    stage1_e2e_chain_spec_with_relayers(ingress_relayer, allocation_relayer)
-}
-
-pub fn stage1_work_e2e_chain_spec() -> Result<ChainSpec, String> {
-    let (ingress_relayer, allocation_relayer) = stage1_relayers_from_env()?;
-    stage1_work_e2e_chain_spec_with_relayers(ingress_relayer, allocation_relayer)
-}
-
-fn stage1_relayers_from_env() -> Result<(AccountId, AccountId), String> {
-    let ingress = std::env::var("MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY")
-        .map_err(|_| "MINIJAM_STAGE1_INGRESS_RELAYER_PUBLIC_KEY is required".to_string())?;
-    let allocation = std::env::var("MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY")
-        .map_err(|_| "MINIJAM_STAGE1_ALLOCATION_RELAYER_PUBLIC_KEY is required".to_string())?;
-    Ok((
-        parse_relayer_public_key(&ingress)?,
-        parse_relayer_public_key(&allocation)?,
-    ))
-}
-
-pub fn stage1_chain_spec_with_relayers(
-    ingress_relayer: AccountId,
-    allocation_relayer: AccountId,
-) -> Result<ChainSpec, String> {
-    Ok(ChainSpec::builder(
-        WASM_BINARY.ok_or_else(|| "Stage-1 wasm not available".to_string())?,
-        None,
-    )
-    .with_name("MiniJAM Stage-1")
-    .with_id("minijam_stage1")
-    .with_chain_type(ChainType::Live)
-    .with_genesis_config_patch(stage1_config_genesis(ingress_relayer, allocation_relayer))
-    .with_properties(chain_properties())
-    .build())
-}
-
-pub fn stage1_e2e_chain_spec_with_relayers(
-    ingress_relayer: AccountId,
-    allocation_relayer: AccountId,
-) -> Result<ChainSpec, String> {
-    Ok(ChainSpec::builder(
-        WASM_BINARY.ok_or_else(|| "Stage-1 wasm not available".to_string())?,
-        None,
-    )
-    .with_name("MiniJAM Stage-1 E2E")
-    .with_id("minijam_stage1_e2e")
-    .with_chain_type(ChainType::Development)
-    .with_genesis_config_patch(stage1_e2e_config_genesis(
-        ingress_relayer,
-        allocation_relayer,
-    ))
-    .with_properties(chain_properties())
-    .build())
-}
-
-pub fn stage1_work_e2e_chain_spec_with_relayers(
-    ingress_relayer: AccountId,
-    allocation_relayer: AccountId,
-) -> Result<ChainSpec, String> {
-    Ok(ChainSpec::builder(
-        WASM_BINARY.ok_or_else(|| "Stage-1 wasm not available".to_string())?,
-        None,
-    )
-    .with_name("MiniJAM Stage-1 Work E2E")
-    .with_id("minijam_stage1_work_e2e")
-    .with_chain_type(ChainType::Development)
-    .with_genesis_config_patch(stage1_work_e2e_config_genesis(
-        ingress_relayer,
-        allocation_relayer,
-    ))
-    .with_properties(chain_properties())
-    .build())
-}
-
-fn parse_relayer_public_key(value: &str) -> Result<AccountId, String> {
-    let bytes = sp_core::bytes::from_hex(value)
-        .map_err(|_| "relayer public key must be 0x-prefixed 32-byte hex".to_string())?;
-    let key: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| "relayer public key must be 0x-prefixed 32-byte hex".to_string())?;
-    Ok(AccountId::new(key))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minijam_runtime::genesis_config_presets::{local_stage1_config, testnet_stage1_config};
     use sc_service::ChainSpec as _;
-    use sp_core::crypto::{AccountId32, Ss58Codec};
+    use serde_json::{json, Value};
 
-    #[test]
-    fn stage0_chain_properties_keep_mini_units() {
-        let spec = stage0_chain_spec_with_relayer(AccountId::new([0x99; 32]))
-            .expect("Stage 0 chain spec must build");
-        let properties = spec.properties();
-        assert_eq!(
-            properties.get("tokenSymbol"),
-            Some(&serde_json::Value::from("MINI"))
-        );
-        assert_eq!(
-            properties.get("tokenDecimals"),
-            Some(&serde_json::Value::from(12))
-        );
+    fn runtime_genesis_patch(spec: &mut Value) -> &mut serde_json::Map<String, Value> {
+        spec.get_mut("genesis")
+            .and_then(Value::as_object_mut)
+            .and_then(|genesis| genesis.get_mut("runtimeGenesis"))
+            .and_then(Value::as_object_mut)
+            .and_then(|runtime| runtime.get_mut("patch"))
+            .and_then(Value::as_object_mut)
+            .expect("chain spec must contain runtime genesis")
+    }
+
+    fn normalize_identity_fields(spec: &mut Value) {
+        let runtime = runtime_genesis_patch(spec);
+        let identity = || json!("<identity>");
+
+        if let Some(authorities) = runtime
+            .get_mut("aura")
+            .and_then(Value::as_object_mut)
+            .and_then(|aura| aura.get_mut("authorities"))
+            .and_then(Value::as_array_mut)
+        {
+            for authority in authorities {
+                *authority = identity();
+            }
+        }
+
+        if let Some(authorities) = runtime
+            .get_mut("grandpa")
+            .and_then(Value::as_object_mut)
+            .and_then(|grandpa| grandpa.get_mut("authorities"))
+            .and_then(Value::as_array_mut)
+        {
+            for authority in authorities {
+                authority
+                    .as_array_mut()
+                    .expect("grandpa authority must be a tuple")[0] = identity();
+            }
+        }
+
+        if let Some(balances) = runtime
+            .get_mut("balances")
+            .and_then(Value::as_object_mut)
+            .and_then(|balances| balances.get_mut("balances"))
+            .and_then(Value::as_array_mut)
+        {
+            for balance in balances {
+                balance
+                    .as_array_mut()
+                    .expect("balance entry must be a tuple")[0] = identity();
+            }
+        }
+
+        if let Some(key) = runtime
+            .get_mut("sudo")
+            .and_then(Value::as_object_mut)
+            .and_then(|sudo| sudo.get_mut("key"))
+        {
+            *key = identity();
+        }
+
+        if let Some(mini_jam) = runtime.get_mut("miniJam").and_then(Value::as_object_mut) {
+            for field in ["ingressRelayer", "allocationRelayer"] {
+                if let Some(value) = mini_jam.get_mut(field) {
+                    *value = identity();
+                }
+            }
+        }
+
+        if let Some(workers) = runtime
+            .get_mut("miniJamWorkers")
+            .and_then(Value::as_object_mut)
+            .and_then(|workers| workers.get_mut("workers"))
+            .and_then(Value::as_array_mut)
+        {
+            for worker in workers {
+                let worker = worker.as_array_mut().expect("worker entry must be a tuple");
+                worker[0] = identity();
+                worker[1] = identity();
+            }
+        }
     }
 
     #[test]
-    fn stage0_release_accounts_have_documented_ss58_addresses() {
-        let faucet = AccountId32::new([
-            0x1a, 0x69, 0x04, 0x44, 0xd1, 0x60, 0xa1, 0xf6, 0x32, 0x81, 0x20, 0x3e, 0xde, 0x44,
-            0x9b, 0xa9, 0x96, 0xc5, 0x60, 0xb7, 0x98, 0x0e, 0x40, 0x43, 0x75, 0x76, 0x5f, 0x2a,
-            0xea, 0xcd, 0x88, 0x6a,
-        ]);
-        let sudo = AccountId32::new([
-            0x64, 0xda, 0x53, 0x90, 0x20, 0xcd, 0x74, 0x3f, 0xed, 0x81, 0xed, 0x5d, 0xe9, 0x22,
-            0xf0, 0xb3, 0xe7, 0x76, 0x9b, 0xf3, 0xb7, 0x7a, 0x95, 0x3a, 0xf3, 0xc0, 0x77, 0x9e,
-            0xce, 0xfd, 0x7f, 0x23,
-        ]);
+    fn local_and_testnet_specs_have_the_canonical_network_ids() {
+        let local = local_chain_spec().expect("local chain spec must build");
+        let testnet = testnet_chain_spec().expect("testnet chain spec must build");
+        assert_eq!(local.id(), "minijam_local");
+        assert_eq!(local.chain_type(), ChainType::Local);
+        assert_eq!(testnet.id(), "minijam_testnet");
+        assert_eq!(testnet.chain_type(), ChainType::Live);
+    }
+
+    #[test]
+    fn local_and_testnet_use_one_authority_and_one_worker() {
+        for spec in [local_chain_spec().unwrap(), testnet_chain_spec().unwrap()] {
+            let json = spec.as_json(false).unwrap();
+            let json: Value = serde_json::from_str(&json).unwrap();
+            let runtime = json["genesis"]["runtimeGenesis"]["patch"]
+                .as_object()
+                .expect("chain spec must contain runtime genesis");
+            assert_eq!(runtime["aura"]["authorities"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                runtime["grandpa"]["authorities"].as_array().unwrap().len(),
+                1
+            );
+            assert_eq!(
+                runtime["miniJamWorkers"]["workers"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+
+        assert_eq!(local_stage1_config().worker.account.len(), 32);
+        assert_eq!(testnet_stage1_config().worker.account.len(), 32);
+    }
+
+    #[test]
+    fn local_and_testnet_genesis_have_the_same_protocol_shape() {
+        let local = local_chain_spec().unwrap().as_json(false).unwrap();
+        let testnet = testnet_chain_spec().unwrap().as_json(false).unwrap();
+        let mut local: Value = serde_json::from_str(&local).unwrap();
+        let mut testnet: Value = serde_json::from_str(&testnet).unwrap();
+
+        for spec in [&mut local, &mut testnet] {
+            let object = spec.as_object_mut().unwrap();
+            object.remove("name");
+            object.remove("id");
+            object.remove("chainType");
+            object.remove("bootNodes");
+            object.remove("protocolId");
+            object.remove("properties");
+        }
+
+        normalize_identity_fields(&mut local);
+        normalize_identity_fields(&mut testnet);
+
+        assert_eq!(local, testnet);
+    }
+
+    #[test]
+    fn local_and_testnet_specs_are_reproducible() {
+        let local_a = local_chain_spec().unwrap();
+        let local_b = local_chain_spec().unwrap();
+        let testnet_a = testnet_chain_spec().unwrap();
+        let testnet_b = testnet_chain_spec().unwrap();
 
         assert_eq!(
-            faucet.to_ss58check(),
-            "5CfLJGrEfAnDLbNGQuSa5CUwGgU13gt7rsWXJLCsNCMFjDUr"
+            local_a.as_json(false).unwrap(),
+            local_b.as_json(false).unwrap()
         );
         assert_eq!(
-            sudo.to_ss58check(),
-            "5ELwW5Q5vLgPKqBpRxuQwGcaGwUhYUVzEd9MhfVUzWWdhLTr"
+            local_a.as_json(true).unwrap(),
+            local_b.as_json(true).unwrap()
         );
-    }
-
-    #[test]
-    fn stage0_relayer_key_is_required_and_strictly_decoded() {
-        assert!(parse_relayer_public_key("not-a-key").is_err());
-        assert!(parse_relayer_public_key("0x11").is_err());
         assert_eq!(
-            parse_relayer_public_key(&format!("0x{}", "42".repeat(32))).unwrap(),
-            AccountId::new([0x42; 32])
+            testnet_a.as_json(false).unwrap(),
+            testnet_b.as_json(false).unwrap()
         );
-    }
-
-    #[test]
-    fn stage0_plain_and_raw_specs_are_isolated_by_relayer() {
-        let stage0_relayer = AccountId::new([0x42; 32]);
-        let other_relayer = AccountId::new([0x43; 32]);
-        let local_relayer = AccountId::new(
-            minijam_runtime::genesis_config_presets::LOCAL_PLAYGROUND_RELAYER_ACCOUNT,
-        );
-
-        let patch = stage0_config_genesis(stage0_relayer.clone());
-        let expected = serde_json::to_value(stage0_relayer.clone()).unwrap();
-        let actual = patch
-            .pointer("/mini_jam/ingress_relayer")
-            .or_else(|| patch.pointer("/miniJam/ingressRelayer"))
-            .expect("Stage 0 genesis patch must contain ingress Relayer");
-        assert_eq!(actual, &expected);
-        assert_ne!(actual, &serde_json::to_value(local_relayer).unwrap());
-
-        let stage0 = stage0_chain_spec_with_relayer(stage0_relayer.clone()).unwrap();
-        let other = stage0_chain_spec_with_relayer(other_relayer).unwrap();
-        let plain = stage0.as_json(false).unwrap();
-        let raw = stage0.as_json(true).unwrap();
-        let other_plain = other.as_json(false).unwrap();
-        let other_raw = other.as_json(true).unwrap();
-        assert_ne!(plain, other_plain);
-        assert_ne!(raw, other_raw);
-    }
-
-    #[test]
-    fn stage1_production_and_e2e_specs_are_explicitly_separated() {
-        let ingress = AccountId::new([0x44; 32]);
-        let allocation = AccountId::new([0x55; 32]);
-        let production =
-            stage1_chain_spec_with_relayers(ingress.clone(), allocation.clone()).unwrap();
-        let e2e = stage1_e2e_chain_spec_with_relayers(ingress, allocation).unwrap();
-
-        assert_eq!(production.id(), "minijam_stage1");
-        assert_eq!(production.chain_type(), ChainType::Live);
-        assert_eq!(e2e.id(), "minijam_stage1_e2e");
-        assert_eq!(e2e.chain_type(), ChainType::Development);
-        assert_ne!(
-            production.as_json(false).unwrap(),
-            e2e.as_json(false).unwrap()
-        );
-    }
-
-    #[test]
-    fn stage1_work_e2e_spec_has_the_local_only_identity() {
-        let ingress = AccountId::new([0x44; 32]);
-        let allocation = AccountId::new([0x55; 32]);
-        let production =
-            stage1_chain_spec_with_relayers(ingress.clone(), allocation.clone()).unwrap();
-        let work_e2e = stage1_work_e2e_chain_spec_with_relayers(ingress, allocation).unwrap();
-
-        assert_eq!(work_e2e.id(), "minijam_stage1_work_e2e");
-        assert_eq!(work_e2e.name(), "MiniJAM Stage-1 Work E2E");
-        assert_eq!(work_e2e.chain_type(), ChainType::Development);
-        assert_ne!(
-            production.as_json(false).unwrap(),
-            work_e2e.as_json(false).unwrap()
+        assert_eq!(
+            testnet_a.as_json(true).unwrap(),
+            testnet_b.as_json(true).unwrap()
         );
     }
 }

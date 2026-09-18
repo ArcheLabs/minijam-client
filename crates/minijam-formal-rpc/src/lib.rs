@@ -764,7 +764,7 @@ fn hex_nibble(byte: u8) -> Result<u8, RpcError> {
 
 pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bind: SocketAddr = std::env::var("MINIJAM_FORMAL_RPC_BIND")
-        .unwrap_or_else(|_| "127.0.0.1:8090".into())
+        .unwrap_or_else(|_| "127.0.0.1:8080".into())
         .parse()?;
     let rpc_url = std::env::var("MINIJAM_RPC_URL").unwrap_or_else(|_| "ws://127.0.0.1:9944".into());
     let signer_uri = match std::env::var("MINIJAM_RELAYER_URI_FILE") {
