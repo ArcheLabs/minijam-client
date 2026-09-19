@@ -68,6 +68,18 @@ wait_for_endpoint() {
   return 1
 }
 
+wait_for_worker_endpoint() {
+  local url="$1" deadline=$((SECONDS + TIMEOUT))
+  while (( SECONDS < deadline )); do
+    if curl -fsS --max-time 5 "${url}" | grep -Fxq 'ready'; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "worker endpoint did not become ready: ${url}" >&2
+  return 1
+}
+
 block_number() {
   local hash="${1:-}" params='[]' value
   if [[ -n "${hash}" ]]; then
@@ -114,7 +126,7 @@ wait_for_node
 printf 'MINIJAM_DEV_NODE_READY=PASS\n'
 wait_for_endpoint http://127.0.0.1:8080/health/ready ready
 printf 'MINIJAM_DEV_FORMAL_RPC_READY=PASS\n'
-wait_for_endpoint http://127.0.0.1:8082/health/ready ready
+wait_for_worker_endpoint http://127.0.0.1:8082/health/ready
 printf 'MINIJAM_DEV_WORKER_0_READY=PASS\n'
 initial_block="$(block_number)"
 initial_finalized="$(finalized_block_number)"
