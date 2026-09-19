@@ -27,6 +27,7 @@ parity-scale-codec.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["std"] }
 sp-core = { workspace = true, default-features = true }
+tokio.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
