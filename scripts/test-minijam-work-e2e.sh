@@ -9,11 +9,15 @@ NODE_RPC="${MINIJAM_NODE_RPC:-http://127.0.0.1:9944}"
 FORMAL_URL="${MINIJAM_FORMAL_RPC_URL:-http://127.0.0.1:8080}"
 SERVICE_BLOB="${MINIJAM_SERVICE_BLOB:-${ROOT}/examples/services/counter/artifacts/counter-c.blob}"
 TIMEOUT="${MINIJAM_WORK_E2E_TIMEOUT_SECONDS:-240}"
+CONTAINER="${MINIJAM_LOCAL_CONTAINER:-}"
 TMP="$(mktemp -d)"
 
 for command in curl jq base64 python3; do
   command -v "${command}" >/dev/null 2>&1 || { echo "${command} is required" >&2; exit 127; }
 done
+if [[ -n "${CONTAINER}" ]]; then
+  command -v docker >/dev/null 2>&1 || { echo 'docker is required when MINIJAM_LOCAL_CONTAINER is set' >&2; exit 127; }
+fi
 test -s "${SERVICE_BLOB}" || { echo "service blob is missing: ${SERVICE_BLOB}" >&2; exit 1; }
 
 cleanup() {
@@ -26,6 +30,19 @@ cleanup() {
   return "${status}"
 }
 trap cleanup EXIT
+
+provider_running() {
+  [[ -z "${CONTAINER}" ]] ||
+    [[ "$(docker inspect --format '{{.State.Running}}' "${CONTAINER}" 2>/dev/null || true)" == true ]]
+}
+
+provider_exit_diagnostic() {
+  [[ -z "${CONTAINER}" ]] && return 0
+  echo 'aggregate MiniJAM container exited during Work E2E' >&2
+  echo '----- aggregate MiniJAM container logs (last 300 lines) -----' >&2
+  docker logs --tail 300 "${CONTAINER}" >&2 || true
+  echo '----- end aggregate MiniJAM container logs -----' >&2
+}
 
 rpc_call() {
   local endpoint="$1" method="$2" params="${3:-[]}"
@@ -109,8 +126,17 @@ status_request="$(jq -cn --arg package_hash "${package_hash}" \
   '{id: 1, jsonrpc: "2.0", method: "minijam_getWorkStatusV1", params: {packageHash: $package_hash}}')"
 deadline=$((SECONDS + TIMEOUT))
 while (( SECONDS < deadline )); do
-  curl -fsS --max-time 10 -H 'content-type: application/json' \
-    --data "${status_request}" "${FORMAL_URL}/" >"${TMP}/work-status.json" || true
+  if ! provider_running; then
+    provider_exit_diagnostic
+    exit 1
+  fi
+  if ! curl -fsS --max-time 10 -H 'content-type: application/json' \
+    --data "${status_request}" "${FORMAL_URL}/" >"${TMP}/work-status.json"; then
+    if ! provider_running; then
+      provider_exit_diagnostic
+      exit 1
+    fi
+  fi
   if jq -e '.error == null and .result.status == "imported"' "${TMP}/work-status.json" >/dev/null 2>&1; then
     imported_block="$(jq -er '.result.context.blockNumber' "${TMP}/work-status.json")"
     receipt="$(jq -er '.result.executionReceipt | strings | select(test("^0x[0-9a-fA-F]{64}$"))' "${TMP}/work-status.json")"

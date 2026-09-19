@@ -16,6 +16,9 @@ mkdir -p "${ARTIFACT_DIR}"
 cleanup() {
   local status=$?
   if (( status != 0 )); then
+    echo '----- aggregate MiniJAM container logs (last 300 lines) -----' >&2
+    docker logs --tail 300 "${CONTAINER}" >&2 || true
+    echo '----- end aggregate MiniJAM container logs -----' >&2
     docker logs "${CONTAINER}" >"${ARTIFACT_DIR}/container.log" 2>&1 || true
   fi
   if (( ${KEEP_MINIJAM_LOCAL_CONTAINER:-0} != 1 )); then
@@ -137,6 +140,7 @@ printf 'MINIJAM_DEV_FINALITY=PASS\n'
 
 MINIJAM_NODE_RPC=http://127.0.0.1:9944 \
 MINIJAM_FORMAL_RPC_URL=http://127.0.0.1:8080 \
+MINIJAM_LOCAL_CONTAINER="${CONTAINER}" \
 MINIJAM_WORK_E2E_TIMEOUT_SECONDS="${TIMEOUT}" \
   "${ROOT}/scripts/test-minijam-work-e2e.sh"
 
