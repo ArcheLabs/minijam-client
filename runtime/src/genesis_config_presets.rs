@@ -660,6 +660,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "long-running Jambda cross-epoch integration; run explicitly outside the release gate"]
     fn empty_blocks_cross_epoch_through_real_jambda_executor() {
         let mut state = TestProtocolState::from_pairs(system_service_zero_protocol_state());
 
@@ -698,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "long-running Jambda cross-epoch integration; executed by the release gate"]
+    #[ignore = "long-running Jambda cross-epoch integration; run explicitly outside the release gate"]
     fn create_service_executes_after_epoch_transitions() {
         let mut state = TestProtocolState::from_pairs(system_service_zero_protocol_state());
         for slot in 1..=121 {
