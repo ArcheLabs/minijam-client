@@ -6,7 +6,6 @@
 use std::{path::PathBuf, sync::Arc, thread, time::Duration};
 
 use clap::Parser;
-use futures::executor::block_on;
 use minijam_protocol::Hash;
 use minijam_worker::{
     check_bundle_gateway_ready, spawn_prometheus_metrics_server, spawn_worker_health_server,
@@ -156,7 +155,8 @@ fn build_config(cli: &Cli) -> Result<WorkerConfig, String> {
     Ok(config)
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
     let once = cli.once;
     let config = match build_config(&cli) {
@@ -276,7 +276,9 @@ fn main() {
             recovery_db.as_ref(),
             &config,
             signing_pair.as_ref(),
-        ) {
+        )
+        .await
+        {
             eprintln!("minijam worker poll failed: {error:?}");
             std::process::exit(1);
         }
@@ -291,7 +293,9 @@ fn main() {
             recovery_db.as_ref(),
             &config,
             signing_pair.as_ref(),
-        ) {
+        )
+        .await
+        {
             eprintln!("minijam worker poll failed: {error:?}");
             health.set_ready(false);
         } else {
@@ -349,7 +353,7 @@ fn refresh_health(
     health.set_ready(identity_ready && dependencies_ready);
 }
 
-fn poll_and_persist<C, F, D>(
+async fn poll_and_persist<C, F, D>(
     runner: &mut WorkerRunner<C, F, D>,
     metrics: &WorkerMetrics,
     recovery_db: Option<&WorkerRecoveryDb>,
@@ -364,35 +368,45 @@ where
     F: minijam_worker_engine::fetch::ContentFetcher,
     D: minijam_worker_engine::WorkBundleDecoder,
 {
+    // jsonrpsee's WebSocket client requires the Tokio reactor. The worker
+    // binary runs this future directly on its Tokio main runtime rather than
+    // through futures::executor::block_on.
     let submitted_candidates = if config.submit_candidates {
-        block_on(runner.submit_candidate_reports_with_lanes(
-            config.worker_id.unwrap(),
-            signing_pair.expect("signing pair is checked before polling"),
-            config.chain_id,
-            config.core_index,
-            config.execution_lanes,
-            Some(metrics),
-        ))?
-        .len()
+        runner
+            .submit_candidate_reports_with_lanes(
+                config.worker_id.unwrap(),
+                signing_pair.expect("signing pair is checked before polling"),
+                config.chain_id,
+                config.core_index,
+                config.execution_lanes,
+                Some(metrics),
+            )
+            .await?
+            .len()
     } else {
         0
     };
     let processed = if config.submit_candidates {
         0
     } else {
-        block_on(runner.poll_once_with_metrics(metrics))?
+        runner.poll_once_with_metrics(metrics).await?
     };
     let submitted_votes = if config.submit_support_votes {
-        block_on(runner.submit_refine_votes(
-            config.worker_id.unwrap(),
-            signing_pair.expect("signing pair is checked before polling"),
-            config.chain_id,
-            config.core_index,
-            Some(metrics),
-        ))?
-        .len()
+        runner
+            .submit_refine_votes(
+                config.worker_id.unwrap(),
+                signing_pair.expect("signing pair is checked before polling"),
+                config.chain_id,
+                config.core_index,
+                Some(metrics),
+            )
+            .await?
+            .len()
     } else {
-        block_on(runner.poll_open_vote_tasks_with_metrics(metrics))?.len()
+        runner
+            .poll_open_vote_tasks_with_metrics(metrics)
+            .await?
+            .len()
     };
     if let Some(db) = recovery_db {
         db.save_statuses(runner.statuses())
