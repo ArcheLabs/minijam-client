@@ -50,6 +50,7 @@ pub struct WorkerConfig {
     pub worker_id: Option<WorkerId>,
     pub chain_id: Hash,
     pub expected_genesis_hash: Option<Hash>,
+    pub ownership_control_service_id: Option<u32>,
     pub core_index: u16,
     pub submit_candidates: bool,
     pub submit_support_votes: bool,
@@ -71,6 +72,7 @@ impl Default for WorkerConfig {
             worker_id: None,
             chain_id: [77; 32],
             expected_genesis_hash: None,
+            ownership_control_service_id: None,
             core_index: 0,
             submit_candidates: false,
             submit_support_votes: false,
@@ -172,6 +174,9 @@ impl WorkerConfigFile {
                         .map_err(|_| ConfigFileError::InvalidGenesisHash)?,
                 );
             }
+            if let Some(service_id) = node.ownership_control_service_id {
+                config.ownership_control_service_id = Some(service_id);
+            }
         }
         if let Some(worker) = self.worker {
             if let Some(key) = worker.key {
@@ -228,6 +233,7 @@ impl WorkerConfigFile {
 struct NodeConfigFile {
     rpc_url: Option<String>,
     genesis_hash: Option<String>,
+    ownership_control_service_id: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -790,6 +796,7 @@ pub struct WorkerEnvironmentV1 {
     /// The network domain is resolved once from the connected chain and then
     /// remains fixed for the lifetime of the worker execution host.
     pub network_domain: Hash,
+    pub ownership_control_service_id: Option<u32>,
 }
 
 impl ProtocolStateSource for BlockingHttpWorkerChainSource {
@@ -1191,8 +1198,8 @@ pub fn prepare_refine_backed_vote<S>(
 where
     S: ProtocolStateSource,
 {
-    prepare_refine_backed_vote_with_network_domain(
-        state, worker_id, pair, chain_id, core_index, task, bundle, [0; 32],
+    prepare_refine_backed_vote_with_network_domain_and_control_service(
+        state, worker_id, pair, chain_id, core_index, task, bundle, [0; 32], None,
     )
 }
 
@@ -1206,6 +1213,34 @@ pub fn prepare_refine_backed_vote_with_network_domain<S>(
     task: &VoteTask,
     bundle: &[u8],
     network_domain: Hash,
+) -> Result<Option<PreparedVoteSubmission>, WorkerError>
+where
+    S: ProtocolStateSource,
+{
+    prepare_refine_backed_vote_with_network_domain_and_control_service(
+        state,
+        worker_id,
+        pair,
+        chain_id,
+        core_index,
+        task,
+        bundle,
+        network_domain,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_refine_backed_vote_with_network_domain_and_control_service<S>(
+    state: &S,
+    worker_id: WorkerId,
+    pair: &sr25519::Pair,
+    chain_id: Hash,
+    core_index: u16,
+    task: &VoteTask,
+    bundle: &[u8],
+    network_domain: Hash,
+    ownership_control_service_id: Option<u32>,
 ) -> Result<Option<PreparedVoteSubmission>, WorkerError>
 where
     S: ProtocolStateSource,
@@ -1233,13 +1268,14 @@ where
         canonical_work_package: task.canonical_work_package.clone(),
         bundle_ref: task.bundle_ref.clone(),
     };
-    let local = prepare_candidate_envelope_with_network_domain(
+    let local = prepare_candidate_envelope_with_network_domain_and_control_service(
         state,
         chain_id,
         core_index,
         &work_task,
         bundle,
         network_domain,
+        ownership_control_service_id,
     )?;
     let candidate_metadata =
         jambda_minijam_executive::MiniJamExecutive::project_report(&task.candidate_report)
@@ -1297,13 +1333,14 @@ pub fn prepare_candidate_envelope<S>(
 where
     S: ProtocolStateSource,
 {
-    prepare_candidate_envelope_with_network_domain(
+    prepare_candidate_envelope_with_network_domain_and_control_service(
         state,
         chain_id,
         core_index,
         task,
         bundle_bytes,
         [0; 32],
+        None,
     )
 }
 
@@ -1314,6 +1351,30 @@ pub fn prepare_candidate_envelope_with_network_domain<S>(
     task: &WorkTask,
     bundle_bytes: &[u8],
     network_domain: Hash,
+) -> Result<PreparedCandidateSubmission, WorkerError>
+where
+    S: ProtocolStateSource,
+{
+    prepare_candidate_envelope_with_network_domain_and_control_service(
+        state,
+        chain_id,
+        core_index,
+        task,
+        bundle_bytes,
+        network_domain,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_candidate_envelope_with_network_domain_and_control_service<S>(
+    state: &S,
+    chain_id: Hash,
+    core_index: u16,
+    task: &WorkTask,
+    bundle_bytes: &[u8],
+    network_domain: Hash,
+    ownership_control_service_id: Option<u32>,
 ) -> Result<PreparedCandidateSubmission, WorkerError>
 where
     S: ProtocolStateSource,
@@ -1367,7 +1428,7 @@ where
     backend
         .load_from_db()
         .map_err(|error| WorkerError::Refine(format!("failed to load Jambda state: {error:?}")))?;
-    let output = jambda_refine::compute_work_report_with_network_domain::<
+    let output = jambda_refine::compute_work_report_with_network_domain_and_control_service::<
         MiniJamSpec,
         ProtocolStateDb<'_, S>,
         StateBackend<MiniJamSpec, ProtocolStateDb<'_, S>>,
@@ -1375,7 +1436,13 @@ where
         jp_vm_engine::InnerEngine<InterpBackend>,
         jambda_refine::NoopAuthorizationRunner,
         jambda_refine::report::SimpleAvailabilityBuilder,
-    >(&backend, input, InterpBackend, network_domain)
+    >(
+        &backend,
+        input,
+        InterpBackend,
+        network_domain,
+        ownership_control_service_id,
+    )
     .map_err(|error| WorkerError::Refine(format!("Jambda refine failed: {error:?}")))?;
     let canonical_report = output.report.encode();
     let projected_metadata =
@@ -1804,7 +1871,19 @@ impl<C, F, D> WorkerRunner<C, F, D> {
     }
 
     pub fn with_network_domain(mut self, network_domain: Hash) -> Self {
-        self.environment = Some(WorkerEnvironmentV1 { network_domain });
+        self.environment = Some(WorkerEnvironmentV1 {
+            network_domain,
+            ownership_control_service_id: None,
+        });
+        self
+    }
+
+    pub fn with_ownership_control_service_id(mut self, service_id: u32) -> Self {
+        let environment = self.environment.get_or_insert(WorkerEnvironmentV1 {
+            network_domain: [0; 32],
+            ownership_control_service_id: None,
+        });
+        environment.ownership_control_service_id = Some(service_id);
         self
     }
 
@@ -1923,6 +2002,11 @@ where
             .map(|environment| environment.network_domain)
             .map_or_else(|| self.chain.genesis_hash(), Ok)
     }
+
+    fn execution_ownership_control_service_id(&self) -> Option<u32> {
+        self.environment
+            .and_then(|environment| environment.ownership_control_service_id)
+    }
 }
 
 impl<C, F, D> WorkerRunner<C, F, D>
@@ -1944,6 +2028,7 @@ where
             metrics.record_vote_tasks_seen(tasks.len());
         }
         let network_domain = self.execution_network_domain()?;
+        let ownership_control_service_id = self.execution_ownership_control_service_id();
         let mut tx_hashes = Vec::new();
         for task in tasks {
             if !task.assigned_workers.contains(&worker_id)
@@ -1963,16 +2048,18 @@ where
                 &self.decoder,
             )
             .map_err(WorkerError::Bundle)?;
-            let Some(submission) = prepare_refine_backed_vote_with_network_domain(
-                &self.chain,
-                worker_id,
-                pair,
-                chain_id,
-                core_index,
-                &task,
-                &bundle,
-                network_domain,
-            )?
+            let Some(submission) =
+                prepare_refine_backed_vote_with_network_domain_and_control_service(
+                    &self.chain,
+                    worker_id,
+                    pair,
+                    chain_id,
+                    core_index,
+                    &task,
+                    &bundle,
+                    network_domain,
+                    ownership_control_service_id,
+                )?
             else {
                 continue;
             };
@@ -2028,6 +2115,7 @@ where
         let tasks = self.chain.pending_work_tasks().await?;
         let mut nonce = self.chain.account_nonce(pair.public().0)?;
         let genesis_hash = self.execution_network_domain()?;
+        let ownership_control_service_id = self.execution_ownership_control_service_id();
         let mut candidate_tasks = Vec::new();
         let mut bundles = std::collections::HashMap::new();
         for task in tasks {
@@ -2056,13 +2144,14 @@ where
             let bundle = bundles.get(&task.work_id).ok_or_else(|| {
                 WorkerError::Refine("candidate bundle missing from lane input".into())
             })?;
-            prepare_candidate_envelope_with_network_domain(
+            prepare_candidate_envelope_with_network_domain_and_control_service(
                 chain,
                 chain_id,
                 core_index,
                 &task,
                 bundle,
                 genesis_hash,
+                ownership_control_service_id,
             )
         });
         executions.sort_by_key(|execution| execution.work_id);

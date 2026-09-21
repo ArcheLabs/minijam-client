@@ -12,6 +12,7 @@ pub enum MiniJamHostCall {
     Transfer = 20,
     Yield = 25,
     NetworkDomain = 27,
+    OwnershipControlServiceId = 28,
     Log = 100,
 }
 
@@ -28,6 +29,7 @@ impl TryFrom<u32> for MiniJamHostCall {
             20 => Ok(Self::Transfer),
             25 => Ok(Self::Yield),
             27 => Ok(Self::NetworkDomain),
+            28 => Ok(Self::OwnershipControlServiceId),
             100 => Ok(Self::Log),
             _ => Err(()),
         }
@@ -52,6 +54,7 @@ mod tests {
             ("TRANSFER", 20),
             ("YIELD", 25),
             ("NETWORK_DOMAIN", 27),
+            ("OWNERSHIP_CONTROL_SERVICE_ID", 28),
             ("LOG", 100),
         ] {
             let declaration = format!("MINIJAM_HOST_{name} = {id}");
@@ -73,6 +76,7 @@ mod tests {
             (MiniJamHostCall::Transfer, 20),
             (MiniJamHostCall::Yield, 25),
             (MiniJamHostCall::NetworkDomain, 27),
+            (MiniJamHostCall::OwnershipControlServiceId, 28),
             (MiniJamHostCall::Log, 100),
         ];
         for (call, id) in ids {

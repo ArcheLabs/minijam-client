@@ -49,6 +49,9 @@ void minijam_log(const char *message, size_t message_size);
 void minijam_yield(const void *value, size_t value_size);
 minijam_status minijam_network_domain(uint8_t *output, size_t capacity,
                                       size_t *output_size);
+minijam_status minijam_ownership_control_service_id(uint8_t *output,
+                                                    size_t capacity,
+                                                    size_t *output_size);
 
 // Refine completion is represented by the PVM program's returned byte sequence.
 minijam_refine_output minijam_refine_ok(const void *value, size_t value_size);

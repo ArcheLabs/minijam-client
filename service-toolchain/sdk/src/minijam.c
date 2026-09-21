@@ -171,6 +171,20 @@ minijam_status minijam_network_domain(uint8_t *output, size_t capacity,
   return result == 0 ? MINIJAM_OK : MINIJAM_HOST_ERROR;
 }
 
+minijam_status minijam_ownership_control_service_id(uint8_t *output,
+                                                    size_t capacity,
+                                                    size_t *output_size) {
+  if (!output_size || capacity < 4) return MINIJAM_HOST_ERROR;
+  uint64_t result = minijam_host_call6(
+      MINIJAM_HOST_OWNERSHIP_CONTROL_SERVICE_ID, (uintptr_t)output, capacity,
+      (uintptr_t)output_size, 0, 0, 0);
+  if (result == MINIJAM_HOST_NONE) {
+    *output_size = 0;
+    return MINIJAM_NOT_FOUND;
+  }
+  return result == 0 ? MINIJAM_OK : MINIJAM_HOST_ERROR;
+}
+
 minijam_refine_output minijam_refine_ok(const void *value, size_t size) {
   minijam_refine_output output = {value, size};
   return output;

@@ -67,6 +67,9 @@ struct Cli {
     max_bundle_bytes: Option<u64>,
 
     #[arg(long)]
+    ownership_control_service_id: Option<u32>,
+
+    #[arg(long)]
     once: bool,
 }
 
@@ -122,6 +125,9 @@ fn build_config(cli: &Cli) -> Result<WorkerConfig, String> {
     if let Some(max_bundle_bytes) = cli.max_bundle_bytes {
         config.max_bundle_bytes = max_bundle_bytes;
     }
+    if let Some(service_id) = cli.ownership_control_service_id {
+        config.ownership_control_service_id = Some(service_id);
+    }
     if let Ok(value) = std::env::var("WORKER_ID") {
         config.worker_id = Some(
             value
@@ -134,6 +140,13 @@ fn build_config(cli: &Cli) -> Result<WorkerConfig, String> {
     }
     if let Ok(value) = std::env::var("BUNDLE_GATEWAY_URL") {
         config.ipfs_gateway = value;
+    }
+    if let Ok(value) = std::env::var("OWNERSHIP_CONTROL_SERVICE_ID") {
+        config.ownership_control_service_id = Some(
+            value
+                .parse()
+                .map_err(|error| format!("invalid OWNERSHIP_CONTROL_SERVICE_ID: {error}"))?,
+        );
     }
     if let Ok(value) = std::env::var("POLL_INTERVAL") {
         config.poll_interval = Duration::from_millis(
@@ -268,6 +281,9 @@ async fn main() {
         statuses,
     )
     .with_network_domain(network_domain);
+    if let Some(service_id) = config.ownership_control_service_id {
+        runner = runner.with_ownership_control_service_id(service_id);
+    }
 
     if once {
         if let Err(error) = poll_and_persist(

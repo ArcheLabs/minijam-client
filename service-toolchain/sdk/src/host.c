@@ -29,6 +29,8 @@ MINIJAM_IMPORT_METADATA(minijam_new, MINIJAM_HOST_NEW);
 MINIJAM_IMPORT_METADATA(minijam_transfer, MINIJAM_HOST_TRANSFER);
 MINIJAM_IMPORT_METADATA(minijam_yield, MINIJAM_HOST_YIELD);
 MINIJAM_IMPORT_METADATA(minijam_network_domain, MINIJAM_HOST_NETWORK_DOMAIN);
+MINIJAM_IMPORT_METADATA(minijam_ownership_control_service_id,
+                        MINIJAM_HOST_OWNERSHIP_CONTROL_SERVICE_ID);
 MINIJAM_IMPORT_METADATA(minijam_log, MINIJAM_HOST_LOG);
 #undef MINIJAM_IMPORT_METADATA
 #endif
@@ -58,6 +60,9 @@ uint64_t minijam_host_call(uint32_t call, const uint64_t args[6]) {
     case MINIJAM_HOST_YIELD: MINIJAM_ECALLI(minijam_yield_metadata); break;
     case MINIJAM_HOST_NETWORK_DOMAIN:
       MINIJAM_ECALLI(minijam_network_domain_metadata);
+      break;
+    case MINIJAM_HOST_OWNERSHIP_CONTROL_SERVICE_ID:
+      MINIJAM_ECALLI(minijam_ownership_control_service_id_metadata);
       break;
     case MINIJAM_HOST_LOG: MINIJAM_ECALLI(minijam_log_metadata); break;
     default: return UINT64_MAX;

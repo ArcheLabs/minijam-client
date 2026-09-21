@@ -27,6 +27,9 @@ pub trait Host {
     fn network_domain(&self) -> [u8; 32] {
         [0; 32]
     }
+    fn ownership_control_service_id(&self) -> Option<u32> {
+        None
+    }
     fn log(&mut self, _message: &[u8]) {}
 }
 
@@ -192,6 +195,32 @@ impl<H: Host> HostCallTrait<InterpRegister, InnerInterpMemory> for HostBridge<'_
                     set_result(state, 0);
                 }
             }
+            MiniJamHostCall::OwnershipControlServiceId => {
+                let output = arg(7) as u32;
+                let capacity = arg(8) as usize;
+                let output_size = arg(9) as u32;
+                match self.0.ownership_control_service_id() {
+                    Some(service_id) if capacity >= 4 => {
+                        state
+                            .memory
+                            .write_bytes(output, &service_id.to_le_bytes())
+                            .map_err(|_| VmError::Panic)?;
+                        state
+                            .memory
+                            .write_bytes(output_size, &(4u64).to_le_bytes())
+                            .map_err(|_| VmError::Panic)?;
+                        set_result(state, 0);
+                    }
+                    None => {
+                        state
+                            .memory
+                            .write_bytes(output_size, &(0u64).to_le_bytes())
+                            .map_err(|_| VmError::Panic)?;
+                        set_result(state, 1);
+                    }
+                    Some(_) => set_result(state, 1),
+                }
+            }
             MiniJamHostCall::Log => {
                 let ptr = arg(7) as u32;
                 let len = arg(8) as usize;
@@ -231,6 +260,9 @@ mod tests {
         fn yield_value(&mut self, _value: Vec<u8>) {}
         fn network_domain(&self) -> [u8; 32] {
             [0xaa; 32]
+        }
+        fn ownership_control_service_id(&self) -> Option<u32> {
+            Some(42)
         }
     }
 
@@ -290,5 +322,24 @@ mod tests {
         bridge.ecalli(27, &mut state, &mut gas).unwrap();
 
         assert_eq!(state.registers.get_a0(), 1);
+    }
+
+    #[test]
+    fn ownership_control_service_id_hostcall_returns_authoritative_id_and_size() {
+        let mut host = DomainHost;
+        let mut bridge = HostBridge(&mut host);
+        let mut state = VmState::<InterpRegister, InnerInterpMemory>::empty();
+        assert!(state.memory.set_perm(0x10, 0x20, PagePerm::Write));
+        state.registers.set(7, 0x1_1000);
+        state.registers.set(8, 4);
+        state.registers.set(9, 0x1_2000);
+        let mut gas = 1_000;
+
+        let result = bridge.ecalli(28, &mut state, &mut gas).unwrap();
+
+        assert_eq!(result, ExitKind::Continue);
+        assert_eq!(state.registers.get_a0(), 0);
+        assert!(state.memory.check_write(0x1_1000, 4));
+        assert!(state.memory.check_write(0x1_2000, 8));
     }
 }
