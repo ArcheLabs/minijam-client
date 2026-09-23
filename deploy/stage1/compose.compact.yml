@@ -51,7 +51,7 @@ services:
     networks: [chain, work]
 volumes: {node-data: {}, worker-data: {}, bundle-data: {}}
 networks:
-  chain: {internal: true}
+  chain: {name: minijam-testnet-chain, internal: true}
   work: {}
   node-edge: {}
 secrets:

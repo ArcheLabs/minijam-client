@@ -26,12 +26,28 @@ same boundary across private hosts. Formal RPC owns only its Work-ingress
 relayer key and bundle store. The worker owns only its worker key. Validator,
 deployment-controller, and external-faucet keys are separate.
 
-In the compact profile, node RPC is published on the host loopback only at
-`127.0.0.1:9944`. The node also joins a non-internal edge bridge for that
-host-local boundary; the service-to-service `chain` network remains internal.
-The split profile does not publish node RPC to the host: `9944` belongs on
-private infrastructure protected by a firewall, VPN, or private overlay, and
-must not be exposed directly to the public Internet.
+Node RPC is an infrastructure dependency for the JamScript Backend and other
+trusted backend services. It is not a public application endpoint. In the
+compact profile, node RPC is published on the host loopback only at
+`127.0.0.1:9944`; the node also joins a non-internal edge bridge for that
+host-local boundary while the service-to-service `chain` network remains
+internal. A backend process running directly on the same host can use
+`http://127.0.0.1:9944`. The split profile does not publish node RPC to the
+host: connect the backend over a private interface, Docker network, VPN, or
+private overlay protected by firewall rules. In both layouts, port `9944` must
+not be reachable from the public Internet. Never replace the loopback publish
+with `9944:9944`. The compact profile gives its internal chain bridge the
+stable name `minijam-testnet-chain`, which lets the separately managed
+JamScript Backend container join that private network and use `node:9944` and
+`formal-rpc:8080` without routing through host-published ports. The split
+profile expects the same externally managed private network name by default;
+set `MINIJAM_CHAIN_NETWORK` consistently if the operator uses another private
+Docker/overlay network.
+
+Formal RPC is another backend-only dependency and has the same exposure rule.
+Both Compose profiles publish it on host loopback only at
+`127.0.0.1:8080`. For a remote frontend, expose the JamScript Backend through
+the application reverse proxy; do not publish Node or Formal RPC publicly.
 
 Stage-1 service-to-service RPC uses Docker/private DNS names such as
 `node:9944`, so both node profiles require `--rpc-cors=all`. This permits the

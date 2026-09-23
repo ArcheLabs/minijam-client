@@ -38,8 +38,12 @@ jq -e '.services.node.command | index("--rpc-cors=all") != null' <<<"${compact}"
 jq -e '.services.node.command | index("--chain=testnet") != null' <<<"${compact}" >/dev/null
 jq -e '.services.node.command | index("--rpc-methods=unsafe") == null' <<<"${compact}" >/dev/null
 jq -e 'any(.services.node.ports[]?; (.published | tostring) == "9944" and .host_ip == "127.0.0.1")' <<<"${compact}" >/dev/null
+jq -e 'any(.services["formal-rpc"].ports[]?; (.published | tostring) == "8080" and .host_ip == "127.0.0.1")' <<<"${compact}" >/dev/null
+jq -e 'all(.services.node.ports[]?; .host_ip == "127.0.0.1")' <<<"${compact}" >/dev/null
+jq -e 'all(.services["formal-rpc"].ports[]?; .host_ip == "127.0.0.1")' <<<"${compact}" >/dev/null
 jq -e '.services.node.networks | has("chain") and has("node-edge")' <<<"${compact}" >/dev/null
 jq -e '.networks.chain.internal == true' <<<"${compact}" >/dev/null
+jq -e '.networks.chain.name == "minijam-testnet-chain"' <<<"${compact}" >/dev/null
 jq -e '.services.worker.command | index("--worker-id=0") != null' <<<"${compact}" >/dev/null
 jq -e '.services.worker.command | index("--ipfs-gateway=http://formal-rpc:8080") != null' <<<"${compact}" >/dev/null
 jq -e '.services["formal-rpc"].secrets | any(.[]; .source == "work_ingress_key")' <<<"${compact}" >/dev/null
@@ -52,7 +56,9 @@ jq -e '.services.node.command | index("--rpc-methods=safe") != null' <<<"${split
 jq -e '.services.node.command | index("--chain=testnet") != null' <<<"${split}" >/dev/null
 jq -e '.services.node.command | index("--rpc-methods=unsafe") == null' <<<"${split}" >/dev/null
 jq -e '(.services.node.ports // []) | length == 0' <<<"${split}" >/dev/null
+jq -e 'all(.services["formal-rpc"].ports[]?; (.published | tostring) == "8080" and .host_ip == "127.0.0.1")' <<<"${split}" >/dev/null
 jq -e '.networks.chain.external == true' <<<"${split}" >/dev/null
+jq -e '.networks.chain.name == "minijam-testnet-chain"' <<<"${split}" >/dev/null
 jq -e '.services.worker.command | index("--worker-id=0") != null' <<<"${split}" >/dev/null
 jq -e '.services.worker.command | index("--ipfs-gateway=http://formal-rpc:8080") != null' <<<"${split}" >/dev/null
 
