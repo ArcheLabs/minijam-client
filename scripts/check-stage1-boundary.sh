@@ -54,12 +54,21 @@ done
 
 grep -Eq '^[[:space:]]+ports: \["127\.0\.0\.1:9944:9944"\]$' \
   "${root}/deploy/stage1/compose.compact.yml"
+grep -Eq '^[[:space:]]+ports: \["127\.0\.0\.1:8080:8080"\]$' \
+  "${root}/deploy/stage1/compose.compact.yml"
+grep -Eq '^[[:space:]]+ports: \["127\.0\.0\.1:8080:8080"\]$' \
+  "${root}/deploy/stage1/compose.split.yml"
 grep -Eq '^[[:space:]]+networks: \[chain, node-edge\]$' \
   "${root}/deploy/stage1/compose.compact.yml"
-grep -Eq '^  chain: \{internal: true\}$' \
+grep -Eq '^  chain: \{name: minijam-testnet-chain, internal: true\}$' \
   "${root}/deploy/stage1/compose.compact.yml"
-if grep -Eq '0\.0\.0\.0:9944' "${root}/deploy/stage1/compose.split.yml"; then
-  echo 'Split Stage-1 profile must not publish node RPC on a public host interface' >&2
+grep -Eq '^  chain:[[:space:]]*$' "${root}/deploy/stage1/compose.split.yml"
+grep -Eq '^[[:space:]]+name: \$\{MINIJAM_CHAIN_NETWORK:-minijam-testnet-chain\}$' \
+  "${root}/deploy/stage1/compose.split.yml"
+if grep -Eq 'ports:.*(0\.0\.0\.0|\*):(9944|8080)' \
+  "${root}/deploy/stage1/compose.compact.yml" \
+  "${root}/deploy/stage1/compose.split.yml"; then
+  echo 'Stage-1 profiles must not publish Node or Formal RPC on a public host interface' >&2
   exit 1
 fi
 

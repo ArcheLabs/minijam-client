@@ -47,7 +47,10 @@ services:
     ports: ["127.0.0.1:8080:8080"]
     networks: [chain]
 volumes: {node-data: {}, worker-data: {}, bundle-data: {}}
-networks: {chain: {external: true}}
+networks:
+  chain:
+    name: ${MINIJAM_CHAIN_NETWORK:-minijam-testnet-chain}
+    external: true
 secrets:
   node_network_key:
     environment: MINIJAM_NODE_NETWORK_KEY

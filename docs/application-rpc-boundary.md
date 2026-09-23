@@ -6,7 +6,7 @@ the MiniJAM client.
 
 ## Stable boundary
 
-Browser and native clients may use the node JSON-RPC directly:
+Trusted application infrastructure may use the node JSON-RPC methods directly:
 
 - `minijam_getFinalizedContext`
 - `minijam_getWork` and `minijam_getWorkIdByPackageHash`
@@ -16,7 +16,35 @@ Browser and native clients may use the node JSON-RPC directly:
 - `author_submitExtrinsic` for an already encoded and wallet-signed transaction
 
 These methods are application-neutral. New Services must not require a custom
-node RPC method.
+node RPC method. Access to the endpoint is still a deployment security
+boundary: MiniJAM testnet Node RPC must be reachable by the JamScript Backend
+and other trusted backend infrastructure, and must never be exposed directly
+to the public Internet. Browser applications should use their application-
+facing backend or same-origin reverse proxy rather than a public Node RPC URL.
+
+## Private RPC topology
+
+On one host, bind Node RPC and Formal RPC to loopback (`127.0.0.1:9944` and
+`127.0.0.1:8080`). A host-local backend can use those endpoints. When the
+backend runs on another host, route it over a private network, VPN, or private
+overlay and restrict access with firewall rules; do not bind either RPC port
+to `0.0.0.0` on a public interface. The Stage-1 compact and split Compose
+profiles follow these rules.
+
+For a JamScript Backend running as a separate container on the same host,
+attach it to the Stage-1 private chain network. The compact Compose profile
+names that network `minijam-testnet-chain`; the split profile uses that same
+external name by default. The backend can then use the private service names
+`node:9944` and `formal-rpc:8080`. Operators with another private Docker or
+overlay network can set `MINIJAM_CHAIN_NETWORK` to its name in both Compose
+deployments. Do not make either RPC reachable from the public Internet to
+connect the backend.
+
+The application-facing path for an Internet user is:
+
+```text
+Browser -> HTTPS reverse proxy -> JamScript Backend -> private Node RPC / Formal RPC
+```
 
 ## Work ingress
 
