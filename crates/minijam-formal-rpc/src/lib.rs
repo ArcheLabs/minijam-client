@@ -276,13 +276,13 @@ impl FormalRpc {
         };
         let canonical = jam_codec::Encode::encode(&Preimage {
             requester: service_id,
-            blob: ByteSequence::from(blob),
+            blob: ByteSequence::from(blob.as_slice()),
         });
         self.chain
-            .submit_preimage(canonical)
+            .submit_preimage_finalized(canonical)
             .await
             .map_err(chain_error)?;
-        let context = wait_for_service_code_hash(&self.chain, service_id, code_hash).await?;
+        let context = wait_for_service_ready(&self.chain, service_id, code_hash, &blob).await?;
         Ok(DeploymentResult {
             operation_id: hex(&submitted.correlation),
             service_id,
@@ -352,25 +352,65 @@ fn decode_system_receipt(encoded: StateValue) -> Result<SystemReceiptV2, RpcErro
         .map_err(|error| RpcError::Chain(error.to_string()))
 }
 
-async fn wait_for_service_code_hash(
+fn decode_finalized_preimage_blob(encoded: &[u8]) -> Result<Vec<u8>, RpcError> {
+    let mut encoded_state = encoded;
+    let state_value = StateValue::decode(&mut encoded_state)
+        .map_err(|error| RpcError::Chain(format!("invalid finalized Service preimage: {error}")))?;
+    if !encoded_state.is_empty() {
+        return Err(RpcError::Chain(
+            "invalid finalized Service preimage: trailing StateValue bytes".into(),
+        ));
+    }
+    Ok(state_value.into_inner())
+}
+
+fn finalized_preimage_matches(
+    encoded: &[u8],
+    expected_code_hash: Hash,
+    expected_blob: &[u8],
+) -> Result<bool, RpcError> {
+    let blob = decode_finalized_preimage_blob(encoded)?;
+    Ok(blob.as_slice() == expected_blob && blake2_256(&blob) == expected_code_hash)
+}
+
+async fn wait_for_service_ready(
     chain: &MiniJamChainClient,
     service_id: u32,
     expected: Hash,
+    expected_blob: &[u8],
 ) -> Result<FinalizedContext, RpcError> {
     for _ in 0..120 {
         let context = chain.finalized_context().await.map_err(chain_error)?;
-        if chain
+        let code_hash = chain
             .service_code_hash_at(context.block_hash, service_id)
             .await
-            .map_err(chain_error)?
-            == Some(expected)
-        {
+            .map_err(chain_error)?;
+        if let Some(actual) = code_hash {
+            if actual != expected {
+                return Err(RpcError::CodeHashMismatch);
+            }
+        }
+        let preimage = chain
+            .service_preimage_at(context.block_hash, service_id, expected)
+            .await
+            .map_err(chain_error)?;
+        let preimage_matches = match preimage.as_deref() {
+            Some(encoded) => {
+                if !finalized_preimage_matches(encoded, expected, expected_blob)? {
+                    return Err(RpcError::CodeHashMismatch);
+                }
+                true
+            }
+            None => false,
+        };
+        if code_hash == Some(expected) && preimage_matches {
             return Ok(context);
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
     Err(RpcError::Chain(
-        "timed out waiting for finalized ServiceInfo/codeHash verification".into(),
+        "timed out waiting for finalized ServiceInfo/codeHash and service preimage verification"
+            .into(),
     ))
 }
 
@@ -953,6 +993,23 @@ mod tests {
         assert!(matches!(
             validate_code_hash(&info, [4; 32]),
             Err(RpcError::CodeHashMismatch)
+        ));
+    }
+
+    #[test]
+    fn finalized_preimage_readiness_checks_content_and_hash() {
+        let blob = b"service blob";
+        let expected_hash = blake2_256(blob);
+        let state_value = StateValue::try_from(blob.to_vec()).unwrap();
+        let encoded_state = state_value.encode();
+
+        assert!(finalized_preimage_matches(&encoded_state, expected_hash, blob).unwrap());
+        assert!(
+            !finalized_preimage_matches(&encoded_state, expected_hash, b"different blob").unwrap()
+        );
+        assert!(matches!(
+            finalized_preimage_matches(&encoded_state, [9; 32], blob),
+            Ok(false)
         ));
     }
 

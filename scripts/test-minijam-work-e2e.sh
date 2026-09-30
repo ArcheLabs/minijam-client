@@ -90,7 +90,81 @@ jq -e --arg expected "${service_code_hash}" '
 ' "${TMP}/create-service.json" >/dev/null
 service_id="$(jq -er '.result.serviceId' "${TMP}/create-service.json")"
 context="$(jq -c '.result.context | {blockHash, stateRoot, slot}' "${TMP}/create-service.json")"
-printf 'MINIJAM_DEV_SERVICE_FINALIZED=PASS\n'
+context_hash="$(jq -er '.blockHash' <<<"${context}")"
+printf 'CREATE_SERVICE_RETURNED=PASS\n'
+service_info="$(rpc_call "${NODE_RPC}" minijam_getServiceInfoAt "$(jq -cn --arg hash "${context_hash}" --arg id "${service_id}" '[ $hash, ($id | tonumber) ]')")"
+jq -e '.result | type == "string"' <<<"${service_info}" >/dev/null || {
+  echo 'ServiceInfo is not present at the createService finalized context' >&2
+  exit 1
+}
+printf '%s\n' "${service_info}" >"${TMP}/service-info.json"
+python3 - "${TMP}/service-info.json" "${service_code_hash}" <<'PY'
+import json
+import pathlib
+import sys
+
+def take_compact(data, offset):
+    first = data[offset]
+    mode = first & 3
+    if mode == 0:
+        return first >> 2, offset + 1
+    if mode == 1:
+        return int.from_bytes(data[offset:offset + 2], "little") >> 2, offset + 2
+    if mode == 2:
+        return int.from_bytes(data[offset:offset + 4], "little") >> 2, offset + 4
+    size = (first >> 2) + 4
+    return int.from_bytes(data[offset + 1:offset + 1 + size], "little"), offset + 1 + size
+
+response_path, expected_hash = sys.argv[1:]
+encoded = bytes.fromhex(json.loads(pathlib.Path(response_path).read_text())["result"][2:])
+value_len, offset = take_compact(encoded, 0)
+value = encoded[offset:]
+if len(value) != value_len or len(value) < 33:
+    raise SystemExit("invalid finalized ServiceInfo StateValue")
+actual_hash = "0x" + value[1:33].hex()
+if actual_hash.lower() != expected_hash.lower():
+    raise SystemExit("finalized ServiceInfo codeHash does not match requested blob")
+PY
+printf 'RETURNED_CONTEXT_SERVICE_INFO=PASS\n'
+service_preimage="$(rpc_call "${NODE_RPC}" minijam_getServicePreimageAt "$(jq -cn --arg hash "${context_hash}" --arg id "${service_id}" --arg code_hash "${service_code_hash}" '[ $hash, ($id | tonumber), $code_hash ]')")"
+jq -e '.result != null' <<<"${service_preimage}" >/dev/null || {
+  echo 'Service preimage is not present at the createService finalized context' >&2
+  exit 1
+}
+printf 'RETURNED_CONTEXT_SERVICE_PREIMAGE=PASS\n'
+printf '%s\n' "${service_preimage}" >"${TMP}/service-preimage.json"
+python3 - "${TMP}/service-preimage.json" "${SERVICE_BLOB}" "${service_id}" "${service_code_hash}" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+def take_compact(data, offset):
+    first = data[offset]
+    mode = first & 3
+    if mode == 0:
+        return first >> 2, offset + 1
+    if mode == 1:
+        return int.from_bytes(data[offset:offset + 2], "little") >> 2, offset + 2
+    if mode == 2:
+        return int.from_bytes(data[offset:offset + 4], "little") >> 2, offset + 4
+    size = (first >> 2) + 4
+    return int.from_bytes(data[offset + 1:offset + 1 + size], "little"), offset + 1 + size
+
+response_path, blob_path, _service_id, expected_hash = sys.argv[1:]
+encoded = bytes.fromhex(json.loads(pathlib.Path(response_path).read_text())["result"][2:])
+blob_len, offset = take_compact(encoded, 0)
+blob = encoded[offset:]
+if len(blob) != blob_len:
+    raise SystemExit("invalid finalized Service preimage StateValue")
+expected_blob = pathlib.Path(blob_path).read_bytes()
+actual_hash = "0x" + hashlib.blake2b(blob, digest_size=32).hexdigest()
+if blob != expected_blob:
+    raise SystemExit("finalized Service preimage blob does not match createService request")
+if actual_hash.lower() != expected_hash.lower():
+    raise SystemExit("finalized Service preimage hash does not match createService codeHash")
+PY
+printf 'RETURNED_CONTEXT_PREIMAGE_MATCH=PASS\n'
 
 payload_base64="$(printf '\001\000\000\000\000\000\000\000' | base64 | tr -d '\r\n')"
 submitted=0
@@ -112,7 +186,6 @@ for _ in $(seq 1 12); do
   fi
   if jq -e '.error.code == -32010 and .error.data.blockHash != null' "${TMP}/submit-work.json" >/dev/null; then
     context="$(jq -c '.error.data | {blockHash, stateRoot, slot}' "${TMP}/submit-work.json")"
-    sleep 1
     continue
   fi
   cat "${TMP}/submit-work.json" >&2
@@ -121,6 +194,7 @@ done
 (( submitted == 1 )) || { echo 'canonical local Work submission timed out' >&2; exit 1; }
 package_hash="$(jq -er '.result.packageHash' "${TMP}/submit-work.json")"
 printf 'MINIJAM_DEV_WORK_SUBMITTED=PASS\n'
+printf 'IMMEDIATE_FIRST_WORK=PASS\n'
 
 status_request="$(jq -cn --arg package_hash "${package_hash}" \
   '{id: 1, jsonrpc: "2.0", method: "minijam_getWorkStatusV1", params: {packageHash: $package_hash}}')"
@@ -143,9 +217,17 @@ while (( SECONDS < deadline )); do
     finalized_head="$(rpc_call "${NODE_RPC}" chain_getFinalizedHead | jq -er '.result')"
     finalized_number="$(block_number "${finalized_head}")"
     if (( finalized_number >= imported_block )); then
+      storage_context="$(jq -er '.result.context.blockHash' "${TMP}/work-status.json")"
+      service_storage="$(rpc_call "${NODE_RPC}" minijam_getServiceStorageAt "$(jq -cn --arg hash "${storage_context}" --arg id "${service_id}" '[ $hash, ($id | tonumber), "0x636f756e746572" ]')")"
+      jq -e '.result == "0x200100000000000000"' <<<"${service_storage}" >/dev/null || {
+        echo 'first Counter action was imported without the expected state transition' >&2
+        cat "${TMP}/work-status.json" >&2
+        exit 1
+      }
       printf 'MINIJAM_DEV_WORK_EXECUTION_RECEIPT=%s\n' "${receipt}"
-      printf 'MINIJAM_DEV_WORK_IMPORTED=PASS\n'
-      printf 'MINIJAM_DEV_WORK_FINALIZED=PASS\n'
+      printf 'FIRST_WORK_IMPORTED=PASS\n'
+      printf 'FIRST_EXECUTION_RECEIPT=PASS\n'
+      printf 'FIRST_CANONICAL_STATE_TRANSITION=PASS\n'
       exit 0
     fi
   fi

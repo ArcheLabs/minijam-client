@@ -462,6 +462,25 @@ impl MiniJamChainClient {
         .await
     }
 
+    /// Submit a service preimage and wait for finality and a successful dispatch outcome.
+    ///
+    /// Callers that need to establish service readiness should additionally verify the
+    /// canonical service state after this transaction is finalized.
+    pub async fn submit_preimage_finalized(
+        &self,
+        bytes: Vec<u8>,
+    ) -> Result<Submission, ChainClientError> {
+        let correlation = minijam_protocol::blake2_256(&bytes);
+        let canonical_preimage: CanonicalPreimageBytes = bytes
+            .try_into()
+            .map_err(|_| ChainClientError::InputTooLarge)?;
+        self.submit_call_and_watch(
+            RuntimeCall::MiniJam(pallet_minijam::Call::submit_preimage { canonical_preimage }),
+            correlation,
+        )
+        .await
+    }
+
     pub async fn submit_work(
         &self,
         canonical: Vec<u8>,
