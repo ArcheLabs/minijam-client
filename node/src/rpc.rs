@@ -28,6 +28,15 @@ struct FinalizedContextV1 {
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct BestContextV1 {
+    block_hash: String,
+    block_number: u32,
+    state_root: String,
+    slot: u32,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct PendingWorkTaskSummaryV1 {
     work_id: WorkId,
     round: u8,
@@ -432,6 +441,24 @@ where
         }
     })?;
 
+    module.register_method("minijam_getBestContext", {
+        let client = client.clone();
+        move |_, _, _| -> RpcResult<BestContextV1> {
+            let block_hash = best_hash(&client);
+            let header = client
+                .header(block_hash)
+                .map_err(blockchain_error)?
+                .ok_or_else(|| rpc_state_error("best header is unavailable"))?;
+            let block_number = *header.number();
+            Ok(BestContextV1 {
+                block_hash: hex_encode(block_hash.as_ref()),
+                block_number,
+                state_root: hex_encode(header.state_root().as_ref()),
+                slot: block_number,
+            })
+        }
+    })?;
+
     module.register_method("minijam_getServiceInfoAt", {
         let client = client.clone();
         move |params, _, _| -> RpcResult<Option<String>> {
@@ -590,6 +617,23 @@ mod tests {
             slot: 4,
         })
         .expect("finalized context serializes");
+
+        assert_eq!(value["blockHash"], "0x01");
+        assert_eq!(value["blockNumber"], 2);
+        assert_eq!(value["stateRoot"], "0x03");
+        assert_eq!(value["slot"], 4);
+        assert!(value.get("block_hash").is_none());
+    }
+
+    #[test]
+    fn best_context_uses_chain_client_field_names() {
+        let value = serde_json::to_value(BestContextV1 {
+            block_hash: "0x01".into(),
+            block_number: 2,
+            state_root: "0x03".into(),
+            slot: 4,
+        })
+        .expect("best context serializes");
 
         assert_eq!(value["blockHash"], "0x01");
         assert_eq!(value["blockNumber"], 2);

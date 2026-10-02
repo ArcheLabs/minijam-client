@@ -9,6 +9,7 @@ the MiniJAM client.
 Trusted application infrastructure may use the node JSON-RPC methods directly:
 
 - `minijam_getFinalizedContext`
+- `minijam_getBestContext`
 - `minijam_getWork` and `minijam_getWorkIdByPackageHash`
 - `minijam_getExecutionReceipt`
 - `minijam_getServiceInfoAt` and `minijam_getServiceStorageAt`
@@ -21,6 +22,12 @@ boundary: MiniJAM testnet Node RPC must be reachable by the JamScript Backend
 and other trusted backend infrastructure, and must never be exposed directly
 to the public Internet. Browser applications should use their application-
 facing backend or same-origin reverse proxy rather than a public Node RPC URL.
+
+`minijam_getBestContext` and `minijam_getFinalizedContext` return complete,
+indivisible block snapshots. Reads made at either context must use its exact
+`blockHash`; callers must retain the corresponding `stateRoot`, `blockNumber`,
+and `slot` and must not combine fields from different heads. Best context is
+reorgable and must not be presented as finalized.
 
 ## Private RPC topology
 
